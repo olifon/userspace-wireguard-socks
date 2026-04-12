@@ -3,39 +3,30 @@
 
 # Userspace WireGuard SOCKS Gateway
 
-`uwgsocks` runs WireGuard and a TCP/IP stack entirely in userspace, then exposes useful application-facing entry points:
-
-- SOCKS5, HTTP, or mixed SOCKS5/HTTP proxy listeners on the host
-- local TCP/UDP forwards, similar in spirit to SSH local forwarding
-- reverse TCP/UDP forwards that listen inside the userspace WireGuard netstack and dial arbitrary host targets
-- transparent inbound TCP/UDP termination for packets arriving from WireGuard peers
-- optional tunnel-hosted DNS service
-- optional L3 relay forwarding between WireGuard peers
-- optional management API for peers, ACLs, and runtime forwards
-- Go library APIs for applications that want WireGuard transport without exposing a proxy
+`uwgsocks` runs WireGuard and a TCP/UDP/IP stack entirely in userspace, then exposes useful application-facing entry points:
 
 The goal is to make WireGuard usable in environments where a kernel tunnel is unavailable or undesirable: rootless processes, restricted containers, CI workers, locked-down servers, or applications that should use WireGuard as a transport without changing the host routing table.
 
-The main modes are:
+Examples of the vast amount of supported use cases:
+- Connecting to or hosting Wireguard server on Docker containers
+- Connecting your web browser for certain sites to Wireguard using a SOCKS proxy without root or managling your network interfaces
+- Connecting remotely to machines network where you do not have root access, using this application as exit proxy for regular internet traffic
+- Connecting your personal runs on a HPC cluster or rented GPUs to your secure network where you do not have root or are in a restricted docker container
+- Opening a private Wireguard connection on your user of a shared machine (e.g HPC) without allowing other users to use the network, without requiring root or complex UID-based iptables.
+- Adding or embedding Wireguard to an existing SaaS application to connect to on-premise IoT devices, without requiring network setup access. There is both an API available and also a embeddable library allowing you to connect through TCP/IP over Wireguard stack directly from your software.
+- Using Wireguard to connect only selective applications to the VPN without requiring complex iptables/ip routing.
+- You need to connect remotely to a machine, but that machine can only access the internet through a provided HTTP/SOCKS proxy. This application can then act as your VPN server to the internet, transperantly routing connections over a SOCKS/HTTP proxy.
+- Port forwarding an application (e.g http reverse proxy) running in a restrictive environment to the internet, using a small server that has a public IP. Wireguard supports transperantly forwarding this traffic, including preservation of the source IP
 
-- app proxy mode: expose SOCKS5/HTTP so applications can reach WireGuard-only networks without a system VPN
-- port-forward mode: expose selected local or tunnel-side ports without changing host routes
-- exit-peer mode: accept WireGuard packets from peers and terminate TCP/UDP to normal host sockets, so a rootless server can act as an Internet or LAN egress point
-- library mode: embed the engine in a Go process and treat WireGuard as a transport rather than as a host network interface
+For whatever reason you do not want or can't mess with routing, firewall, `/dev/net/tun` or root access this application will provide the best support possible for your VPN need.
 
-Traditional kernel WireGuard looks like:
+The app is designed to replace most functionalities that regular Wireguard tunnels provided with root access, including TCP/UDP/IPv6, inbound/outbound connections, firewall ACLs and even using your Wireguard as a relay server all without requiring any permissions.
 
-```text
-app -> kernel routing table -> wg0 -> peer
-```
-
-This project looks like:
-
-```text
-app -> SOCKS5/HTTP/local API -> gVisor netstack -> wireguard-go -> UDP socket -> peer
-```
-
-No `/dev/net/tun`, `ip link add`, `CAP_NET_ADMIN`, host routes, or iptables rules are required.
+Since it does not use your regular network routing, applications connect through Wireguard in a variety of supported ways:
+- You can forward local TCP/UDP ports over Wireguard or vice versa. Proxy protocol is supported so that the source IP will not get lost. 
+- Connecting to the local network of the machine running ugwsocks
+- Using SOCKS to connect applications to Wireguard for both TCP/UDP.
+- Letting existing applications built on libc that do not support SOCKS connect to Wireguard or listen for services using the socksify-style prelod wrapper (EXPERIMENTAL)
 
 ## Build
 
@@ -55,7 +46,7 @@ The files under `examples/` are a self-contained localhost demo. They contain
 demonstration-only keys and configure the client with `AllowedIPs = 0.0.0.0/0`,
 so IPv4 SOCKS traffic can egress through the server process.
 
-Terminal 1:
+Terminal 1 - the Wireguard server acting as exit relay to the internet:
 
 ```bash
 ./uwgsocks \
@@ -64,7 +55,7 @@ Terminal 1:
   --inbound-transparent=true
 ```
 
-Terminal 2:
+Terminal 2 - the Wireguard client securely connecting to the exit relay:
 
 ```bash
 ./uwgsocks \
@@ -72,7 +63,7 @@ Terminal 2:
   --socks5 127.0.0.1:1080
 ```
 
-Terminal 3:
+Terminal 3 - curl using socks proxy to contact google through Wireguard:
 
 ```bash
 curl -x "socks5h://127.0.0.1:1080" -v https://www.google.com/
@@ -85,30 +76,13 @@ curl -H 'Authorization: Bearer replace-with-a-long-random-token' \
   http://127.0.0.1:9090/v1/status
 ```
 
-Client-style mode, no host UDP listen port:
-
-```bash
-./uwgsocks \
-  --config ./examples/client.yaml \
-  --socks5 127.0.0.1:1080
-```
-
-Server-style mode, bound WireGuard UDP port and transparent inbound proxying:
-
-```bash
-./uwgsocks \
-  --config ./examples/server.yaml \
-  --listen-port 51820 \
-  --inbound-transparent=true
-```
-
 Run a one-shot config check:
 
 ```bash
 ./uwgsocks --config ./examples/client.yaml --check
 ```
 
-## Common Uses
+## Common Uses How To
 
 Use selected port mappings:
 
@@ -162,19 +136,6 @@ Transparent egress example:
 curl -x socks5h://127.0.0.1:1080 https://www.google.com/
 ```
 
-Socksify-style experiment:
-
-```bash
-./uwgsocks --config ./examples/socksify.yaml
-./uwgfdproxy --listen /run/uwgsocks/fdproxy.sock \
-  --api unix:/run/uwgsocks/http.sock \
-  --socket-path /uwg/socket
-
-LD_PRELOAD=./uwgpreload.so \
-UWGS_FDPROXY=/run/uwgsocks/fdproxy.sock \
-  ./your-application
-```
-
 Throughput smoke test with a real WireGuard config:
 
 ```bash
@@ -186,6 +147,29 @@ Throughput smoke test with a real WireGuard config:
 LD_PRELOAD=./uwgpreload.so UWGS_FDPROXY=/run/uwgsocks/fdproxy.sock \
   speedtest-cli --secure --simple
 ```
+
+
+Let existing applications without SOCKS support connect to Wireguard rootless (EXPERIMENTAL):
+
+```bash
+./uwgsocks --config ./examples/socksify.yaml
+./uwgfdproxy --listen /run/uwgsocks/fdproxy.sock \
+  --api unix:/run/uwgsocks/http.sock \
+  --socket-path /uwg/socket
+
+LD_PRELOAD=./uwgpreload.so \
+UWGS_FDPROXY=/run/uwgsocks/fdproxy.sock \
+  wget https://www.google.com
+```
+
+```
+Application -> uwgpreload.so overriding libc functions -> (local UNIX socket file) -> uwgfdproxy managing TCP/UDP sockets routing through Wireguard -> (HTTP/socks API + auth possible) -> uwgsocks daemon connecting to Wireguard -> userspace UDP connection -> Wireguard server
+```
+
+The uwgfdproxy tracks/handles all socket connections that are routed through the userspace Wireguard, even across forks and executable transition boundaries.
+This setup allows you to seperate the process that connects to Wireguard to the process that manages sockets. For connecting several containers (each running uwgfdproxy daemon) to the ugwsocks you run rootless on a host or a central container (running the ugwsocks). 
+
+You can run the --api as HTTP endpoint instead of unix socket file descriptor, `fdproxy.sock` must be a unix socket file in the same environment (e.g container / vm / computer) for the preload wrapper to connect to. Control access using regular unix permissions on the socket files.
 
 ## Configuration Sources
 
@@ -828,21 +812,21 @@ Run an iperf3 loopback check through host forwards plus reverse forwards:
 ./scripts/iperf_loopback.sh
 ```
 
-## Beta Readiness
+## Features
 
-This project is useful as a beta tool and educational implementation, but I
-would not call it production-safe until these are done:
-
-- longer real-world soak runs on Linux servers and rootless containers
-- external review of the SOCKS5 parser, HTTP proxy parser, API auth, DNS
-  behavior, host-forward defaults, and runtime peer update path
-- fuzzing time on WireGuard/IP/TCP/UDP/ICMP/DNS/proxy inputs beyond the seeded
-  test corpus
-- more coverage for the experimental preload layer: `sendmsg`/`recvmsg`,
-  resolver interposition, `select`/`epoll`, UDP exec recovery, and dual
-  loopback-plus-tunnel listeners
-- memory/backpressure tuning under hostile traffic and long-lived high
-  throughput workloads
+- SOCKS5, HTTP, or mixed SOCKS5/HTTP proxy listeners on the host
+- local TCP/UDP forwards, similar in spirit to SSH local forwarding
+- reverse TCP/UDP forwards that listen inside the userspace WireGuard netstack and dial arbitrary host targets
+- Full UDP and IPv6 support
+- Multi wireguard peer support
+- transparent inbound TCP/UDP termination for packets arriving from WireGuard peers
+- Socksify-like wrapper that allows any application to use your Wireguard without requiring SOCKS support
+- optional tunnel-hosted DNS service
+- Firewall ACLs to restrict inbound or outbound connections filtering on ports and IP-addresses
+- optional L3 relay forwarding between WireGuard peers
+- optional management API for peers, ACLs, and runtime forwards, without requiring any restarts of the tunnel
+- experimental LD preload wrapper to let existing applications connect through Wireguard that do not support SOCKS.
+- Go library APIs for applications that want WireGuard transport without exposing a proxy
 
 ## Notes
 
