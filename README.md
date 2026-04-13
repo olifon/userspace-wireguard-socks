@@ -6,10 +6,15 @@ and **without touching system routing**.
 ``` bash
 # See building below to build your own executables
 wget https://github.com/reindertpelsma/userspace-wireguard-socks/releases/download/0.1/uwgsocks
-wget https://github.com/reindertpelsma/userspace-wireguard-socks/releases/download/0.1/uwgwrapper
-
+chmod +x uwgsocks
 ./uwgsocks --wg-config ./my-wireguard-vpn.conf --http 127.0.0.1:8080 --socks5 127.0.0.1:1080 &
 curl -x http://127.0.0.1:8080 https://example.com
+```
+
+Or routing applications without SOCKS/HTTP
+``` bash
+wget https://github.com/reindertpelsma/userspace-wireguard-socks/releases/download/0.1/uwgwrapper
+chmod +x uwgwrapper
 ./uwgwrapper --api http://127.0.0.1:8080 -- curl https://example.com
 ```
 
