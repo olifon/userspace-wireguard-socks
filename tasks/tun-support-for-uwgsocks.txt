@@ -1,0 +1,26 @@
+I want to add support for a /dev/net/tun device for userspace wireguard.
+Even though its made to not use /dev/net/tun, it can still be useful if you want to let userspace wireguard manage your connections
+since it has a vast feature space and does not mess with system routing, but still want a tunnel interface so you have better support
+to route traffic of any application. This is then the same as Tailscale where Wireguard is also userspace wiht data plane but it still exposes 
+a tunnel interface. (like we support different transport modes)
+
+so its optional, and must be explicitly enabled, and users not supporting /dev/net/tun are still a primary target.
+Even if enabled, then socks5 and http and port forwards/reverse forwards still must work.
+
+What you should do: if a tunnel interface is used you should install netstack on it.
+I want to have control over the direct TCP/UDP/ICMP transport stream over it, just like how we convert TCP to transport streams
+to userspace so we can invoke connect(2) and write(2) calls (terminating TCP control flow).
+The same must be true for the userspace interface, and this is necessary to still support other features as then technically
+we still own the IP assigned in ugwsocks and the port assignments on them.
+
+This means that if a TCP connection is reached through the tun interface, you terminate it, convert to stream, start a new TCP
+connection on wireguard, forward. for UDP you just forward the packets. You keep the source IP (so you transperantly bind)
+
+The same is for reverse. When tun0 is enabled by default you disable the 'default fallback' to system userspace networking
+invvolving connect(2) calls and such. This can be re-enabled, especially if the tun0 device was created without the privilege/will
+to update kernel routing so it can carry 0.0.0.0/0 traffic. Since we handle the L4 streams seperately makes this really possible.
+
+You assign the IP (as in the kernel) the tunnel assigned IP on it. 
+
+also important: unlike kernel wireguard relayed traffic between wireguard peers do not flow in/out of the tun0 device, they are just handled internally
+
