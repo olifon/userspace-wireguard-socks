@@ -30,6 +30,7 @@ import (
 const (
 	listenerProtoTCP = socketproto.ProtoTCP
 	listenerProtoUDP = socketproto.ProtoUDP
+	connectProtoICMP = socketproto.ProtoICMP
 )
 
 type Options struct {
@@ -280,7 +281,7 @@ func (s *Server) handleConnect(c *net.UnixConn, fd int, fields []string) {
 	if _, err := c.Write([]byte(fmt.Sprintf("OK %s %d\n", bind.Addr(), bind.Port()))); err != nil {
 		return
 	}
-	if req.proto == listenerProtoUDP {
+	if req.proto == listenerProtoUDP || req.proto == connectProtoICMP {
 		bridgeUDPConnected(local, up, socketproto.ClientIDBase+1)
 		return
 	}
@@ -1327,6 +1328,9 @@ func parseConnectRequest(fields []string) (connectRequest, error) {
 	case "udp":
 		req.proto = listenerProtoUDP
 		req.protoName = "udp"
+	case "icmp":
+		req.proto = connectProtoICMP
+		req.protoName = "icmp"
 	default:
 		return connectRequest{}, fmt.Errorf("unsupported proto %q", fields[1])
 	}

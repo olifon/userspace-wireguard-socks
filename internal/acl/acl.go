@@ -107,6 +107,14 @@ func (r *Rule) Normalize() error {
 		}
 		r.destPorts = &p
 	}
+	if r.Protocol != "" {
+		switch p := strings.ToLower(r.Protocol); p {
+		case "tcp", "udp", "icmp":
+			r.Protocol = p
+		default:
+			return fmt.Errorf("unknown protocol %q", r.Protocol)
+		}
+	}
 	return nil
 }
 
@@ -170,7 +178,7 @@ func (l List) Allowed(src, dst netip.AddrPort, network string) bool {
 
 func (r Rule) matches(src, dst netip.AddrPort, network string) bool {
 	if network != "" && r.Protocol != "" && r.Protocol != network {
-                return false
+		return false
 	}
 	if r.sourcePrefix != nil && !r.sourcePrefix.Contains(src.Addr()) {
 		return false
@@ -210,14 +218,13 @@ func ParseRule(s string) (Rule, error) {
 		case "dport", "dest_port", "destination_port":
 			r.DestPort = v
 		case "protocol":
-			if v == "TCP" {
-                            r.Protocol = "TCP"
-			} else if v == "UDP" {
-                            r.Protocol = "UDP"
-			} else if v == "" {
-                            r.Protocol = "" 
-			} else {
-                            return Rule{}, fmt.Errorf("unknown ACL rule protocol %v", v)
+			switch strings.ToLower(v) {
+			case "tcp", "udp", "icmp":
+				r.Protocol = strings.ToLower(v)
+			case "":
+				r.Protocol = ""
+			default:
+				return Rule{}, fmt.Errorf("unknown ACL rule protocol %v", v)
 			}
 		default:
 			return Rule{}, fmt.Errorf("unknown ACL field %q", k)

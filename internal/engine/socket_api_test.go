@@ -13,6 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/net/icmp"
+	"golang.org/x/net/ipv4"
+
+	"github.com/reindertpelsma/userspace-wireguard-socks/internal/acl"
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/config"
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/socketproto"
 )
@@ -67,6 +71,10 @@ func TestSocketAPIConnectTCPUDPAndListenTCP(t *testing.T) {
 	got = socketAPIUDPEcho(t, socketAddr, "secret", netip.MustParseAddrPort("100.64.92.1:18081"), []byte("raw socket udp"))
 	if string(got) != "raw socket udp" {
 		t.Fatalf("UDP socket API echo mismatch: %q", got)
+	}
+	got = socketAPIICMPEcho(t, socketAddr, "secret", netip.MustParseAddr("100.64.92.1"), []byte("raw socket icmp"))
+	if string(got) != "raw socket icmp" {
+		t.Fatalf("ICMP socket API echo mismatch: %q", got)
 	}
 
 	apiConn := socketAPIConn(t, socketAddr, "secret")
@@ -175,6 +183,57 @@ func TestSocketAPIConnectTCPUDPAndListenTCP(t *testing.T) {
 	}
 	if string(gotDgram.Payload) != "udp listener echo" {
 		t.Fatalf("UDP listener echo mismatch: %q", gotDgram.Payload)
+	}
+}
+
+func TestSocketAPIRejectsICMPByACLAndUnroutedIPv6(t *testing.T) {
+	key := mustKey(t)
+	cfg := config.Default()
+	cfg.WireGuard.PrivateKey = key.String()
+	cfg.WireGuard.Addresses = []string{"100.64.93.1/32"}
+	cfg.API.Listen = "127.0.0.1:0"
+	cfg.API.Token = "secret"
+	cfg.ACL.Outbound = []acl.Rule{{Action: acl.Deny, Protocol: "icmp"}}
+	eng := mustStart(t, cfg)
+
+	conn := socketAPIConn(t, "http://"+eng.Addr("api"), "secret")
+	defer conn.Close()
+	id := socketproto.ClientIDBase + 710
+	payload, err := socketproto.EncodeConnect(socketproto.Connect{
+		IPVersion: socketproto.AddrVersion(netip.MustParseAddr("100.64.93.2")),
+		Protocol:  socketproto.ProtoICMP,
+		DestIP:    netip.MustParseAddr("100.64.93.2"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := socketproto.WriteFrame(conn, socketproto.Frame{ID: id, Action: socketproto.ActionConnect, Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	frame := readSocketFrame(t, conn)
+	if frame.Action != socketproto.ActionClose || !bytes.Contains(frame.Payload, []byte("blocked by outbound ACL")) {
+		t.Fatalf("ICMP ACL rejection frame = action %d payload %q", frame.Action, frame.Payload)
+	}
+
+	id++
+	payload, err = socketproto.EncodeConnect(socketproto.Connect{
+		IPVersion: socketproto.AddrVersion(netip.MustParseAddr("fd7a:115c:a1e0::99")),
+		Protocol:  socketproto.ProtoTCP,
+		DestIP:    netip.MustParseAddr("fd7a:115c:a1e0::99"),
+		DestPort:  443,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := socketproto.WriteFrame(conn, socketproto.Frame{ID: id, Action: socketproto.ActionConnect, Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	frame = readSocketFrame(t, conn)
+	if frame.Action != socketproto.ActionClose || !bytes.Contains(frame.Payload, []byte("AllowedIPs")) {
+		t.Fatalf("IPv6 rejection frame = action %d payload %q", frame.Action, frame.Payload)
 	}
 }
 
@@ -486,6 +545,51 @@ func socketAPIUDPEcho(t *testing.T, api, token string, dst netip.AddrPort, msg [
 		t.Fatalf("UDP data failed: action %d payload %q", frame.Action, frame.Payload)
 	}
 	return frame.Payload
+}
+
+func socketAPIICMPEcho(t *testing.T, api, token string, dst netip.Addr, msg []byte) []byte {
+	t.Helper()
+	conn := socketAPIConn(t, api, token)
+	defer conn.Close()
+	id := socketproto.ClientIDBase + 12
+	payload, err := socketproto.EncodeConnect(socketproto.Connect{
+		IPVersion: socketproto.AddrVersion(dst),
+		Protocol:  socketproto.ProtoICMP,
+		DestIP:    dst,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := socketproto.WriteFrame(conn, socketproto.Frame{ID: id, Action: socketproto.ActionConnect, Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	frame := readSocketFrame(t, conn)
+	if frame.Action != socketproto.ActionAccept {
+		t.Fatalf("ICMP connect failed: action %d payload %q", frame.Action, frame.Payload)
+	}
+	req, err := (&icmp.Message{
+		Type: ipv4.ICMPTypeEcho,
+		Body: &icmp.Echo{ID: 0x1234, Seq: 7, Data: msg},
+	}).Marshal(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := socketproto.WriteFrame(conn, socketproto.Frame{ID: id, Action: socketproto.ActionData, Payload: req}); err != nil {
+		t.Fatal(err)
+	}
+	frame = readSocketFrame(t, conn)
+	if frame.Action != socketproto.ActionData {
+		t.Fatalf("ICMP data failed: action %d payload %q", frame.Action, frame.Payload)
+	}
+	reply, err := icmp.ParseMessage(1, frame.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	echo, ok := reply.Body.(*icmp.Echo)
+	if !ok || reply.Type != ipv4.ICMPTypeEchoReply || echo.Seq != 7 {
+		t.Fatalf("unexpected ICMP reply: %#v", reply)
+	}
+	return echo.Data
 }
 
 func socketAPIConn(t *testing.T, api, token string) net.Conn {

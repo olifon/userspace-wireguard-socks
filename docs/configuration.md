@@ -283,7 +283,8 @@ userspace netstack.
 
 `/v1/socket` is the HTTP-upgraded raw socket protocol documented in
 [`docs/socket-protocol.md`](socket-protocol.md). Connected TCP/UDP sockets do
-not need `socket_api.bind`. TCP listener sockets require `socket_api.bind:
+not need `socket_api.bind`; connected ICMP ping sockets are also supported and
+are checked against outbound ACL rules with protocol `icmp`. TCP listener sockets require `socket_api.bind:
 true` or `proxy.bind: true`. UDP listener-style sockets are allowed even when
 `bind` is false, but
 they are established-only unless `socket_api.udp_inbound: true`: replies are
