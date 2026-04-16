@@ -2224,6 +2224,33 @@ func addrPortFromNetAddr(addr net.Addr) netip.AddrPort {
 	return netip.AddrPort{}
 }
 
+func addrFromNetAddr(addr net.Addr) netip.Addr {
+	if addr == nil {
+		return netip.Addr{}
+	}
+	switch a := addr.(type) {
+	case interface{ Addr() netip.Addr }:
+		return a.Addr()
+	case *net.TCPAddr:
+		ip, ok := netip.AddrFromSlice(a.IP)
+		if ok {
+			return ip.Unmap()
+		}
+	case *net.UDPAddr:
+		ip, ok := netip.AddrFromSlice(a.IP)
+		if ok {
+			return ip.Unmap()
+		}
+	}
+	if ip, err := netip.ParseAddr(addr.String()); err == nil {
+		return ip.Unmap()
+	}
+	if ap, err := netip.ParseAddrPort(addr.String()); err == nil {
+		return ap.Addr()
+	}
+	return netip.Addr{}
+}
+
 func addrPortFromString(s string) netip.AddrPort {
 	ap, err := netip.ParseAddrPort(s)
 	if err == nil {
