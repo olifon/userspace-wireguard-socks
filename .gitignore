@@ -18,6 +18,8 @@
 *.o
 *.so
 
+/tasks
+
 # Local, real VPN configs used during manual testing. The repository examples
 # use demonstration-only keys instead.
 /*.local.conf
