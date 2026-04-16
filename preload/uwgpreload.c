@@ -44,6 +44,10 @@ static int force_dns_dgram_fd(int fd);
 #define SOCK_TYPE_MASK 0xf
 #endif
 
+#ifndef IPPROTO_ICMPV6
+#define IPPROTO_ICMPV6 58
+#endif
+
 #define MAX_PACKET (1u << 20)
 
 static struct tracked_fd tracked[MAX_TRACKED_FD];
@@ -1281,6 +1285,15 @@ static void tracked_bind_text(const struct tracked_fd *state, char *ip,
   default_bind_text(state->domain == AF_INET6 ? AF_INET6 : AF_INET, ip, len);
 }
 
+static int is_icmp_protocol(int protocol) {
+  return protocol == IPPROTO_ICMP || protocol == IPPROTO_ICMPV6;
+}
+
+static int is_icmp_state(const struct tracked_fd *state) {
+  return state && ((state->type & SOCK_TYPE_MASK) == SOCK_DGRAM) &&
+         is_icmp_protocol(state->protocol);
+}
+
 static int parse_connect_reply(const char *reply, char *ip, size_t ip_len,
                                uint16_t *port) {
   unsigned int port_u = 0;
@@ -1360,6 +1373,11 @@ static int proxy_connect(int fd, const struct sockaddr *addr,
   bind_port = state.bound ? state.bind_port : 0;
   int base = state.type & SOCK_TYPE_MASK;
   const char *proto = base == SOCK_DGRAM ? "udp" : "tcp";
+  if (is_icmp_state(&state)) {
+    proto = "icmp";
+    port = 0;
+    bind_port = 0;
+  }
   char line[256], ok[128];
   snprintf(line, sizeof(line), "CONNECT %s %s %u %s %u\n", proto, ip,
            (unsigned)port, bind_ip, (unsigned)bind_port);
@@ -1531,8 +1549,12 @@ int socket(int domain, int type, int protocol) {
   if (tracked_reentrant_socket_create(domain, type))
     return -1;
   int fd = real_socket_call(domain, type, protocol);
+  int base = type & SOCK_TYPE_MASK;
+  if (!fd_ok(fd) && (domain == AF_INET || domain == AF_INET6) &&
+      base == SOCK_DGRAM && is_icmp_protocol(protocol)) {
+    fd = real_socket_call(domain, type, 0);
+  }
   if (fd_ok(fd) && (domain == AF_INET || domain == AF_INET6)) {
-    int base = type & SOCK_TYPE_MASK;
     if (base == SOCK_STREAM || base == SOCK_DGRAM) {
       struct tracked_fd state;
       memset(&state, 0, sizeof(state));
@@ -1811,7 +1833,7 @@ ssize_t sendto(int fd, const void *buf, size_t len, int flags,
   int family = dest ? dest->sa_family : 0;
   int needs_listener = fd_ok(fd) && state.active &&
                        (state.type & SOCK_TYPE_MASK) == SOCK_DGRAM &&
-                       !state.proxied;
+                       !state.proxied && !is_icmp_state(&state);
   hot_path_rdunlock();
   if (fd_ok(fd) && state.active && (state.type & SOCK_TYPE_MASK) == SOCK_DGRAM &&
       !state.proxied) {
@@ -1825,6 +1847,14 @@ ssize_t sendto(int fd, const void *buf, size_t len, int flags,
       tracked_store(fd, &state);
       hot_path_wrunlock();
       return real_sendto_call(fd, buf, len, flags, dest, destlen);
+    } else if (is_icmp_state(&state)) {
+      if (!dest) {
+        errno = EDESTADDRREQ;
+        return -1;
+      }
+      if (proxy_connect(fd, dest, destlen) != 0)
+        return -1;
+      return write_packet(fd, buf, len) == 0 ? (ssize_t)len : -1;
     } else {
       if (ensure_udp_listener(fd, family == AF_INET6 ? AF_INET6 : AF_INET) != 0)
         return -1;
@@ -1842,7 +1872,7 @@ ssize_t sendto(int fd, const void *buf, size_t len, int flags,
     return (ssize_t)cold_syscall(SYS_sendto, fd, (long)buf, (long)len, flags,
                                  (long)dest, destlen);
   if (fd_ok(fd) && state.proxied && state.kind == KIND_UDP_CONNECTED) {
-    if (dest) {
+    if (dest && !is_icmp_state(&state)) {
       errno = EISCONN;
       return -1;
     }
@@ -1870,7 +1900,8 @@ ssize_t recvfrom(int fd, void *buf, size_t len, int flags, struct sockaddr *src,
   int cold = fd_ok(fd) && should_cold_path(&state);
   hot_path_rdunlock();
   if (fd_ok(fd) && state.active && !state.proxied &&
-      (state.type & SOCK_TYPE_MASK) == SOCK_DGRAM && state.bound) {
+      (state.type & SOCK_TYPE_MASK) == SOCK_DGRAM && state.bound &&
+      !is_icmp_state(&state)) {
     int family = state.bind_family ? state.bind_family :
                  (state.domain == AF_INET6 ? AF_INET6 : AF_INET);
     if (ensure_udp_listener(fd, family) != 0)

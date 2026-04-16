@@ -507,6 +507,15 @@ func (t *tracer) handleSocket(tid int, regs unix.PtraceRegs, seccompStop bool) e
 		fmt.Fprintf(os.Stderr, "uwgwrapper: pending socket tid=%d domain=%d type=%d proto=%d\n", tid, domain, typ, proto)
 	}
 	t.pending[tid] = pendingSyscall{kind: pendingSocket, domain: domain, typ: typ, proto: proto}
+	if base == unix.SOCK_DGRAM && isICMPProtocol(proto) {
+		regs.Rdx = 0
+		if err := unix.PtraceSetRegs(tid, &regs); err != nil {
+			if errors.Is(err, syscall.ESRCH) {
+				return nil
+			}
+			return err
+		}
+	}
 	return t.resumeForExit(tid)
 }
 
@@ -529,6 +538,10 @@ func (t *tracer) handleConnect(tid int, regs unix.PtraceRegs, seccompStop bool) 
 	if int(state.Type)&0xf == unix.SOCK_DGRAM {
 		proto = "udp"
 		kind = uwgshared.KindUDPConnected
+		if isICMPProtocol(int(state.Protocol)) {
+			proto = "icmp"
+			addr.port = 0
+		}
 	}
 	managerLocal, err := t.openManagerSocket()
 	if err != nil {
@@ -746,38 +759,75 @@ func (t *tracer) handleSendto(tid int, regs unix.PtraceRegs, seccompStop bool) e
 	if state.Active != 0 && state.Proxied == 0 && int(state.Type)&0xf == unix.SOCK_DGRAM {
 		dest, err := t.readSockaddr(tid, uintptr(regs.R8), regs.R9)
 		if err == nil && (dest.family == unix.AF_INET || dest.family == unix.AF_INET6) && !isLoopback(dest) {
-			managerLocal, openErr := t.openManagerSocket()
-			if openErr != nil {
-				return t.finishEmulated(tid, regs, -errnoResult(openErr), seccompStop)
-			}
-			bindIP := uwgshared.BytesToString(state.BindIP[:])
-			if bindIP == "" {
-				bindIP = defaultBindIP(state.Domain)
-			}
-			reply, reqErr := managerRequestLine(managerLocal, fmt.Sprintf("LISTEN udp %s %d %d %d\n", bindIP, state.BindPort, boolToInt(state.ReuseAddr != 0), boolToInt(state.ReusePort != 0)))
-			if reqErr != nil {
-				_ = unix.Close(managerLocal)
-				return t.finishEmulated(tid, regs, -errnoResult(reqErr), seccompStop)
-			}
-			actualBind, ok := parseUDPListenReplyLine(reply)
-			if !ok {
-				_ = unix.Close(managerLocal)
-				return t.finishEmulated(tid, regs, -int64(syscall.ECONNREFUSED), seccompStop)
-			}
-			t.setLocalFD(procFD{pid: t.groupFor(tid), fd: fd}, managerLocal)
-			t.shared.Update(fd, func(entry *uwgshared.TrackedFD) {
-				entry.Proxied = 1
-				entry.Kind = uwgshared.KindUDPListener
-				entry.HotReady = 0
-				entry.Bound = 1
-				if actualBind.Port() != 0 {
-					entry.BindPort = actualBind.Port()
+			if isICMPProtocol(int(state.Protocol)) {
+				managerLocal, openErr := t.openManagerSocket()
+				if openErr != nil {
+					return t.finishEmulated(tid, regs, -errnoResult(openErr), seccompStop)
 				}
-				if uwgshared.BytesToString(entry.BindIP[:]) == "" {
-					uwgshared.StringToBytes(entry.BindIP[:], defaultBindIP(entry.Domain))
+				bindIP := uwgshared.BytesToString(state.BindIP[:])
+				if bindIP == "" {
+					bindIP = defaultBindIP(state.Domain)
 				}
-			})
-			state = t.shared.Snapshot(fd)
+				reply, reqErr := managerRequestLine(managerLocal, fmt.Sprintf("CONNECT icmp %s 0 %s 0\n", dest.ip, bindIP))
+				if reqErr != nil {
+					_ = unix.Close(managerLocal)
+					return t.finishEmulated(tid, regs, -errnoResult(reqErr), seccompStop)
+				}
+				actualBind, ok := parseConnectReplyLine(reply)
+				if !ok {
+					_ = unix.Close(managerLocal)
+					return t.finishEmulated(tid, regs, -int64(syscall.ECONNREFUSED), seccompStop)
+				}
+				t.setLocalFD(procFD{pid: t.groupFor(tid), fd: fd}, managerLocal)
+				t.shared.Update(fd, func(entry *uwgshared.TrackedFD) {
+					entry.Proxied = 1
+					entry.Kind = uwgshared.KindUDPConnected
+					entry.HotReady = 0
+					entry.Bound = 1
+					if actualBind.IsValid() {
+						entry.BindFamily = int32(addrFamilyForAddr(actualBind.Addr()))
+						entry.BindPort = actualBind.Port()
+						uwgshared.StringToBytes(entry.BindIP[:], actualBind.Addr().String())
+					}
+					entry.RemoteFamily = int32(dest.family)
+					entry.RemotePort = 0
+					uwgshared.StringToBytes(entry.RemoteIP[:], dest.ip)
+				})
+				state = t.shared.Snapshot(fd)
+			} else {
+				managerLocal, openErr := t.openManagerSocket()
+				if openErr != nil {
+					return t.finishEmulated(tid, regs, -errnoResult(openErr), seccompStop)
+				}
+				bindIP := uwgshared.BytesToString(state.BindIP[:])
+				if bindIP == "" {
+					bindIP = defaultBindIP(state.Domain)
+				}
+				reply, reqErr := managerRequestLine(managerLocal, fmt.Sprintf("LISTEN udp %s %d %d %d\n", bindIP, state.BindPort, boolToInt(state.ReuseAddr != 0), boolToInt(state.ReusePort != 0)))
+				if reqErr != nil {
+					_ = unix.Close(managerLocal)
+					return t.finishEmulated(tid, regs, -errnoResult(reqErr), seccompStop)
+				}
+				actualBind, ok := parseUDPListenReplyLine(reply)
+				if !ok {
+					_ = unix.Close(managerLocal)
+					return t.finishEmulated(tid, regs, -int64(syscall.ECONNREFUSED), seccompStop)
+				}
+				t.setLocalFD(procFD{pid: t.groupFor(tid), fd: fd}, managerLocal)
+				t.shared.Update(fd, func(entry *uwgshared.TrackedFD) {
+					entry.Proxied = 1
+					entry.Kind = uwgshared.KindUDPListener
+					entry.HotReady = 0
+					entry.Bound = 1
+					if actualBind.Port() != 0 {
+						entry.BindPort = actualBind.Port()
+					}
+					if uwgshared.BytesToString(entry.BindIP[:]) == "" {
+						uwgshared.StringToBytes(entry.BindIP[:], defaultBindIP(entry.Domain))
+					}
+				})
+				state = t.shared.Snapshot(fd)
+			}
 		}
 	}
 	if state.Proxied == 0 {
@@ -802,7 +852,7 @@ func (t *tracer) handleSendto(tid int, regs unix.PtraceRegs, seccompStop bool) e
 		}
 		return t.finishEmulated(tid, regs, int64(n), seccompStop)
 	case uwgshared.KindUDPConnected:
-		if regs.R8 != 0 {
+		if regs.R8 != 0 && !isICMPProtocol(int(state.Protocol)) {
 			return t.finishEmulated(tid, regs, -int64(syscall.EISCONN), seccompStop)
 		}
 		if err := writePacketFD(localFD, buf); err != nil {
@@ -833,7 +883,7 @@ func (t *tracer) handleSendto(tid int, regs unix.PtraceRegs, seccompStop bool) e
 func (t *tracer) handleRecvfrom(tid int, regs unix.PtraceRegs, seccompStop bool) error {
 	fd := int(int32(regs.Rdi))
 	state := t.shared.Snapshot(fd)
-	if state.Active != 0 && state.Proxied == 0 && int(state.Type)&0xf == unix.SOCK_DGRAM && state.Bound != 0 {
+	if state.Active != 0 && state.Proxied == 0 && int(state.Type)&0xf == unix.SOCK_DGRAM && state.Bound != 0 && !isICMPProtocol(int(state.Protocol)) {
 		managerLocal, openErr := t.openManagerSocket()
 		if openErr != nil {
 			return t.finishEmulated(tid, regs, -errnoResult(openErr), seccompStop)
@@ -2091,6 +2141,10 @@ func setEnv(env []string, key, value string) []string {
 func isLoopback(addr tracedSockaddr) bool {
 	ip := net.ParseIP(addr.ip)
 	return ip != nil && ip.IsLoopback()
+}
+
+func isICMPProtocol(protocol int) bool {
+	return protocol == unix.IPPROTO_ICMP || protocol == unix.IPPROTO_ICMPV6
 }
 
 var ioEOF = io.EOF
