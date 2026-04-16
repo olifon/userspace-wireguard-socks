@@ -18,6 +18,8 @@
 *.o
 *.so
 
+turn-open-relay.yaml
+
 /tasks
 
 # Local, real VPN configs used during manual testing. The repository examples

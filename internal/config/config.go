@@ -107,6 +107,7 @@ type Proxy struct {
 	IPv6                      *bool           `yaml:"ipv6"`
 	UDPAssociate              *bool           `yaml:"udp_associate"`
 	Bind                      *bool           `yaml:"bind"`
+	LowBind                   *bool           `yaml:"lowbind"`
 	PreferIPv6ForUDPOverSOCKS *bool           `yaml:"prefer_ipv6_for_udp_over_socks"`
 	HonorEnvironment          *bool           `yaml:"honor_environment"`
 	OutboundProxies           []OutboundProxy `yaml:"outbound_proxies"`
@@ -243,6 +244,7 @@ func Default() Config {
 			FallbackDirect:            boolPtr(true),
 			UDPAssociate:              boolPtr(true),
 			Bind:                      boolPtr(false),
+			LowBind:                   boolPtr(false),
 			PreferIPv6ForUDPOverSOCKS: boolPtr(false),
 			HonorEnvironment:          boolPtr(true),
 		},
@@ -337,6 +339,10 @@ func (c *Config) Normalize() error {
 	if c.Proxy.Bind == nil {
 		f := false
 		c.Proxy.Bind = &f
+	}
+	if c.Proxy.LowBind == nil {
+		f := false
+		c.Proxy.LowBind = &f
 	}
 	if c.Proxy.PreferIPv6ForUDPOverSOCKS == nil {
 		f := false
