@@ -532,7 +532,6 @@ func (e *Engine) RemovePeer(publicKey string) error {
 		return err
 	}
 	e.cfgMu.Lock()
-	defer e.cfgMu.Unlock()
 	next := make([]config.Peer, 0, len(e.cfg.WireGuard.Peers))
 	found := false
 	for _, p := range e.cfg.WireGuard.Peers {
@@ -543,15 +542,18 @@ func (e *Engine) RemovePeer(publicKey string) error {
 		next = append(next, p)
 	}
 	if !found {
+		e.cfgMu.Unlock()
 		return ErrPeerNotFound
 	}
 	if e.dev != nil {
 		uapi := fmt.Sprintf("public_key=%s\nremove=true\n", hex.EncodeToString(key[:]))
 		if err := e.dev.IpcSet(uapi); err != nil {
+			e.cfgMu.Unlock()
 			return err
 		}
 	}
 	e.cfg.WireGuard.Peers = next
+	e.cfgMu.Unlock()
 	if err := e.applyPeerTrafficState(next); err != nil {
 		return err
 	}
