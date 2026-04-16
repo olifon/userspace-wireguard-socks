@@ -77,7 +77,7 @@ func TestWireguardGuard_HandshakeAndCookies(t *testing.T) {
 	response[0] = PacketHandshakeResponse
 	binary.LittleEndian.PutUint32(response[4:8], 456)  // sender index (server)
 	binary.LittleEndian.PutUint32(response[8:12], 123) // receiver index (client)
-	
+
 	if !guard.ProcessOutbound(response, remoteAddr, relayPort) {
 		t.Fatal("Outbound Handshake Response should be allowed")
 	}
@@ -93,8 +93,8 @@ func TestWireguardGuard_HandshakeAndCookies(t *testing.T) {
 	data := make([]byte, MinDataPacketSize)
 	data[0] = PacketData
 	binary.LittleEndian.PutUint32(data[4:8], 456) // receiver ID = server's sender ID
-	binary.LittleEndian.PutUint64(data[8:16], 1)   // counter
-	
+	binary.LittleEndian.PutUint64(data[8:16], 1)  // counter
+
 	allowed, _ = guard.ProcessInbound(data, remoteAddr, relayPort)
 	if !allowed {
 		t.Error("Data packet should be allowed")
@@ -156,11 +156,11 @@ func TestWireguardGuard_DataLimit(t *testing.T) {
 	// skip mac1 for simplicity, just hack the guard
 	guard.mu.Lock()
 	sess := &WireguardSession{
-		RelayPort: relayPort,
-		RemoteAddr: remoteAddr.String(),
-		ClientPeerID: 123,
-		ServerPeerID: 456,
-		Verified: true,
+		RelayPort:     relayPort,
+		RemoteAddr:    remoteAddr.String(),
+		ClientPeerID:  123,
+		ServerPeerID:  456,
+		Verified:      true,
 		LastServerPkt: time.Now(),
 	}
 	guard.Sessions = append(guard.Sessions, sess)
@@ -170,7 +170,7 @@ func TestWireguardGuard_DataLimit(t *testing.T) {
 	data := make([]byte, 1024)
 	data[0] = PacketData
 	binary.LittleEndian.PutUint32(data[4:8], 456)
-	
+
 	for i := 0; i < 256; i++ {
 		allowed, _ := guard.ProcessInbound(data, remoteAddr, relayPort)
 		if !allowed {
@@ -196,9 +196,9 @@ func TestWireguardGuard_SessionOverflow(t *testing.T) {
 		addr := &net.UDPAddr{IP: net.ParseIP("1.1.1.1"), Port: 1000 + i}
 		guard.mu.Lock()
 		guard.Sessions = append(guard.Sessions, &WireguardSession{
-			RelayPort: relayPort,
+			RelayPort:  relayPort,
 			RemoteAddr: addr.String(),
-			Verified: false,
+			Verified:   false,
 		})
 		guard.mu.Unlock()
 	}
@@ -208,7 +208,7 @@ func TestWireguardGuard_SessionOverflow(t *testing.T) {
 	resp := make([]byte, HandshakeResponseSize)
 	resp[0] = PacketHandshakeResponse
 	binary.LittleEndian.PutUint32(resp[8:12], 123)
-	
+
 	if !guard.ProcessOutbound(resp, serverAddr, relayPort) {
 		t.Fatal("Outbound should be allowed even if table is full")
 	}

@@ -227,7 +227,7 @@ func (o *openRelayPion) authHandler(username, realm string, srcAddr net.Addr) ([
 	if !ok {
 		return nil, false
 	}
-	
+
 	// Split dynamic username: ORIGINAL_USERNAME---BASE64_ENCRYPTED_PK
 	baseUsername := username
 	var encryptedPK string

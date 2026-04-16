@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/reindertpelsma/userspace-wireguard-socks/internal/wgbind"
 	"golang.org/x/crypto/curve25519"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
-	"github.com/reindertpelsma/userspace-wireguard-socks/internal/wgbind"
 )
 
 func generateKeyPair() (priv, pub [32]byte) {
@@ -31,9 +31,9 @@ func TestWireguardTURNIntegration(t *testing.T) {
 		Realm: "test",
 		Users: []UserConfig{
 			{
-				Username:           "testuser",
-				Password:           "testpass",
-				WireguardMode:      "default-with-overwrite",
+				Username:      "testuser",
+				Password:      "testpass",
+				WireguardMode: "default-with-overwrite",
 			},
 		},
 	}
@@ -49,7 +49,7 @@ func TestWireguardTURNIntegration(t *testing.T) {
 
 	serverTun, _ := tun.CreateTUN("utun0", device.DefaultMTU)
 	serverDev := device.NewDevice(serverTun, conn.NewDefaultBind(), device.NewLogger(device.LogLevelSilent, ""))
-	
+
 	serverConfig := fmt.Sprintf(`private_key=%x
 listen_port=51820
 public_key=%x
@@ -61,7 +61,7 @@ allowed_ip=10.0.0.2/32
 
 	// 3. Setup Wireguard Client (Initiator) using TURNBind
 	clientTun, _ := tun.CreateTUN("utun1", device.DefaultMTU)
-	
+
 	turnBind := &wgbind.TURNBind{
 		Server:             "127.0.0.1:3478",
 		Username:           "testuser",
@@ -85,7 +85,7 @@ endpoint=127.0.0.1:51820
 	// Trigger handshake from client
 	// We can't easily write to TUN in this environment, but we can try to "send" via Bind if we had access.
 	// Actually, the device will try to send keepalives if configured, or we can just wait for it to try handshake
-	
+
 	// Wait for handshake
 	time.Sleep(5 * time.Second)
 

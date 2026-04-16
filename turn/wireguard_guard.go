@@ -27,10 +27,10 @@ const (
 )
 
 const (
-	DefaultMaxSessions = 1000
-	SessionTimeout = 30 * time.Second
-	UnverifiedDataLimit = 256 * 1024 // 256KB
-	SpecialPacketRateLimit = 4 // per second
+	DefaultMaxSessions     = 1000
+	SessionTimeout         = 30 * time.Second
+	UnverifiedDataLimit    = 256 * 1024 // 256KB
+	SpecialPacketRateLimit = 4          // per second
 )
 
 var (
@@ -47,18 +47,18 @@ const (
 )
 
 type WireguardSession struct {
-	RelayPort     int
-	RemoteAddr    string
-	ClientPeerID  uint32 // sender index from client
-	ServerPeerID  uint32 // sender index from server
-	Verified      bool
-	LastServerPkt time.Time
-	DoSDataCount  int64
-	RateLimitTime time.Time
+	RelayPort      int
+	RemoteAddr     string
+	ClientPeerID   uint32 // sender index from client
+	ServerPeerID   uint32 // sender index from server
+	Verified       bool
+	LastServerPkt  time.Time
+	DoSDataCount   int64
+	RateLimitTime  time.Time
 	RateLimitCount int
-	MaxCounter    uint64
-	ForwardCookie [16]byte
-	LastMac1      [16]byte
+	MaxCounter     uint64
+	ForwardCookie  [16]byte
+	LastMac1       [16]byte
 }
 
 type WireguardGuard struct {
@@ -75,11 +75,11 @@ type WireguardGuard struct {
 	DoSLevel      DoSLevel
 
 	// Stats for DoS detection
-	RoamCount      int
-	HandshakeCount int
-	RejectionCount int
-        DOSLowerTrigger int	
-	LastStatsReset time.Time
+	RoamCount       int
+	HandshakeCount  int
+	RejectionCount  int
+	DOSLowerTrigger int
+	LastStatsReset  time.Time
 }
 
 func NewWireguardGuard(publicKey [32]byte) *WireguardGuard {
@@ -230,28 +230,28 @@ func (g *WireguardGuard) handleInboundHandshakeInitiation(packet []byte, remoteA
 		if maxSess <= 0 {
 			maxSess = DefaultMaxSessions
 		}
-		
+
 		if len(g.Sessions) >= maxSess {
 			// Find a slot: 1. Expired, 2. Unverified
 			found := false
 			index := int(0)
 			sess := &WireguardSession{
-                                                RelayPort:    relayPort,
-                                                RemoteAddr:   remoteAddr.String(),
-                                                ClientPeerID: senderIndex,
-                                        }
+				RelayPort:    relayPort,
+				RemoteAddr:   remoteAddr.String(),
+				ClientPeerID: senderIndex,
+			}
 			for i, s := range g.Sessions {
 				expired := time.Since(s.LastServerPkt) > SessionTimeout
 				if expired || !s.Verified {
 					index = i
 					found = true
 					if expired {
-					         break
-				        }
+						break
+					}
 				}
 			}
 			if found {
-                                g.Sessions[index] = sess
+				g.Sessions[index] = sess
 			} else {
 				g.RejectionCount++
 				return false, nil // All slots are verified and active
@@ -350,7 +350,7 @@ func (g *WireguardGuard) handleInboundOther(packet []byte, remoteAddr net.Addr, 
 	// Roaming check
 	if sess.RemoteAddr != clientAddrStr {
 		g.RoamCount++
-		// User said: "if the client's IP+PORT changed, then do NOT update the session, 
+		// User said: "if the client's IP+PORT changed, then do NOT update the session,
 		// since we haven't verified it. Server will send to new endpoint which will update the session entry."
 	}
 
@@ -382,11 +382,11 @@ func (g *WireguardGuard) handleInboundOther(packet []byte, remoteAddr net.Addr, 
 		counter := binary.LittleEndian.Uint64(packet[8:16])
 		if sess.MaxCounter > 0 {
 			if counter < sess.MaxCounter {
-				if sess.MaxCounter - counter > 4096 {
+				if sess.MaxCounter-counter > 4096 {
 					g.RejectionCount++
 					return false, nil
 				}
-			} else if counter - sess.MaxCounter > 65536 {
+			} else if counter-sess.MaxCounter > 65536 {
 				g.RejectionCount++
 				return false, nil
 			}
@@ -500,13 +500,13 @@ func (g *WireguardGuard) ProcessOutbound(packet []byte, remoteAddr net.Addr, rel
 					index = i
 					found = true
 					if expired {
-					       break
-				        }
+						break
+					}
 				}
 			}
 			if found {
 				g.Sessions[index] = sess
-		        } else {
+			} else {
 				return true // Should we still allow? Yes, trusted server
 			}
 		} else {
@@ -535,7 +535,7 @@ func (g *WireguardGuard) ProcessOutbound(packet []byte, remoteAddr net.Addr, rel
 func (g *WireguardGuard) handleOutboundCookieReply(packet []byte, sess *WireguardSession) {
 	nonce := packet[8:32]
 	encryptedCookie := packet[32:64]
-	
+
 	aead, err := chacha20poly1305.NewX(g.CookieKey[:])
 	if err != nil {
 		return
@@ -554,22 +554,22 @@ func (g *WireguardGuard) createCookieReply(initiationPacket []byte, remoteAddr n
 	reply := make([]byte, CookieReplySize)
 	reply[0] = PacketCookieReply
 	copy(reply[4:8], initiationPacket[4:8])
-	
+
 	nonce := make([]byte, 24)
 	rand.Read(nonce)
 	copy(reply[8:32], nonce)
-	
+
 	cookie := g.getCookie(getIP(remoteAddr))
-	
+
 	aead, _ := chacha20poly1305.NewX(g.CookieKey[:])
 	aead.Seal(reply[32:32], nonce, cookie[:], initiationPacket[116:132])
-	
+
 	return reply
 }
 
 func (g *WireguardGuard) maintenance() {
 	now := time.Now()
-	
+
 	// Update DoS level
 	if now.Sub(g.LastStatsReset) > 10*time.Second {
 		unverifiedCount := 0
@@ -593,14 +593,14 @@ func (g *WireguardGuard) maintenance() {
 			if g.DoSLevel > DoSLevelNone {
 				// Only decrease after some time of silence
 				if g.DOSLowerTrigger > 10 {
-                                      g.DOSLowerTrigger = 0
-				      g.DoSLevel--
-      				} else {
-			              g.DOSLowerTrigger++
-		 	        }
+					g.DOSLowerTrigger = 0
+					g.DoSLevel--
+				} else {
+					g.DOSLowerTrigger++
+				}
 			}
 		}
-		
+
 		g.RoamCount = 0
 		g.HandshakeCount = 0
 		g.RejectionCount = 0
