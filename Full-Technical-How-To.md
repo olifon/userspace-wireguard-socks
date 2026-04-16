@@ -139,9 +139,11 @@ Application -> uwgpreload.so overriding libc functions -> (local UNIX socket fil
 ```
 
 Supported by the wrapper
-- UDP/TCP sockets. ICMP ping sockets not supported
+- UDP/TCP sockets and outbound unprivileged ICMP ping sockets (`SOCK_DGRAM` + `IPPROTO_ICMP`)
 - Binding TCP listener sockets and unconnected UDP sockets to the WireGuard tunnel. Tunnel-side binding is disabled by default; enable it with `proxy.bind`/`socket_api.bind` in `uwgsocks`, and enable ports below 1024 with `proxy.lowbind`.
 - Connected TCP/UDP sockets preserve explicit `bind(2)` source IP/port when the destination is WireGuard-routed.
+- IPv6 is supported when the WireGuard configuration has IPv6 AllowedIPs. If an application attempts IPv6 without tunnel IPv6, the wrapper receives an immediate rejection so normal Happy Eyeballs/fallback logic can try IPv4.
+- IPv6 link-local tunnel addresses work when `filtering.drop_ipv6_link_local_multicast` is disabled on the relevant uwgsocks instances.
 - Unconnected UDP sockets can send to many peers. If binding is not enabled, inbound UDP is established-only: replies are delivered only from remotes the socket recently sent to.
 - Works across forks, multi process, multiple threads and executable boundaries
 - Full support for DNS tunneling to through Wireguard

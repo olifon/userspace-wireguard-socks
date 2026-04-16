@@ -6,6 +6,8 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
+#include <netinet/ip_icmp.h>
+#include <netinet/icmp6.h>
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,6 +46,48 @@ static int env_int_or_default(const char *name, int fallback) {
         return fallback;
     }
     return (int)parsed;
+}
+
+static unsigned short icmp_checksum(const void *data, size_t len) {
+    const unsigned short *words = (const unsigned short *)data;
+    unsigned long sum = 0;
+    while (len > 1) {
+        sum += *words++;
+        len -= 2;
+    }
+    if (len) {
+        unsigned short last = 0;
+        memcpy(&last, words, 1);
+        sum += last;
+    }
+    while (sum >> 16) {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    return (unsigned short)~sum;
+}
+
+static int fill_sockaddr(const char *ip, const char *port, int ipv6, struct sockaddr_storage *ss, socklen_t *len) {
+    memset(ss, 0, sizeof(*ss));
+    if (ipv6) {
+        struct sockaddr_in6 *addr = (struct sockaddr_in6 *)ss;
+        addr->sin6_family = AF_INET6;
+        addr->sin6_port = htons((unsigned short)atoi(port));
+        if (inet_pton(AF_INET6, ip, &addr->sin6_addr) != 1) {
+            perror("inet_pton6");
+            return 1;
+        }
+        *len = sizeof(*addr);
+        return 0;
+    }
+    struct sockaddr_in *addr = (struct sockaddr_in *)ss;
+    addr->sin_family = AF_INET;
+    addr->sin_port = htons((unsigned short)atoi(port));
+    if (inet_pton(AF_INET, ip, &addr->sin_addr) != 1) {
+        perror("inet_pton");
+        return 1;
+    }
+    *len = sizeof(*addr);
+    return 0;
 }
 
 static int echo_connected(int fd, const char *message) {
@@ -155,6 +199,65 @@ static int echo_connected_udp_nopoll(int fd, const char *message) {
     buf[n] = 0;
     printf("%s", buf);
     return strcmp(buf, message) == 0 ? 0 : 1;
+}
+
+static int echo_icmp_connected(int fd, const char *message, int ipv6) {
+    unsigned char packet[1500];
+    size_t payload_len = strlen(message);
+    if (payload_len > sizeof(packet) - 64) {
+        fprintf(stderr, "icmp payload too large\n");
+        return 1;
+    }
+    size_t header_len = ipv6 ? sizeof(struct icmp6_hdr) : sizeof(struct icmphdr);
+    memset(packet, 0, header_len + payload_len);
+    if (ipv6) {
+        struct icmp6_hdr *hdr = (struct icmp6_hdr *)packet;
+        hdr->icmp6_type = ICMP6_ECHO_REQUEST;
+        hdr->icmp6_code = 0;
+        hdr->icmp6_id = htons((unsigned short)(getpid() & 0xffff));
+        hdr->icmp6_seq = htons(7);
+    } else {
+        struct icmphdr *hdr = (struct icmphdr *)packet;
+        hdr->type = ICMP_ECHO;
+        hdr->code = 0;
+        hdr->un.echo.id = htons((unsigned short)(getpid() & 0xffff));
+        hdr->un.echo.sequence = htons(7);
+    }
+    memcpy(packet + header_len, message, payload_len);
+    if (!ipv6) {
+        struct icmphdr *hdr = (struct icmphdr *)packet;
+        hdr->checksum = icmp_checksum(packet, header_len + payload_len);
+    }
+    if (send(fd, packet, header_len + payload_len, 0) != (ssize_t)(header_len + payload_len)) {
+        perror("icmp send");
+        return 1;
+    }
+    unsigned char reply[1500];
+    ssize_t n = recv(fd, reply, sizeof(reply), 0);
+    if (n < (ssize_t)header_len) {
+        perror("icmp recv");
+        return 1;
+    }
+    if (ipv6) {
+        struct icmp6_hdr *hdr = (struct icmp6_hdr *)reply;
+        if (hdr->icmp6_type != ICMP6_ECHO_REPLY || ntohs(hdr->icmp6_seq) != 7) {
+            fprintf(stderr, "unexpected icmp6 reply\n");
+            return 1;
+        }
+    } else {
+        struct icmphdr *hdr = (struct icmphdr *)reply;
+        if (hdr->type != ICMP_ECHOREPLY || ntohs(hdr->un.echo.sequence) != 7) {
+            fprintf(stderr, "unexpected icmp reply\n");
+            return 1;
+        }
+    }
+    size_t got_payload = (size_t)n - header_len;
+    if (got_payload != payload_len || memcmp(reply + header_len, message, payload_len) != 0) {
+        fprintf(stderr, "icmp payload mismatch\n");
+        return 1;
+    }
+    printf("%s", message);
+    return 0;
 }
 
 static int accept_one(int fd, const char *message) {
@@ -328,6 +431,7 @@ int main(int argc, char **argv) {
     int tcp_no_poll = 0;
     int udp_no_poll = 0;
     int udp_unconnected_no_poll = 0;
+    int use_icmp = 0;
     for (int i = 4; i < argc; i++) {
         if (strcmp(argv[i], "udp") == 0) {
             socktype = SOCK_DGRAM;
@@ -359,6 +463,9 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "udp-no-poll") == 0) {
             socktype = SOCK_DGRAM;
             udp_no_poll = 1;
+        } else if (strcmp(argv[i], "icmp") == 0) {
+            socktype = SOCK_DGRAM;
+            use_icmp = 1;
         } else {
             fprintf(stderr, "unknown option: %s\n", argv[i]);
             return 2;
@@ -389,7 +496,12 @@ int main(int argc, char **argv) {
         }
         return echo_connected(atoi(fd_s), argv[3]);
     }
-    int fd = socket(AF_INET, socktype, 0);
+    int ipv6 = strchr(argv[1], ':') != NULL;
+    int protocol = 0;
+    if (use_icmp) {
+        protocol = ipv6 ? IPPROTO_ICMPV6 : IPPROTO_ICMP;
+    }
+    int fd = socket(ipv6 ? AF_INET6 : AF_INET, socktype, protocol);
     if (fd < 0) {
         perror("socket");
         return 1;
@@ -401,22 +513,28 @@ int main(int argc, char **argv) {
     if (bind_from_env(fd) != 0) {
         return 1;
     }
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons((unsigned short)atoi(argv[2]));
-    if (inet_pton(AF_INET, argv[1], &addr.sin_addr) != 1) {
-        perror("inet_pton");
+    struct sockaddr_storage addr;
+    socklen_t addrlen = 0;
+    if (fill_sockaddr(argv[1], argv[2], ipv6, &addr, &addrlen) != 0) {
         return 1;
     }
     if (udp_unconnected) {
-        int rc = udp_unconnected_no_poll ? echo_unconnected_udp_nopoll(fd, &addr, argv[3]) : echo_unconnected_udp(fd, &addr, argv[3]);
+        if (ipv6) {
+            fprintf(stderr, "ipv6 unconnected udp is not implemented in this stub\n");
+            return 2;
+        }
+        int rc = udp_unconnected_no_poll ? echo_unconnected_udp_nopoll(fd, (const struct sockaddr_in *)&addr, argv[3]) : echo_unconnected_udp(fd, (const struct sockaddr_in *)&addr, argv[3]);
         close(fd);
         return rc;
     }
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+    if (connect(fd, (struct sockaddr *)&addr, addrlen) != 0) {
         perror("connect");
         return 1;
+    }
+    if (use_icmp) {
+        int rc = echo_icmp_connected(fd, argv[3], ipv6);
+        close(fd);
+        return rc;
     }
     if (use_dup) {
         int next = dup(fd);

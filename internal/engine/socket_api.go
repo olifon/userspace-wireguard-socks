@@ -159,7 +159,10 @@ func (s *socketServer) handleConnect(id uint64, req socketproto.Connect) error {
 		}
 		return s.openUDPConn(id, bind, dest, req.IPVersion)
 	case socketproto.ProtoICMP:
-		return errors.New("socket API ICMP sockets are not implemented yet")
+		if !destSet {
+			return errors.New("socket API ICMP requires a destination")
+		}
+		return s.openICMPConn(id, bind, dest, req.IPVersion)
 	default:
 		return fmt.Errorf("unsupported socket protocol %d", req.Protocol)
 	}
@@ -230,17 +233,47 @@ func (s *socketServer) openUDPConn(id uint64, bind, dest netip.AddrPort, version
 	return nil
 }
 
+func (s *socketServer) openICMPConn(id uint64, bind, dest netip.AddrPort, version uint8) error {
+	if bind.Port() != 0 || dest.Port() != 0 {
+		return errors.New("socket API ICMP does not use ports")
+	}
+	aclDest := netip.AddrPortFrom(dest.Addr(), 0)
+	if !s.e.outboundAllowed(s.src, aclDest, "icmp") {
+		return errProxyACL
+	}
+	if !s.e.allowedContains(dest.Addr()) {
+		return fmt.Errorf("%s does not match any WireGuard AllowedIPs", dest.Addr())
+	}
+	var bindIP netip.Addr
+	if bind.IsValid() {
+		bindIP = bind.Addr()
+	}
+	c, err := s.e.net.DialPingAddr(bindIP, dest.Addr())
+	if err != nil {
+		return err
+	}
+	ss := &socketSession{id: id, proto: socketproto.ProtoICMP, conn: c}
+	s.storeSession(ss)
+	local := netip.AddrPortFrom(addrFromNetAddr(c.LocalAddr()), 0)
+	if err := s.sendAccept(id, version, socketproto.ProtoICMP, local); err != nil {
+		s.closeSession(id, false)
+		return err
+	}
+	ss.startReader(s, false)
+	return nil
+}
+
 func (s *socketServer) dialSocket(ctx context.Context, network string, bind, dest netip.AddrPort) (net.Conn, error) {
 	if bind.Port() != 0 && bind.Port() < 1024 && !s.e.socketLowBindEnabled() {
 		return nil, errors.New("binding low ports is disabled")
 	}
+	if !s.e.allowedContains(dest.Addr()) {
+		return nil, fmt.Errorf("%s does not match any WireGuard AllowedIPs", dest.Addr())
+	}
 	if bind.IsValid() {
-		if !s.e.allowedContains(dest.Addr()) {
-			return nil, errors.New("source binding is only supported for WireGuard-routed destinations")
-		}
 		return s.e.dialNetstack(ctx, network, bind, dest)
 	}
-	return s.e.proxyDialWithSource(ctx, network, dest.String(), s.src, strings.HasPrefix(network, "udp"))
+	return s.e.dialNetstack(ctx, network, netip.AddrPort{}, dest)
 }
 
 func (s *socketServer) openTCPListener(id uint64, bind netip.AddrPort, version uint8) error {
