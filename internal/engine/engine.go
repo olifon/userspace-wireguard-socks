@@ -209,10 +209,10 @@ func (e *Engine) Start() error {
 	var bind conn.Bind
 	if e.cfg.TURN.Server != "" {
 		turnBind := &wgbind.TURNBind{
-			Server:   e.cfg.TURN.Server,
-			Username: e.cfg.TURN.Username,
-			Password: e.cfg.TURN.Password,
-			Realm:    e.cfg.TURN.Realm,
+			Server:       e.cfg.TURN.Server,
+			Username:     e.cfg.TURN.Username,
+			Password:     e.cfg.TURN.Password,
+			Realm:        e.cfg.TURN.Realm,
 			AllowedPeers: e.cfg.TURN.Permissions,
 		}
 		e.turnBind = turnBind
@@ -273,7 +273,7 @@ func (e *Engine) updateTURNPermissions() {
 	if e.turnBind == nil {
 		return
 	}
-	
+
 	e.cfgMu.RLock()
 	var ips []string = e.cfg.TURN.Permissions
 	for _, p := range e.cfg.WireGuard.Peers {
@@ -1930,9 +1930,9 @@ func (e *Engine) allowRelayPacket(packet []byte) bool {
 	}
 	network := ""
 	if proto == 6 {
-                network = "TCP"
+		network = "TCP"
 	} else if proto == 17 {
-                network = "UDP"
+		network = "UDP"
 	}
 	return e.relayAllowed(src, dst, network)
 }
@@ -2217,6 +2217,33 @@ func addrPortFromNetAddr(addr net.Addr) netip.AddrPort {
 		return ap
 	}
 	return netip.AddrPort{}
+}
+
+func addrFromNetAddr(addr net.Addr) netip.Addr {
+	if addr == nil {
+		return netip.Addr{}
+	}
+	switch a := addr.(type) {
+	case interface{ Addr() netip.Addr }:
+		return a.Addr()
+	case *net.TCPAddr:
+		ip, ok := netip.AddrFromSlice(a.IP)
+		if ok {
+			return ip.Unmap()
+		}
+	case *net.UDPAddr:
+		ip, ok := netip.AddrFromSlice(a.IP)
+		if ok {
+			return ip.Unmap()
+		}
+	}
+	if ip, err := netip.ParseAddr(addr.String()); err == nil {
+		return ip.Unmap()
+	}
+	if ap, err := netip.ParseAddrPort(addr.String()); err == nil {
+		return ap.Addr()
+	}
+	return netip.Addr{}
 }
 
 func addrPortFromString(s string) netip.AddrPort {
