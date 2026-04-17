@@ -56,6 +56,7 @@ static struct uwg_guardlock local_hot_path_guard;
 static struct uwg_shared_state *shared_state;
 static uint64_t syscall_passthrough_secret;
 static pthread_once_t shared_state_once = PTHREAD_ONCE_INIT;
+static pthread_once_t atfork_once = PTHREAD_ONCE_INIT;
 static __thread int tracked_read_depth;
 static __thread int tracked_write_depth;
 static __thread int hot_path_read_depth;
@@ -77,6 +78,9 @@ static ssize_t (*real_read_fn)(int, void *, size_t);
 static ssize_t (*real_write_fn)(int, void *, size_t);
 static ssize_t (*real_sendmsg_fn)(int, const struct msghdr *, int) = NULL;
 static ssize_t (*real_recvmsg_fn)(int, struct msghdr *, int) = NULL;
+static int (*real_sendmmsg_fn)(int, struct mmsghdr *, unsigned int, int);
+static int (*real_recvmmsg_fn)(int, struct mmsghdr *, unsigned int, int,
+                               struct timespec *);
 static int (*real_dup_fn)(int);
 static int (*real_dup2_fn)(int, int);
 static int (*real_dup3_fn)(int, int, int);
@@ -100,6 +104,8 @@ static void tracked_store(int fd, const struct tracked_fd *state);
 static void tracked_clear_fd(int fd);
 static void tracked_map_if_needed(void);
 static void tracked_map_once(void);
+static void install_atfork_once(void);
+static void atfork_child_reset(void);
 static int current_tid(void);
 static int tracked_lock_reentrant(void);
 static int tracked_reentrant_socket_fd(int fd);
@@ -122,6 +128,7 @@ struct uwg_stdio_cookie {
 };
 
 static void init_real(void) {
+  (void)pthread_once(&atfork_once, install_atfork_once);
   if (real_socket_fn)
     return;
   real_socket_fn = dlsym(RTLD_NEXT, "socket");
@@ -136,6 +143,8 @@ static void init_real(void) {
   real_send_fn = dlsym(RTLD_NEXT, "send");
   real_sendmsg_fn = dlsym(RTLD_NEXT, "sendmsg");
   real_recvmsg_fn = dlsym(RTLD_NEXT, "recvmsg");
+  real_sendmmsg_fn = dlsym(RTLD_NEXT, "sendmmsg");
+  real_recvmmsg_fn = dlsym(RTLD_NEXT, "recvmmsg");
   real_recv_fn = dlsym(RTLD_NEXT, "recv");
   real_write_fn = dlsym(RTLD_NEXT, "write");
   real_read_fn = dlsym(RTLD_NEXT, "read");
@@ -149,6 +158,19 @@ static void init_real(void) {
   real_getsockopt_fn = dlsym(RTLD_NEXT, "getsockopt");
   real_setsockopt_fn = dlsym(RTLD_NEXT, "setsockopt");
   real_fdopen_fn = dlsym(RTLD_NEXT, "fdopen");
+}
+
+static void install_atfork_once(void) {
+  (void)pthread_atfork(NULL, NULL, atfork_child_reset);
+}
+
+static void atfork_child_reset(void) {
+  tracked_read_depth = 0;
+  tracked_write_depth = 0;
+  hot_path_read_depth = 0;
+  hot_path_write_depth = 0;
+  memset(&local_tracked_lock, 0, sizeof(local_tracked_lock));
+  memset(&local_hot_path_guard, 0, sizeof(local_hot_path_guard));
 }
 
 static int real_socket_call(int domain, int type, int protocol) {
@@ -221,6 +243,24 @@ static ssize_t real_recvmsg_call(int sockfd, struct msghdr *msg, int flags) {
   if (use_passthrough_secret())
     return passthrough_syscall(SYS_recvmsg, sockfd, (long)msg, flags, 0, 0);
   return real_recvmsg_fn(sockfd, msg, flags);
+}
+
+static int real_sendmmsg_call(int sockfd, struct mmsghdr *msgvec,
+                              unsigned int vlen, int flags) {
+  if (use_passthrough_secret())
+    return (int)passthrough_syscall(SYS_sendmmsg, sockfd, (long)msgvec, vlen,
+                                    flags, 0);
+  return real_sendmmsg_fn ? real_sendmmsg_fn(sockfd, msgvec, vlen, flags) : -1;
+}
+
+static int real_recvmmsg_call(int sockfd, struct mmsghdr *msgvec,
+                              unsigned int vlen, int flags,
+                              struct timespec *timeout) {
+  if (use_passthrough_secret())
+    return (int)syscall(SYS_recvmmsg, sockfd, msgvec, vlen, flags, timeout,
+                        syscall_passthrough_secret);
+  return real_recvmmsg_fn ? real_recvmmsg_fn(sockfd, msgvec, vlen, flags, timeout)
+                          : -1;
 }
 
 
@@ -2425,9 +2465,6 @@ int setsockopt(int fd, int level, int optname, const void *optval,
 }
 
 ssize_t sendmsg(int fd, const struct msghdr *msg, int flags) {
-  static ssize_t (*real_sendmsg_fn)(int, const struct msghdr *, int) = NULL;
-  if (!real_sendmsg_fn)
-    real_sendmsg_fn = dlsym(RTLD_NEXT, "sendmsg");
   init_real();
   if (tracked_reentrant_socket_fd(fd))
     return -1;
@@ -2459,7 +2496,7 @@ ssize_t sendmsg(int fd, const struct msghdr *msg, int flags) {
     free(buf);
     return r;
   }
-  return real_sendmsg_fn ? real_sendmsg_fn(fd, msg, flags) : -1;
+  return real_sendmsg_call(fd, msg, flags);
 }
 
 ssize_t recvmsg(int fd, struct msghdr *msg, int flags) {
@@ -2493,14 +2530,10 @@ ssize_t recvmsg(int fd, struct msghdr *msg, int flags) {
     msg->msg_flags = 0;
     return r;
   }
-  return real_recvmsg_fn ? real_recvmsg_fn(fd, msg, flags) : -1;
+  return real_recvmsg_call(fd, msg, flags);
 }
 
 int sendmmsg(int fd, struct mmsghdr *vmessages, unsigned int vlen, int flags) {
-  static int (*real_sendmmsg_fn)(int, struct mmsghdr *, unsigned int, int) =
-      NULL;
-  if (!real_sendmmsg_fn)
-    real_sendmmsg_fn = dlsym(RTLD_NEXT, "sendmmsg");
   init_real();
   if (tracked_reentrant_socket_fd(fd))
     return -1;
@@ -2515,15 +2548,11 @@ int sendmmsg(int fd, struct mmsghdr *vmessages, unsigned int vlen, int flags) {
     }
     return (int)i;
   }
-  return real_sendmmsg_fn ? real_sendmmsg_fn(fd, vmessages, vlen, flags) : -1;
+  return real_sendmmsg_call(fd, vmessages, vlen, flags);
 }
 
 int recvmmsg(int fd, struct mmsghdr *vmessages, unsigned int vlen, int flags,
              struct timespec *timeout) {
-  static int (*real_recvmmsg_fn)(int, struct mmsghdr *, unsigned int, int,
-                                 struct timespec *) = NULL;
-  if (!real_recvmmsg_fn)
-    real_recvmmsg_fn = dlsym(RTLD_NEXT, "recvmmsg");
   init_real();
   if (tracked_reentrant_socket_fd(fd))
     return -1;
@@ -2539,7 +2568,5 @@ int recvmmsg(int fd, struct mmsghdr *vmessages, unsigned int vlen, int flags,
     }
     return (int)i;
   }
-  return real_recvmmsg_fn
-             ? real_recvmmsg_fn(fd, vmessages, vlen, flags, timeout)
-             : -1;
+  return real_recvmmsg_call(fd, vmessages, vlen, flags, timeout);
 }
