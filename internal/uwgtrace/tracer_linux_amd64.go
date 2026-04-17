@@ -55,6 +55,7 @@ type Options struct {
 
 type tracer struct {
 	seccompMode SeccompMode
+	secret      uint64
 	verbose     bool
 	fdproxy     string
 	shared      *uwgshared.Table
@@ -127,6 +128,56 @@ type tracedSockaddr struct {
 	port   uint16
 }
 
+type tracedMSghdr struct {
+	name       uintptr
+	nameLen    uint32
+	iov        uintptr
+	iovLen     uint64
+	control    uintptr
+	controlLen uint64
+	flags      int32
+}
+
+type tracedIovec struct {
+	base uintptr
+	len  int
+}
+
+const (
+	tracedIovecSize        = 16
+	tracedMSghdrSize       = 56
+	tracedMSghdrNameLenOff = 8
+	tracedMSghdrFlagsOff   = 48
+	tracedMMSghdrSize      = 64
+	tracedMMSghdrLenOff    = 56
+	tracedMaxIov           = 1024
+	tracedMaxIOBytes       = 16 << 20
+)
+
+func (t *tracer) trackedSnapshotGroup(group, fd int) uwgshared.TrackedFD {
+	return t.shared.Snapshot(group, fd)
+}
+
+func (t *tracer) trackedSnapshot(tid, fd int) uwgshared.TrackedFD {
+	return t.shared.Snapshot(t.groupFor(tid), fd)
+}
+
+func (t *tracer) trackedUpdateGroup(group, fd int, fn func(entry *uwgshared.TrackedFD)) {
+	t.shared.Update(group, fd, fn)
+}
+
+func (t *tracer) trackedUpdate(tid, fd int, fn func(entry *uwgshared.TrackedFD)) {
+	t.shared.Update(t.groupFor(tid), fd, fn)
+}
+
+func (t *tracer) trackedClearGroup(group, fd int) {
+	t.shared.Clear(group, fd)
+}
+
+func (t *tracer) trackedClear(tid, fd int) {
+	t.shared.Clear(t.groupFor(tid), fd)
+}
+
 func Run(opts Options) (int, error) {
 	if len(opts.Args) == 0 {
 		return 0, fmt.Errorf("missing target program")
@@ -155,6 +206,7 @@ func Run(opts Options) (int, error) {
 
 	t := &tracer{
 		seccompMode: opts.SeccompMode,
+		secret:      traceSecret(opts.Shared, opts.Env),
 		verbose:     opts.Verbose,
 		fdproxy:     opts.FDProxy,
 		shared:      opts.Shared,
@@ -380,7 +432,9 @@ func (t *tracer) handleStop(tid int, status syscall.WaitStatus) error {
 		}
 		return t.resume(tid)
 	case unix.PTRACE_EVENT_EXEC:
-		t.setTaskGroup(tid, t.groupFor(tid))
+		group := t.groupFor(tid)
+		t.setTaskGroup(tid, group)
+		t.reconcileExecGroup(group)
 		return t.resume(tid)
 	case unix.PTRACE_EVENT_SECCOMP:
 		if _, ok := t.pending[tid]; ok {
@@ -446,6 +500,9 @@ func (t *tracer) dispatchInterceptedSyscall(tid int, regs unix.PtraceRegs, secco
 	if nr < 0 {
 		return t.resume(tid)
 	}
+	if t.hasPassthroughSecret(nr, regs) {
+		return t.resumeDefault(tid, seccompStop)
+	}
 	t.countSyscall(nr)
 	if t.verbose {
 		fmt.Fprintf(os.Stderr, "uwgwrapper: tid=%d syscall=%d seccomp=%t rax=%d\n", tid, nr, seccompStop, int64(regs.Rax))
@@ -467,6 +524,14 @@ func (t *tracer) dispatchInterceptedSyscall(tid int, regs unix.PtraceRegs, secco
 		return t.handleSendto(tid, regs, seccompStop)
 	case unix.SYS_RECVFROM:
 		return t.handleRecvfrom(tid, regs, seccompStop)
+	case unix.SYS_SENDMSG:
+		return t.handleSendmsg(tid, regs, seccompStop)
+	case unix.SYS_RECVMSG:
+		return t.handleRecvmsg(tid, regs, seccompStop)
+	case unix.SYS_SENDMMSG:
+		return t.handleSendmmsg(tid, regs, seccompStop)
+	case unix.SYS_RECVMMSG:
+		return t.handleRecvmmsg(tid, regs, seccompStop)
 	case unix.SYS_READ:
 		return t.handleRead(tid, regs, seccompStop)
 	case unix.SYS_WRITE:
@@ -493,6 +558,43 @@ func (t *tracer) dispatchInterceptedSyscall(tid int, regs unix.PtraceRegs, secco
 		return t.handlePoll(tid, regs, true, seccompStop)
 	default:
 		return t.resumeDefault(tid, seccompStop)
+	}
+}
+
+func (t *tracer) hasPassthroughSecret(nr int64, regs unix.PtraceRegs) bool {
+	if t.secret == 0 || regs.R9 != t.secret {
+		return false
+	}
+	switch nr {
+	case unix.SYS_SENDTO, unix.SYS_RECVFROM:
+		return false
+	case unix.SYS_SOCKET,
+		unix.SYS_CONNECT,
+		unix.SYS_BIND,
+		unix.SYS_LISTEN,
+		unix.SYS_ACCEPT,
+		unix.SYS_ACCEPT4,
+		unix.SYS_CLOSE,
+		unix.SYS_READ,
+		unix.SYS_WRITE,
+		unix.SYS_SENDMSG,
+		unix.SYS_RECVMSG,
+		unix.SYS_SENDMMSG,
+		unix.SYS_RECVMMSG,
+		unix.SYS_DUP,
+		unix.SYS_DUP2,
+		unix.SYS_DUP3,
+		unix.SYS_GETSOCKNAME,
+		unix.SYS_GETPEERNAME,
+		unix.SYS_SHUTDOWN,
+		unix.SYS_FCNTL,
+		unix.SYS_GETSOCKOPT,
+		unix.SYS_SETSOCKOPT,
+		unix.SYS_POLL,
+		unix.SYS_PPOLL:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -525,7 +627,7 @@ func (t *tracer) handleSocket(tid int, regs unix.PtraceRegs, seccompStop bool) e
 
 func (t *tracer) handleConnect(tid int, regs unix.PtraceRegs, seccompStop bool) error {
 	fd := int(int32(regs.Rdi))
-	state := t.shared.Snapshot(fd)
+	state := t.trackedSnapshot(tid, fd)
 	if state.Active == 0 {
 		return t.resumeDefault(tid, seccompStop)
 	}
@@ -534,11 +636,11 @@ func (t *tracer) handleConnect(tid int, regs unix.PtraceRegs, seccompStop bool) 
 		return t.resumeDefault(tid, seccompStop)
 	}
 	if isLoopback(addr) {
-		t.shared.Clear(fd)
+		t.trackedClear(tid, fd)
 		return t.resumeDefault(tid, seccompStop)
 	}
 	if int(state.Type)&0xf == unix.SOCK_DGRAM && !isICMPProtocol(int(state.Protocol)) {
-		t.shared.Update(fd, func(entry *uwgshared.TrackedFD) {
+		t.trackedUpdate(tid, fd, func(entry *uwgshared.TrackedFD) {
 			entry.Kind = uwgshared.KindUDPConnected
 			entry.HotReady = 0
 			entry.RemoteFamily = int32(addr.family)
@@ -577,7 +679,7 @@ func (t *tracer) handleConnect(tid int, regs unix.PtraceRegs, seccompStop bool) 
 		fmt.Fprintf(os.Stderr, "uwgwrapper: connect fd=%d proto=%s remote=%s:%d bind=%s\n", fd, proto, addr.ip, addr.port, actualBind)
 	}
 	t.setLocalFD(procFD{pid: t.groupFor(tid), fd: fd}, managerLocal)
-	t.shared.Update(fd, func(entry *uwgshared.TrackedFD) {
+	t.trackedUpdate(tid, fd, func(entry *uwgshared.TrackedFD) {
 		entry.Proxied = 1
 		entry.Kind = kind
 		entry.HotReady = 0
@@ -626,7 +728,7 @@ func (t *tracer) openUDPConnected(tid, fd int, state uwgshared.TrackedFD, dest t
 		return state, syscall.ECONNREFUSED
 	}
 	t.setLocalFD(procFD{pid: t.groupFor(tid), fd: fd}, managerLocal)
-	t.shared.Update(fd, func(entry *uwgshared.TrackedFD) {
+	t.trackedUpdate(tid, fd, func(entry *uwgshared.TrackedFD) {
 		entry.Proxied = 1
 		entry.Kind = uwgshared.KindUDPConnected
 		entry.HotReady = 0
@@ -640,7 +742,7 @@ func (t *tracer) openUDPConnected(tid, fd int, state uwgshared.TrackedFD, dest t
 		entry.RemotePort = dest.port
 		uwgshared.StringToBytes(entry.RemoteIP[:], dest.ip)
 	})
-	return t.shared.Snapshot(fd), nil
+	return t.trackedSnapshot(tid, fd), nil
 }
 
 func remoteSockaddrFromState(state uwgshared.TrackedFD) (tracedSockaddr, bool) {
@@ -661,7 +763,7 @@ func remoteSockaddrFromState(state uwgshared.TrackedFD) (tracedSockaddr, bool) {
 
 func (t *tracer) handleBind(tid int, regs unix.PtraceRegs, seccompStop bool) error {
 	fd := int(int32(regs.Rdi))
-	state := t.shared.Snapshot(fd)
+	state := t.trackedSnapshot(tid, fd)
 	if state.Active == 0 {
 		return t.resumeDefault(tid, seccompStop)
 	}
@@ -670,10 +772,10 @@ func (t *tracer) handleBind(tid int, regs unix.PtraceRegs, seccompStop bool) err
 		return t.resumeDefault(tid, seccompStop)
 	}
 	if isLoopback(addr) {
-		t.shared.Clear(fd)
+		t.trackedClear(tid, fd)
 		return t.resumeDefault(tid, seccompStop)
 	}
-	t.shared.Update(fd, func(entry *uwgshared.TrackedFD) {
+	t.trackedUpdate(tid, fd, func(entry *uwgshared.TrackedFD) {
 		entry.Bound = 1
 		entry.BindFamily = int32(addr.family)
 		entry.BindPort = addr.port
@@ -684,7 +786,7 @@ func (t *tracer) handleBind(tid int, regs unix.PtraceRegs, seccompStop bool) err
 
 func (t *tracer) handleListen(tid int, regs unix.PtraceRegs, seccompStop bool) error {
 	fd := int(int32(regs.Rdi))
-	state := t.shared.Snapshot(fd)
+	state := t.trackedSnapshot(tid, fd)
 	if state.Active == 0 || int(state.Type)&0xf != unix.SOCK_STREAM {
 		return t.resumeDefault(tid, seccompStop)
 	}
@@ -708,7 +810,7 @@ func (t *tracer) handleListen(tid int, regs unix.PtraceRegs, seccompStop bool) e
 		return t.finishEmulated(tid, regs, -int64(syscall.ECONNREFUSED), seccompStop)
 	}
 	t.setLocalFD(procFD{pid: t.groupFor(tid), fd: fd}, managerLocal)
-	t.shared.Update(fd, func(entry *uwgshared.TrackedFD) {
+	t.trackedUpdate(tid, fd, func(entry *uwgshared.TrackedFD) {
 		entry.Proxied = 1
 		entry.Kind = uwgshared.KindTCPListener
 		entry.HotReady = 0
@@ -725,7 +827,7 @@ func (t *tracer) handleListen(tid int, regs unix.PtraceRegs, seccompStop bool) e
 
 func (t *tracer) handleAccept(tid int, regs unix.PtraceRegs, accept4 bool, seccompStop bool) error {
 	fd := int(int32(regs.Rdi))
-	state := t.shared.Snapshot(fd)
+	state := t.trackedSnapshot(tid, fd)
 	if state.Proxied == 0 || state.Kind != uwgshared.KindTCPListener {
 		return t.resumeDefault(tid, seccompStop)
 	}
@@ -806,7 +908,7 @@ func (t *tracer) handleClose(tid int, regs unix.PtraceRegs, seccompStop bool) er
 
 func (t *tracer) handleRead(tid int, regs unix.PtraceRegs, seccompStop bool) error {
 	fd := int(int32(regs.Rdi))
-	state := t.shared.Snapshot(fd)
+	state := t.trackedSnapshot(tid, fd)
 	if state.Proxied == 0 {
 		if state.Active != 0 && int(state.Type)&0xf == unix.SOCK_DGRAM && state.Kind == uwgshared.KindUDPConnected {
 			regs.R8 = 0
@@ -825,7 +927,7 @@ func (t *tracer) handleRead(tid int, regs unix.PtraceRegs, seccompStop bool) err
 
 func (t *tracer) handleWrite(tid int, regs unix.PtraceRegs, seccompStop bool) error {
 	fd := int(int32(regs.Rdi))
-	state := t.shared.Snapshot(fd)
+	state := t.trackedSnapshot(tid, fd)
 	if state.Proxied == 0 {
 		if state.Active != 0 && int(state.Type)&0xf == unix.SOCK_DGRAM && state.Kind == uwgshared.KindUDPConnected {
 			regs.R8 = 0
@@ -844,7 +946,7 @@ func (t *tracer) handleWrite(tid int, regs unix.PtraceRegs, seccompStop bool) er
 
 func (t *tracer) handleSendto(tid int, regs unix.PtraceRegs, seccompStop bool) error {
 	fd := int(int32(regs.Rdi))
-	state := t.shared.Snapshot(fd)
+	state := t.trackedSnapshot(tid, fd)
 	if state.Active != 0 && state.Proxied == 0 && int(state.Type)&0xf == unix.SOCK_DGRAM {
 		if state.Kind == uwgshared.KindUDPConnected {
 			if regs.R8 != 0 {
@@ -880,7 +982,7 @@ func (t *tracer) handleSendto(tid int, regs unix.PtraceRegs, seccompStop bool) e
 					return t.finishEmulated(tid, regs, -int64(syscall.ECONNREFUSED), seccompStop)
 				}
 				t.setLocalFD(procFD{pid: t.groupFor(tid), fd: fd}, managerLocal)
-				t.shared.Update(fd, func(entry *uwgshared.TrackedFD) {
+				t.trackedUpdate(tid, fd, func(entry *uwgshared.TrackedFD) {
 					entry.Proxied = 1
 					entry.Kind = uwgshared.KindUDPConnected
 					entry.HotReady = 0
@@ -894,7 +996,7 @@ func (t *tracer) handleSendto(tid int, regs unix.PtraceRegs, seccompStop bool) e
 					entry.RemotePort = 0
 					uwgshared.StringToBytes(entry.RemoteIP[:], dest.ip)
 				})
-				state = t.shared.Snapshot(fd)
+				state = t.trackedSnapshot(tid, fd)
 			} else {
 				managerLocal, openErr := t.openManagerSocket()
 				if openErr != nil {
@@ -915,7 +1017,7 @@ func (t *tracer) handleSendto(tid int, regs unix.PtraceRegs, seccompStop bool) e
 					return t.finishEmulated(tid, regs, -int64(syscall.ECONNREFUSED), seccompStop)
 				}
 				t.setLocalFD(procFD{pid: t.groupFor(tid), fd: fd}, managerLocal)
-				t.shared.Update(fd, func(entry *uwgshared.TrackedFD) {
+				t.trackedUpdate(tid, fd, func(entry *uwgshared.TrackedFD) {
 					entry.Proxied = 1
 					entry.Kind = uwgshared.KindUDPListener
 					entry.HotReady = 0
@@ -927,7 +1029,7 @@ func (t *tracer) handleSendto(tid int, regs unix.PtraceRegs, seccompStop bool) e
 						uwgshared.StringToBytes(entry.BindIP[:], defaultBindIP(entry.Domain))
 					}
 				})
-				state = t.shared.Snapshot(fd)
+				state = t.trackedSnapshot(tid, fd)
 			}
 		}
 	}
@@ -983,7 +1085,7 @@ func (t *tracer) handleSendto(tid int, regs unix.PtraceRegs, seccompStop bool) e
 
 func (t *tracer) handleRecvfrom(tid int, regs unix.PtraceRegs, seccompStop bool) error {
 	fd := int(int32(regs.Rdi))
-	state := t.shared.Snapshot(fd)
+	state := t.trackedSnapshot(tid, fd)
 	if state.Active != 0 && state.Proxied == 0 && int(state.Type)&0xf == unix.SOCK_DGRAM && state.Kind == uwgshared.KindUDPConnected {
 		dest, ok := remoteSockaddrFromState(state)
 		if !ok {
@@ -1015,7 +1117,7 @@ func (t *tracer) handleRecvfrom(tid int, regs unix.PtraceRegs, seccompStop bool)
 			return t.finishEmulated(tid, regs, -int64(syscall.ECONNREFUSED), seccompStop)
 		}
 		t.setLocalFD(procFD{pid: t.groupFor(tid), fd: fd}, managerLocal)
-		t.shared.Update(fd, func(entry *uwgshared.TrackedFD) {
+		t.trackedUpdate(tid, fd, func(entry *uwgshared.TrackedFD) {
 			entry.Proxied = 1
 			entry.Kind = uwgshared.KindUDPListener
 			entry.HotReady = 0
@@ -1027,7 +1129,7 @@ func (t *tracer) handleRecvfrom(tid int, regs unix.PtraceRegs, seccompStop bool)
 				uwgshared.StringToBytes(entry.BindIP[:], defaultBindIP(entry.Domain))
 			}
 		})
-		state = t.shared.Snapshot(fd)
+		state = t.trackedSnapshot(tid, fd)
 	}
 	if state.Proxied == 0 {
 		return t.resumeDefault(tid, seccompStop)
@@ -1115,9 +1217,453 @@ func (t *tracer) handleRecvfrom(tid int, regs unix.PtraceRegs, seccompStop bool)
 	}
 }
 
+func (t *tracer) handleSendmsg(tid int, regs unix.PtraceRegs, seccompStop bool) error {
+	fd := int(int32(regs.Rdi))
+	msgPtr := uintptr(regs.Rsi)
+	state := t.trackedSnapshot(tid, fd)
+	if state.Active == 0 && state.Proxied == 0 {
+		return t.resumeDefault(tid, seccompStop)
+	}
+	result, handled, err := t.emulateSendmsg(tid, fd, msgPtr)
+	if !handled {
+		return t.resumeDefault(tid, seccompStop)
+	}
+	if err != nil {
+		return t.finishEmulated(tid, regs, -errnoResult(err), seccompStop)
+	}
+	return t.finishEmulated(tid, regs, result, seccompStop)
+}
+
+func (t *tracer) handleRecvmsg(tid int, regs unix.PtraceRegs, seccompStop bool) error {
+	fd := int(int32(regs.Rdi))
+	msgPtr := uintptr(regs.Rsi)
+	state := t.trackedSnapshot(tid, fd)
+	if state.Active == 0 && state.Proxied == 0 {
+		return t.resumeDefault(tid, seccompStop)
+	}
+	result, handled, err := t.emulateRecvmsg(tid, fd, msgPtr)
+	if !handled {
+		return t.resumeDefault(tid, seccompStop)
+	}
+	if err != nil {
+		return t.finishEmulated(tid, regs, -errnoResult(err), seccompStop)
+	}
+	return t.finishEmulated(tid, regs, result, seccompStop)
+}
+
+func (t *tracer) handleSendmmsg(tid int, regs unix.PtraceRegs, seccompStop bool) error {
+	fd := int(int32(regs.Rdi))
+	vecPtr := uintptr(regs.Rsi)
+	vlen := uint64(regs.Rdx)
+	state := t.trackedSnapshot(tid, fd)
+	if state.Active == 0 && state.Proxied == 0 {
+		return t.resumeDefault(tid, seccompStop)
+	}
+	if vlen == 0 {
+		return t.finishEmulated(tid, regs, 0, seccompStop)
+	}
+	if vecPtr == 0 {
+		return t.finishEmulated(tid, regs, -int64(syscall.EFAULT), seccompStop)
+	}
+	if vlen > tracedMaxIov {
+		vlen = tracedMaxIov
+	}
+	var sent uint64
+	for i := uint64(0); i < vlen; i++ {
+		msgPtr := vecPtr + uintptr(i*tracedMMSghdrSize)
+		result, handled, err := t.emulateSendmsg(tid, fd, msgPtr)
+		if !handled {
+			if i == 0 {
+				return t.resumeDefault(tid, seccompStop)
+			}
+			break
+		}
+		if err != nil {
+			if i == 0 {
+				return t.finishEmulated(tid, regs, -errnoResult(err), seccompStop)
+			}
+			break
+		}
+		if result < 0 {
+			if i == 0 {
+				return t.finishEmulated(tid, regs, result, seccompStop)
+			}
+			break
+		}
+		if err := t.writeUint32(tid, msgPtr+tracedMMSghdrLenOff, uint32(result)); err != nil {
+			if i == 0 {
+				return t.finishEmulated(tid, regs, -errnoResult(err), seccompStop)
+			}
+			break
+		}
+		sent++
+	}
+	return t.finishEmulated(tid, regs, int64(sent), seccompStop)
+}
+
+func (t *tracer) handleRecvmmsg(tid int, regs unix.PtraceRegs, seccompStop bool) error {
+	fd := int(int32(regs.Rdi))
+	vecPtr := uintptr(regs.Rsi)
+	vlen := uint64(regs.Rdx)
+	state := t.trackedSnapshot(tid, fd)
+	if state.Active == 0 && state.Proxied == 0 {
+		return t.resumeDefault(tid, seccompStop)
+	}
+	if vlen == 0 {
+		return t.finishEmulated(tid, regs, 0, seccompStop)
+	}
+	if vecPtr == 0 {
+		return t.finishEmulated(tid, regs, -int64(syscall.EFAULT), seccompStop)
+	}
+	if vlen > tracedMaxIov {
+		vlen = tracedMaxIov
+	}
+	var received uint64
+	for i := uint64(0); i < vlen; i++ {
+		msgPtr := vecPtr + uintptr(i*tracedMMSghdrSize)
+		result, handled, err := t.emulateRecvmsg(tid, fd, msgPtr)
+		if !handled {
+			if i == 0 {
+				return t.resumeDefault(tid, seccompStop)
+			}
+			break
+		}
+		if err != nil {
+			if i == 0 {
+				return t.finishEmulated(tid, regs, -errnoResult(err), seccompStop)
+			}
+			break
+		}
+		if result < 0 {
+			if i == 0 {
+				return t.finishEmulated(tid, regs, result, seccompStop)
+			}
+			break
+		}
+		if err := t.writeUint32(tid, msgPtr+tracedMMSghdrLenOff, uint32(result)); err != nil {
+			if i == 0 {
+				return t.finishEmulated(tid, regs, -errnoResult(err), seccompStop)
+			}
+			break
+		}
+		received++
+	}
+	return t.finishEmulated(tid, regs, int64(received), seccompStop)
+}
+
+func (t *tracer) emulateSendmsg(tid, fd int, msgPtr uintptr) (int64, bool, error) {
+	msg, err := t.readTraceMSghdr(tid, msgPtr)
+	if err != nil {
+		return 0, true, err
+	}
+	iov, total, err := t.readTraceIovecs(tid, msg.iov, msg.iovLen)
+	if err != nil {
+		return 0, true, err
+	}
+	return t.emulateSendBuffer(tid, fd, func() ([]byte, error) {
+		return t.readTraceIovecPayload(tid, iov, total)
+	}, msg.name, uint64(msg.nameLen))
+}
+
+func (t *tracer) emulateRecvmsg(tid, fd int, msgPtr uintptr) (int64, bool, error) {
+	msg, err := t.readTraceMSghdr(tid, msgPtr)
+	if err != nil {
+		return 0, true, err
+	}
+	iov, total, err := t.readTraceIovecs(tid, msg.iov, msg.iovLen)
+	if err != nil {
+		return 0, true, err
+	}
+	result, flags, source, sourceLen, handled, err := t.emulateRecvBuffer(tid, fd, total)
+	if !handled || err != nil {
+		return 0, handled, err
+	}
+	if len(result) > 0 {
+		if err := t.writeTraceIovecPayload(tid, iov, result); err != nil {
+			return 0, true, err
+		}
+	}
+	if msg.name != 0 && sourceLen > 0 {
+		copyLen := sourceLen
+		if copyLen > int(msg.nameLen) {
+			copyLen = int(msg.nameLen)
+		}
+		if copyLen > 0 {
+			if err := t.writeTracee(tid, msg.name, source[:copyLen]); err != nil {
+				return 0, true, err
+			}
+		}
+		if err := t.writeUint32(tid, msgPtr+tracedMSghdrNameLenOff, uint32(sourceLen)); err != nil {
+			return 0, true, err
+		}
+	}
+	if err := t.writeUint32(tid, msgPtr+tracedMSghdrFlagsOff, uint32(flags)); err != nil {
+		return 0, true, err
+	}
+	return int64(len(result)), true, nil
+}
+
+func (t *tracer) emulateSendBuffer(tid, fd int, payload func() ([]byte, error), destPtr uintptr, destLen uint64) (int64, bool, error) {
+	state := t.trackedSnapshot(tid, fd)
+	if state.Active != 0 && state.Proxied == 0 && int(state.Type)&0xf == unix.SOCK_DGRAM {
+		if state.Kind == uwgshared.KindUDPConnected {
+			if destPtr != 0 {
+				return -int64(syscall.EISCONN), true, nil
+			}
+			dest, ok := remoteSockaddrFromState(state)
+			if !ok {
+				return -int64(syscall.EDESTADDRREQ), true, nil
+			}
+			var openErr error
+			state, openErr = t.openUDPConnected(tid, fd, state, dest)
+			if openErr != nil {
+				return 0, true, openErr
+			}
+		} else if destPtr != 0 {
+			dest, err := t.readSockaddr(tid, destPtr, destLen)
+			if err == nil && (dest.family == unix.AF_INET || dest.family == unix.AF_INET6) && !isLoopback(dest) {
+				if isICMPProtocol(int(state.Protocol)) {
+					managerLocal, openErr := t.openManagerSocket()
+					if openErr != nil {
+						return 0, true, openErr
+					}
+					bindIP := uwgshared.BytesToString(state.BindIP[:])
+					if bindIP == "" {
+						bindIP = defaultBindIP(state.Domain)
+					}
+					reply, reqErr := managerRequestLine(managerLocal, fmt.Sprintf("CONNECT icmp %s 0 %s 0\n", dest.ip, bindIP))
+					if reqErr != nil {
+						_ = unix.Close(managerLocal)
+						return 0, true, reqErr
+					}
+					actualBind, ok := parseConnectReplyLine(reply)
+					if !ok {
+						_ = unix.Close(managerLocal)
+						return -int64(syscall.ECONNREFUSED), true, nil
+					}
+					t.setLocalFD(procFD{pid: t.groupFor(tid), fd: fd}, managerLocal)
+					t.trackedUpdate(tid, fd, func(entry *uwgshared.TrackedFD) {
+						entry.Proxied = 1
+						entry.Kind = uwgshared.KindUDPConnected
+						entry.HotReady = 0
+						entry.Bound = 1
+						if actualBind.IsValid() {
+							entry.BindFamily = int32(addrFamilyForAddr(actualBind.Addr()))
+							entry.BindPort = actualBind.Port()
+							uwgshared.StringToBytes(entry.BindIP[:], actualBind.Addr().String())
+						}
+						entry.RemoteFamily = int32(dest.family)
+						entry.RemotePort = 0
+						uwgshared.StringToBytes(entry.RemoteIP[:], dest.ip)
+					})
+					state = t.trackedSnapshot(tid, fd)
+				} else {
+					managerLocal, openErr := t.openManagerSocket()
+					if openErr != nil {
+						return 0, true, openErr
+					}
+					bindIP := uwgshared.BytesToString(state.BindIP[:])
+					if bindIP == "" {
+						bindIP = defaultBindIP(state.Domain)
+					}
+					reply, reqErr := managerRequestLine(managerLocal, fmt.Sprintf("LISTEN udp %s %d %d %d\n", bindIP, state.BindPort, boolToInt(state.ReuseAddr != 0), boolToInt(state.ReusePort != 0)))
+					if reqErr != nil {
+						_ = unix.Close(managerLocal)
+						return 0, true, reqErr
+					}
+					actualBind, ok := parseUDPListenReplyLine(reply)
+					if !ok {
+						_ = unix.Close(managerLocal)
+						return -int64(syscall.ECONNREFUSED), true, nil
+					}
+					t.setLocalFD(procFD{pid: t.groupFor(tid), fd: fd}, managerLocal)
+					t.trackedUpdate(tid, fd, func(entry *uwgshared.TrackedFD) {
+						entry.Proxied = 1
+						entry.Kind = uwgshared.KindUDPListener
+						entry.HotReady = 0
+						entry.Bound = 1
+						if actualBind.Port() != 0 {
+							entry.BindPort = actualBind.Port()
+						}
+						if uwgshared.BytesToString(entry.BindIP[:]) == "" {
+							uwgshared.StringToBytes(entry.BindIP[:], defaultBindIP(entry.Domain))
+						}
+					})
+					state = t.trackedSnapshot(tid, fd)
+				}
+			}
+		}
+	}
+	if state.Proxied == 0 {
+		return 0, false, nil
+	}
+	localFD, err := t.ensureLocalFD(procFD{pid: t.groupFor(tid), fd: fd})
+	if err != nil {
+		return 0, true, err
+	}
+	buf, err := payload()
+	if err != nil {
+		return 0, true, err
+	}
+	switch state.Kind {
+	case uwgshared.KindTCPStream:
+		if destPtr != 0 {
+			return -int64(syscall.EISCONN), true, nil
+		}
+		n, err := unix.Write(localFD, buf)
+		if err != nil {
+			return 0, true, err
+		}
+		return int64(n), true, nil
+	case uwgshared.KindUDPConnected:
+		if destPtr != 0 && !isICMPProtocol(int(state.Protocol)) {
+			return -int64(syscall.EISCONN), true, nil
+		}
+		if err := writePacketFD(localFD, buf); err != nil {
+			return 0, true, err
+		}
+		return int64(len(buf)), true, nil
+	case uwgshared.KindUDPListener:
+		if destPtr == 0 {
+			return -int64(syscall.EDESTADDRREQ), true, nil
+		}
+		dest, err := t.readSockaddr(tid, destPtr, destLen)
+		if err != nil {
+			return 0, true, err
+		}
+		packet, err := encodeUDPDatagram(dest, buf)
+		if err != nil {
+			return 0, true, err
+		}
+		if err := writePacketFD(localFD, packet); err != nil {
+			return 0, true, err
+		}
+		return int64(len(buf)), true, nil
+	default:
+		return 0, false, nil
+	}
+}
+
+func (t *tracer) emulateRecvBuffer(tid, fd, max int) ([]byte, int32, []byte, int, bool, error) {
+	state := t.trackedSnapshot(tid, fd)
+	if state.Active != 0 && state.Proxied == 0 && int(state.Type)&0xf == unix.SOCK_DGRAM && state.Kind == uwgshared.KindUDPConnected {
+		dest, ok := remoteSockaddrFromState(state)
+		if !ok {
+			return nil, 0, nil, 0, true, syscall.ENOTCONN
+		}
+		var openErr error
+		state, openErr = t.openUDPConnected(tid, fd, state, dest)
+		if openErr != nil {
+			return nil, 0, nil, 0, true, openErr
+		}
+	}
+	if state.Active != 0 && state.Proxied == 0 && int(state.Type)&0xf == unix.SOCK_DGRAM && state.Bound != 0 && !isICMPProtocol(int(state.Protocol)) {
+		managerLocal, openErr := t.openManagerSocket()
+		if openErr != nil {
+			return nil, 0, nil, 0, true, openErr
+		}
+		bindIP := uwgshared.BytesToString(state.BindIP[:])
+		if bindIP == "" {
+			bindIP = defaultBindIP(state.Domain)
+		}
+		reply, reqErr := managerRequestLine(managerLocal, fmt.Sprintf("LISTEN udp %s %d %d %d\n", bindIP, state.BindPort, boolToInt(state.ReuseAddr != 0), boolToInt(state.ReusePort != 0)))
+		if reqErr != nil {
+			_ = unix.Close(managerLocal)
+			return nil, 0, nil, 0, true, reqErr
+		}
+		actualBind, ok := parseUDPListenReplyLine(reply)
+		if !ok {
+			_ = unix.Close(managerLocal)
+			return nil, 0, nil, 0, true, syscall.ECONNREFUSED
+		}
+		t.setLocalFD(procFD{pid: t.groupFor(tid), fd: fd}, managerLocal)
+		t.trackedUpdate(tid, fd, func(entry *uwgshared.TrackedFD) {
+			entry.Proxied = 1
+			entry.Kind = uwgshared.KindUDPListener
+			entry.HotReady = 0
+			entry.Bound = 1
+			if actualBind.Port() != 0 {
+				entry.BindPort = actualBind.Port()
+			}
+			if uwgshared.BytesToString(entry.BindIP[:]) == "" {
+				uwgshared.StringToBytes(entry.BindIP[:], defaultBindIP(entry.Domain))
+			}
+		})
+		state = t.trackedSnapshot(tid, fd)
+	}
+	if state.Proxied == 0 {
+		return nil, 0, nil, 0, false, nil
+	}
+	localFD, err := t.ensureLocalFD(procFD{pid: t.groupFor(tid), fd: fd})
+	if err != nil {
+		return nil, 0, nil, 0, true, err
+	}
+	if max < 0 {
+		return nil, 0, nil, 0, true, syscall.EINVAL
+	}
+	switch state.Kind {
+	case uwgshared.KindTCPStream:
+		out := make([]byte, max)
+		n, err := unix.Read(localFD, out)
+		if err != nil {
+			return nil, 0, nil, 0, true, err
+		}
+		source, sourceLen := sockaddrBytes(tracedSockaddr{
+			family: int(state.RemoteFamily),
+			ip:     uwgshared.BytesToString(state.RemoteIP[:]),
+			port:   state.RemotePort,
+		})
+		return out[:n], 0, source, sourceLen, true, nil
+	case uwgshared.KindUDPConnected:
+		packet, err := readPacketFD(localFD)
+		if err != nil {
+			return nil, 0, nil, 0, true, err
+		}
+		flags := int32(0)
+		out := packet
+		if len(out) > max {
+			out = out[:max]
+			flags |= unix.MSG_TRUNC
+		}
+		source, sourceLen := sockaddrBytes(tracedSockaddr{
+			family: func() int {
+				if state.RemoteFamily != 0 {
+					return int(state.RemoteFamily)
+				}
+				if state.Domain == unix.AF_INET6 {
+					return unix.AF_INET6
+				}
+				return unix.AF_INET
+			}(),
+			ip:   uwgshared.BytesToString(state.RemoteIP[:]),
+			port: state.RemotePort,
+		})
+		return out, flags, source, sourceLen, true, nil
+	case uwgshared.KindUDPListener:
+		packet, err := readPacketFD(localFD)
+		if err != nil {
+			return nil, 0, nil, 0, true, err
+		}
+		src, payload, err := decodeUDPDatagram(packet)
+		if err != nil {
+			return nil, 0, nil, 0, true, err
+		}
+		flags := int32(0)
+		out := payload
+		if len(out) > max {
+			out = out[:max]
+			flags |= unix.MSG_TRUNC
+		}
+		source, sourceLen := sockaddrBytes(src)
+		return out, flags, source, sourceLen, true, nil
+	default:
+		return nil, 0, nil, 0, false, nil
+	}
+}
+
 func (t *tracer) handleDup(tid int, regs unix.PtraceRegs, seccompStop bool) error {
 	oldfd := int(int32(regs.Rdi))
-	state := t.shared.Snapshot(oldfd)
+	state := t.trackedSnapshot(tid, oldfd)
 	t.pending[tid] = pendingSyscall{kind: pendingDup, oldfd: oldfd, group: t.groupFor(tid), state: state}
 	return t.resumeForExit(tid)
 }
@@ -1125,7 +1671,7 @@ func (t *tracer) handleDup(tid int, regs unix.PtraceRegs, seccompStop bool) erro
 func (t *tracer) handleDupN(tid int, regs unix.PtraceRegs, dup3 bool, seccompStop bool) error {
 	oldfd := int(int32(regs.Rdi))
 	newfd := int(int32(regs.Rsi))
-	state := t.shared.Snapshot(oldfd)
+	state := t.trackedSnapshot(tid, oldfd)
 	t.pending[tid] = pendingSyscall{kind: pendingDupN, oldfd: oldfd, newfd: newfd, group: t.groupFor(tid), state: state}
 	_ = dup3
 	return t.resumeForExit(tid)
@@ -1133,7 +1679,7 @@ func (t *tracer) handleDupN(tid int, regs unix.PtraceRegs, dup3 bool, seccompSto
 
 func (t *tracer) handleGetSockName(tid int, regs unix.PtraceRegs, peer bool, seccompStop bool) error {
 	fd := int(int32(regs.Rdi))
-	state := t.shared.Snapshot(fd)
+	state := t.trackedSnapshot(tid, fd)
 	if t.verbose {
 		fmt.Fprintf(os.Stderr, "uwgwrapper: getsockname fd=%d peer=%t active=%d proxied=%d kind=%d\n", fd, peer, state.Active, state.Proxied, state.Kind)
 	}
@@ -1199,7 +1745,7 @@ func (t *tracer) handleGetSockName(tid int, regs unix.PtraceRegs, peer bool, sec
 func (t *tracer) handleShutdown(tid int, regs unix.PtraceRegs, seccompStop bool) error {
 	fd := int(int32(regs.Rdi))
 	how := int(int32(regs.Rsi))
-	state := t.shared.Snapshot(fd)
+	state := t.trackedSnapshot(tid, fd)
 	if state.Proxied == 0 {
 		return t.resumeDefault(tid, seccompStop)
 	}
@@ -1250,7 +1796,7 @@ func (t *tracer) handlePoll(tid int, regs unix.PtraceRegs, ppoll bool, seccompSt
 		events := int16(binary.LittleEndian.Uint16(raw[off+4 : off+6]))
 		entry := pollEntry{fd: fd, events: events}
 		if fd >= 0 {
-			state := t.shared.Snapshot(fd)
+			state := t.trackedSnapshot(tid, fd)
 			if state.Proxied != 0 && (state.Kind == uwgshared.KindTCPStream || state.Kind == uwgshared.KindUDPConnected || state.Kind == uwgshared.KindUDPListener || state.Kind == uwgshared.KindTCPListener) {
 				entry.proxied = true
 				hasProxied = true
@@ -1359,14 +1905,14 @@ func (t *tracer) handleFcntl(tid int, regs unix.PtraceRegs, seccompStop bool) er
 	fd := int(int32(regs.Rdi))
 	cmd := int(int32(regs.Rsi))
 	arg := int32(regs.Rdx)
-	state := t.shared.Snapshot(fd)
+	state := t.trackedSnapshot(tid, fd)
 	if state.Proxied == 0 {
 		if state.Active != 0 {
 			switch cmd {
 			case unix.F_SETFL:
-				t.shared.Update(fd, func(entry *uwgshared.TrackedFD) { entry.SavedFL = arg })
+				t.trackedUpdate(tid, fd, func(entry *uwgshared.TrackedFD) { entry.SavedFL = arg })
 			case unix.F_SETFD:
-				t.shared.Update(fd, func(entry *uwgshared.TrackedFD) { entry.SavedFDFL = arg })
+				t.trackedUpdate(tid, fd, func(entry *uwgshared.TrackedFD) { entry.SavedFDFL = arg })
 			}
 		}
 		return t.resumeDefault(tid, seccompStop)
@@ -1375,7 +1921,7 @@ func (t *tracer) handleFcntl(tid int, regs unix.PtraceRegs, seccompStop bool) er
 	case unix.F_GETFL:
 		return t.finishEmulated(tid, regs, int64(state.SavedFL), seccompStop)
 	case unix.F_SETFL:
-		t.shared.Update(fd, func(entry *uwgshared.TrackedFD) { entry.SavedFL = arg })
+		t.trackedUpdate(tid, fd, func(entry *uwgshared.TrackedFD) { entry.SavedFL = arg })
 		if state.HotReady == 0 {
 			return t.finishEmulated(tid, regs, 0, seccompStop)
 		}
@@ -1383,7 +1929,7 @@ func (t *tracer) handleFcntl(tid int, regs unix.PtraceRegs, seccompStop bool) er
 	case unix.F_GETFD:
 		return t.finishEmulated(tid, regs, int64(state.SavedFDFL), seccompStop)
 	case unix.F_SETFD:
-		t.shared.Update(fd, func(entry *uwgshared.TrackedFD) { entry.SavedFDFL = arg })
+		t.trackedUpdate(tid, fd, func(entry *uwgshared.TrackedFD) { entry.SavedFDFL = arg })
 		if state.HotReady == 0 {
 			return t.finishEmulated(tid, regs, 0, seccompStop)
 		}
@@ -1399,7 +1945,7 @@ func (t *tracer) handleGetSockOpt(tid int, regs unix.PtraceRegs, seccompStop boo
 	optname := int(int32(regs.Rdx))
 	optval := uintptr(regs.R10)
 	optlenp := uintptr(regs.R8)
-	state := t.shared.Snapshot(fd)
+	state := t.trackedSnapshot(tid, fd)
 	if t.verbose {
 		fmt.Fprintf(os.Stderr, "uwgwrapper: getsockopt fd=%d level=%d opt=%d active=%d proxied=%d kind=%d\n", fd, level, optname, state.Active, state.Proxied, state.Kind)
 	}
@@ -1444,7 +1990,7 @@ func (t *tracer) handleSetSockOpt(tid int, regs unix.PtraceRegs, seccompStop boo
 	fd := int(int32(regs.Rdi))
 	level := int(int32(regs.Rsi))
 	optname := int(int32(regs.Rdx))
-	state := t.shared.Snapshot(fd)
+	state := t.trackedSnapshot(tid, fd)
 	if state.Active == 0 {
 		return t.resumeDefault(tid, seccompStop)
 	}
@@ -1455,7 +2001,7 @@ func (t *tracer) handleSetSockOpt(tid int, regs unix.PtraceRegs, seccompStop boo
 			if err != nil {
 				return t.finishEmulated(tid, regs, -errnoResult(err), seccompStop)
 			}
-			t.shared.Update(fd, func(entry *uwgshared.TrackedFD) { entry.ReuseAddr = boolToInt32(value != 0) })
+			t.trackedUpdate(tid, fd, func(entry *uwgshared.TrackedFD) { entry.ReuseAddr = boolToInt32(value != 0) })
 			if state.Proxied != 0 {
 				return t.finishEmulated(tid, regs, 0, seccompStop)
 			}
@@ -1465,7 +2011,7 @@ func (t *tracer) handleSetSockOpt(tid int, regs unix.PtraceRegs, seccompStop boo
 			if err != nil {
 				return t.finishEmulated(tid, regs, -errnoResult(err), seccompStop)
 			}
-			t.shared.Update(fd, func(entry *uwgshared.TrackedFD) { entry.ReusePort = boolToInt32(value != 0) })
+			t.trackedUpdate(tid, fd, func(entry *uwgshared.TrackedFD) { entry.ReusePort = boolToInt32(value != 0) })
 			if state.Proxied != 0 {
 				return t.finishEmulated(tid, regs, 0, seccompStop)
 			}
@@ -1500,7 +2046,7 @@ func (t *tracer) handlePendingExit(tid int, pending pendingSyscall, regs unix.Pt
 			if pending.typ&unix.SOCK_CLOEXEC != 0 {
 				savedFDFL = unix.FD_CLOEXEC
 			}
-			t.shared.Update(fd, func(entry *uwgshared.TrackedFD) {
+			t.trackedUpdate(tid, fd, func(entry *uwgshared.TrackedFD) {
 				*entry = uwgshared.TrackedFD{}
 				entry.Active = 1
 				entry.Domain = int32(pending.domain)
@@ -1516,7 +2062,7 @@ func (t *tracer) handlePendingExit(tid int, pending pendingSyscall, regs unix.Pt
 		if int64(regs.Rax) == 0 {
 			key := procFD{pid: pending.group, fd: pending.fd}
 			if t.epochFor(key) == pending.epoch {
-				t.shared.Clear(pending.fd)
+				t.trackedClearGroup(pending.group, pending.fd)
 				t.clearLocalFD(key)
 				t.clearEpoch(key)
 			}
@@ -1526,7 +2072,7 @@ func (t *tracer) handlePendingExit(tid int, pending pendingSyscall, regs unix.Pt
 		if newfd >= 0 && pending.state.Active != 0 {
 			key := procFD{pid: pending.group, fd: newfd}
 			copyState := pending.state
-			t.shared.Update(newfd, func(entry *uwgshared.TrackedFD) {
+			t.trackedUpdateGroup(pending.group, newfd, func(entry *uwgshared.TrackedFD) {
 				*entry = copyState
 			})
 			t.allocEpoch(key)
@@ -1540,7 +2086,7 @@ func (t *tracer) handlePendingExit(tid int, pending pendingSyscall, regs unix.Pt
 		if int64(regs.Rax) >= 0 && pending.state.Active != 0 {
 			key := procFD{pid: pending.group, fd: pending.newfd}
 			copyState := pending.state
-			t.shared.Update(pending.newfd, func(entry *uwgshared.TrackedFD) {
+			t.trackedUpdateGroup(pending.group, pending.newfd, func(entry *uwgshared.TrackedFD) {
 				*entry = copyState
 			})
 			t.allocEpoch(key)
@@ -1567,7 +2113,7 @@ func (t *tracer) handlePendingExit(tid int, pending pendingSyscall, regs unix.Pt
 		if pending.typ&unix.SOCK_CLOEXEC != 0 {
 			savedFDFL = unix.FD_CLOEXEC
 		}
-		t.shared.Update(newfd, func(entry *uwgshared.TrackedFD) {
+		t.trackedUpdateGroup(pending.group, newfd, func(entry *uwgshared.TrackedFD) {
 			*entry = uwgshared.TrackedFD{}
 			entry.Active = 1
 			entry.Domain = int32(pending.domain)
@@ -1771,6 +2317,103 @@ func (t *tracer) readTraceeBytes(pid int, ptr uintptr, size int) ([]byte, error)
 	return buf[:n], nil
 }
 
+func (t *tracer) readTraceMSghdr(pid int, ptr uintptr) (tracedMSghdr, error) {
+	if ptr == 0 {
+		return tracedMSghdr{}, syscall.EFAULT
+	}
+	raw, err := t.readTraceeBytes(pid, ptr, tracedMSghdrSize)
+	if err != nil {
+		return tracedMSghdr{}, err
+	}
+	if len(raw) < tracedMSghdrSize {
+		return tracedMSghdr{}, syscall.EFAULT
+	}
+	return tracedMSghdr{
+		name:       uintptr(binary.LittleEndian.Uint64(raw[0:8])),
+		nameLen:    binary.LittleEndian.Uint32(raw[8:12]),
+		iov:        uintptr(binary.LittleEndian.Uint64(raw[16:24])),
+		iovLen:     binary.LittleEndian.Uint64(raw[24:32]),
+		control:    uintptr(binary.LittleEndian.Uint64(raw[32:40])),
+		controlLen: binary.LittleEndian.Uint64(raw[40:48]),
+		flags:      int32(binary.LittleEndian.Uint32(raw[48:52])),
+	}, nil
+}
+
+func (t *tracer) readTraceIovecs(pid int, ptr uintptr, count uint64) ([]tracedIovec, int, error) {
+	if count == 0 {
+		return nil, 0, nil
+	}
+	if ptr == 0 {
+		return nil, 0, syscall.EFAULT
+	}
+	if count > tracedMaxIov {
+		return nil, 0, syscall.EMSGSIZE
+	}
+	size := int(count) * tracedIovecSize
+	raw, err := t.readTraceeBytes(pid, ptr, size)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(raw) < size {
+		return nil, 0, syscall.EFAULT
+	}
+	out := make([]tracedIovec, 0, int(count))
+	total := 0
+	for i := 0; i < int(count); i++ {
+		off := i * tracedIovecSize
+		length64 := binary.LittleEndian.Uint64(raw[off+8 : off+16])
+		if length64 > uint64(tracedMaxIOBytes-total) {
+			return nil, 0, syscall.EMSGSIZE
+		}
+		length := int(length64)
+		out = append(out, tracedIovec{
+			base: uintptr(binary.LittleEndian.Uint64(raw[off : off+8])),
+			len:  length,
+		})
+		total += length
+	}
+	return out, total, nil
+}
+
+func (t *tracer) readTraceIovecPayload(pid int, iov []tracedIovec, total int) ([]byte, error) {
+	out := make([]byte, 0, total)
+	for _, entry := range iov {
+		if entry.len == 0 {
+			continue
+		}
+		chunk, err := t.readTraceeBytes(pid, entry.base, entry.len)
+		if err != nil {
+			return nil, err
+		}
+		if len(chunk) < entry.len {
+			return nil, syscall.EFAULT
+		}
+		out = append(out, chunk...)
+	}
+	return out, nil
+}
+
+func (t *tracer) writeTraceIovecPayload(pid int, iov []tracedIovec, data []byte) error {
+	offset := 0
+	for _, entry := range iov {
+		if offset >= len(data) {
+			break
+		}
+		if entry.len == 0 {
+			continue
+		}
+		n := entry.len
+		if n > len(data)-offset {
+			n = len(data) - offset
+		}
+		if err := t.writeTracee(pid, entry.base, data[offset:offset+n]); err != nil {
+			return err
+		}
+		offset += n
+	}
+	return nil
+}
+
 func (t *tracer) writeTracee(pid int, ptr uintptr, data []byte) error {
 	if len(data) == 0 {
 		return nil
@@ -1890,6 +2533,7 @@ func (t *tracer) clearProcess(pid int) {
 			delete(t.fdEpoch, key)
 		}
 	}
+	t.shared.ClearProcess(group)
 	delete(t.pidfds, group)
 }
 
@@ -1939,6 +2583,7 @@ func (t *tracer) groupFor(tid int) int {
 }
 
 func (t *tracer) copyProcess(srcGroup, dstGroup int) error {
+	t.shared.CopyProcess(srcGroup, dstGroup)
 	t.localMu.Lock()
 	keys := make([]procFD, 0, len(t.localFDs))
 	for key := range t.localFDs {
@@ -1953,6 +2598,30 @@ func (t *tracer) copyProcess(srcGroup, dstGroup int) error {
 		}
 	}
 	return nil
+}
+
+func (t *tracer) reconcileExecGroup(group int) {
+	if group <= 0 {
+		return
+	}
+	pidfd := t.pidfdFor(group)
+	if pidfd < 0 {
+		return
+	}
+	for _, fd := range t.shared.ProcessFDs(group) {
+		probe, err := unix.PidfdGetfd(pidfd, fd, 0)
+		if err == nil {
+			_ = unix.Close(probe)
+			continue
+		}
+		if !errors.Is(err, syscall.EBADF) {
+			continue
+		}
+		key := procFD{pid: group, fd: fd}
+		t.trackedClearGroup(group, fd)
+		t.clearLocalFD(key)
+		t.clearEpoch(key)
+	}
 }
 
 func (t *tracer) allocEpoch(key procFD) uint64 {
@@ -2335,6 +3004,14 @@ func syscallName(nr int64) string {
 		return "sendto"
 	case unix.SYS_RECVFROM:
 		return "recvfrom"
+	case unix.SYS_SENDMSG:
+		return "sendmsg"
+	case unix.SYS_RECVMSG:
+		return "recvmsg"
+	case unix.SYS_SENDMMSG:
+		return "sendmmsg"
+	case unix.SYS_RECVMMSG:
+		return "recvmmsg"
 	case unix.SYS_WRITE:
 		return "write"
 	case unix.SYS_READ:
@@ -2399,6 +3076,19 @@ func parseSecret(raw string) uint64 {
 	}
 	secret, _ := strconv.ParseUint(raw, 10, 64)
 	return secret
+}
+
+func traceSecret(shared *uwgshared.Table, env []string) uint64 {
+	if secret := shared.Secret(); secret != 0 {
+		return secret
+	}
+	prefix := envTraceSecret + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return parseSecret(strings.TrimPrefix(entry, prefix))
+		}
+	}
+	return 0
 }
 
 func boolString(v bool) string {

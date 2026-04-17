@@ -37,6 +37,7 @@ type wrapperArtifacts struct {
 	rawmixClient string
 	nnpProbe     string
 	reentrant    string
+	stdioHeavy   string
 }
 
 type traceStats struct {
@@ -119,6 +120,53 @@ func TestUWGWrapperBothMixedInterop(t *testing.T) {
 		"libc-socket-raw-connect", "100.64.94.1", "18080", "both-raw-connect")
 	if normalizedOutput(out) != "both-raw-connect" {
 		t.Fatalf("unexpected both raw-connect output %q", out)
+	}
+}
+
+func TestUWGWrapperPtraceOnlyAccidentalPreloadUsesSecretPassthrough(t *testing.T) {
+	requireWrapperToolchain(t)
+	art := buildWrapperArtifacts(t)
+	_, httpSock := setupWrapperNetwork(t)
+
+	out, stats := runWrappedTargetWithStats(t, art, httpSock, "ptrace-only", art.stub,
+		[]string{"100.64.94.1", "18080", "accidental-preload", "tcp-no-poll"},
+		wrapperRunOptions{
+			timeout: 60 * time.Second,
+			env: map[string]string{
+				"LD_PRELOAD": art.preload,
+			},
+		})
+	if normalizedOutput(out) != "accidental-preload" {
+		t.Fatalf("unexpected accidental preload output %q", out)
+	}
+	for _, name := range []string{"socket", "connect"} {
+		assertSyscallCount(t, stats, name, 0)
+	}
+}
+
+func TestUWGWrapperBothStdIOHeavyStaysOffPtrace(t *testing.T) {
+	if os.Getenv("UWGS_RUN_STDIO_HEAVY_DIAG") == "" {
+		t.Skip("set UWGS_RUN_STDIO_HEAVY_DIAG=1 to run the stdio-heavy combo diagnostic")
+	}
+	requireWrapperToolchain(t)
+	art := buildWrapperArtifacts(t)
+	_, httpSock := setupWrapperNetwork(t)
+
+	out, baseline := runWrappedTargetWithStats(t, art, httpSock, "preload-and-ptrace", art.stdioHeavy,
+		[]string{"baseline"}, wrapperRunOptions{timeout: 60 * time.Second})
+	if normalizedOutput(out) != "stdio-baseline-ok" {
+		t.Fatalf("unexpected stdio baseline output %q", out)
+	}
+
+	out, stats := runWrappedTargetWithStats(t, art, httpSock, "preload-and-ptrace", art.stdioHeavy,
+		[]string{"heavy"}, wrapperRunOptions{timeout: 60 * time.Second})
+	if normalizedOutput(out) != "stdio-heavy-ok" {
+		t.Fatalf("unexpected stdio heavy output %q", out)
+	}
+	t.Logf("stdio-heavy baseline traced syscalls: %v", baseline.Syscalls)
+	t.Logf("stdio-heavy workload traced syscalls: %v", stats.Syscalls)
+	if os.Getenv("UWGS_STRICT_STDIO_HOTPATH") != "" && !mapsEqualUint64(stats.Syscalls, baseline.Syscalls) {
+		t.Fatalf("expected stdio-heavy workload to add no ptrace traffic beyond startup baseline, baseline=%v heavy=%v", baseline.Syscalls, stats.Syscalls)
 	}
 }
 
@@ -205,6 +253,85 @@ func TestUWGWrapperCurlAcrossTransports(t *testing.T) {
 				t.Fatalf("unexpected direct-fallback curl output %q", out)
 			}
 		})
+	}
+}
+
+func TestUWGWrapperMessageSyscallsAcrossTransports(t *testing.T) {
+	requireWrapperToolchain(t)
+	art := buildWrapperArtifacts(t)
+	_, httpSock := setupWrapperNetwork(t)
+
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "tcp-sendmsg-recvmsg",
+			args: []string{"100.64.94.1", "18080", "tcp-msg", "tcp", "msg"},
+			want: "tcp-msg",
+		},
+		{
+			name: "udp-sendmsg-recvmsg",
+			args: []string{"100.64.94.1", "18081", "udp-msg", "udp", "msg"},
+			want: "udp-msg",
+		},
+		{
+			name: "udp-unconnected-sendmsg-recvmsg",
+			args: []string{"100.64.94.1", "18081", "udp-unconnected-msg", "udp-unconnected", "msg"},
+			want: "udp-unconnected-msg",
+		},
+		{
+			name: "udp-sendmmsg-recvmmsg",
+			args: []string{"100.64.94.1", "18081", "udp-mmsg", "udp", "mmsg"},
+			want: "udp-mmsg",
+		},
+	}
+	transports := []string{"preload", "preload-and-ptrace", "ptrace", "ptrace-seccomp", "ptrace-only"}
+	for _, transport := range transports {
+		for _, tc := range cases {
+			t.Run(transport+"/"+tc.name, func(t *testing.T) {
+				out := runWrappedTargetWithOptions(t, art, httpSock, transport, art.stub, tc.args, wrapperRunOptions{
+					timeout: 60 * time.Second,
+				})
+				if normalizedOutput(out) != tc.want {
+					t.Fatalf("unexpected %s output %q", tc.name, out)
+				}
+			})
+		}
+	}
+}
+
+func TestUWGWrapperPtraceSeccompSocketSyscallSurfaceStats(t *testing.T) {
+	requireWrapperToolchain(t)
+	art := buildWrapperArtifacts(t)
+	_, httpSock := setupWrapperNetwork(t)
+
+	out, stats := runWrappedTargetWithStats(t, art, httpSock, "ptrace-seccomp", art.stub,
+		[]string{"100.64.94.1", "18080", "syscall-surface", "tcp", "syscall-surface"},
+		wrapperRunOptions{timeout: 60 * time.Second})
+	if normalizedOutput(out) != "syscall-surface" {
+		t.Fatalf("unexpected syscall surface output %q", out)
+	}
+	for _, name := range []string{
+		"socket",
+		"connect",
+		"write",
+		"read",
+		"dup",
+		"dup2",
+		"dup3",
+		"getsockname",
+		"getpeername",
+		"shutdown",
+		"fcntl",
+		"getsockopt",
+		"setsockopt",
+		"poll",
+		"ppoll",
+		"close",
+	} {
+		assertSyscallAtLeast(t, stats, name, 1)
 	}
 }
 
@@ -421,6 +548,7 @@ func buildWrapperArtifacts(t *testing.T) wrapperArtifacts {
 		rawmixClient: filepath.Join(tmp, "rawmix_client"),
 		nnpProbe:     filepath.Join(tmp, "nnp_probe"),
 		reentrant:    filepath.Join(tmp, "reentrant_client"),
+		stdioHeavy:   filepath.Join(tmp, "stdio_heavy"),
 	}
 	run(t, repo, "gcc", "-shared", "-fPIC", "-O2", "-Wall", "-Wextra", "-o", art.preload, "preload/uwgpreload.c", "-ldl", "-pthread")
 	run(t, repo, "gcc", "-O2", "-Wall", "-Wextra", "-o", art.stub, "tests/preload/testdata/stub_client.c")
@@ -429,6 +557,7 @@ func buildWrapperArtifacts(t *testing.T) wrapperArtifacts {
 	run(t, repo, "gcc", "-O2", "-Wall", "-Wextra", "-pthread", "-I", "tests/preload/testdata", "-L", tmp, "-Wl,-rpath,$ORIGIN", "-o", art.rawmixClient, "tests/preload/testdata/rawmix_client.c", "-lrawmix_helpers")
 	run(t, repo, "gcc", "-O2", "-Wall", "-Wextra", "-o", art.nnpProbe, "tests/preload/testdata/nnp_probe.c")
 	run(t, repo, "gcc", "-O2", "-Wall", "-Wextra", "-o", art.reentrant, "tests/preload/testdata/reentrant_client.c")
+	run(t, repo, "gcc", "-O2", "-Wall", "-Wextra", "-o", art.stdioHeavy, "tests/preload/testdata/stdio_heavy.c")
 	buildWithEnv(t, repo, map[string]string{"CGO_ENABLED": "0"}, "go", "build", "-o", art.raw, "tests/preload/testdata/raw_client.go")
 	buildWithEnv(t, repo, map[string]string{"CGO_ENABLED": "0"}, "go", "build", "-o", art.wrapper, "./cmd/uwgwrapper")
 	return art
@@ -487,7 +616,12 @@ func setupWrapperNetwork(t *testing.T) (*engine.Engine, string) {
 
 func wrappedCommand(t *testing.T, art wrapperArtifacts, httpSock, transport, target string, args []string, opts wrapperRunOptions) *exec.Cmd {
 	t.Helper()
-	listenSock := filepath.Join(t.TempDir(), fmt.Sprintf("fdproxy-%s.sock", strings.ReplaceAll(transport, "/", "_")))
+	listenDir, err := os.MkdirTemp("", "uwgfdproxy-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(listenDir) })
+	listenSock := filepath.Join(listenDir, fmt.Sprintf("fdproxy-%s.sock", strings.ReplaceAll(transport, "/", "_")))
 	cmdArgs := []string{"--transport=" + transport, "--listen", listenSock, "--api", "unix:" + httpSock, "--socket-path", "/uwg/socket"}
 	if os.Getenv("UWGS_TEST_DEBUG") != "" {
 		cmdArgs = append([]string{"-v"}, cmdArgs...)
@@ -660,12 +794,32 @@ func assertSyscallCount(t *testing.T, stats traceStats, name string, want uint64
 	}
 }
 
+func assertSyscallAtLeast(t *testing.T, stats traceStats, name string, want uint64) {
+	t.Helper()
+	got := stats.Syscalls[name]
+	if got < want {
+		t.Fatalf("expected traced syscall %s>=%d, got %d (all=%v)", name, want, got, stats.Syscalls)
+	}
+}
+
 func assertSyscallDelta(t *testing.T, baseline, stats traceStats, name string, want int64) {
 	t.Helper()
 	got := int64(stats.Syscalls[name]) - int64(baseline.Syscalls[name])
 	if got != want {
 		t.Fatalf("expected traced syscall delta %s=%d, got %d (baseline=%v current=%v)", name, want, got, baseline.Syscalls, stats.Syscalls)
 	}
+}
+
+func mapsEqualUint64(a, b map[string]uint64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, av := range a {
+		if bv, ok := b[key]; !ok || av != bv {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizedOutput(out []byte) string {

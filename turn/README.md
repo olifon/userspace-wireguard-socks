@@ -1,25 +1,18 @@
 # Open TURN Relay
 
-This project hosts a TURN server for Wireguard servers/clients and can also be used as a general UDP relay proxy.
+This TURN server is tuned for UDP relay use cases where relay ports, WireGuard filtering, and policy control matter more than classic WebRTC media relay defaults.
 
-Unlike normal WebRTC TURN, this TURN server allocates a static port and allows abritary connections from the internet to reach the proxyy
+It is built on Pion TURN and adds:
+- fixed relay ports per user
+- username-as-port range mode
+- per-user dynamic port ranges
+- optional mapped/public relay addresses
+- internal relay-to-relay routing optimization
+- `outbound_only` users that may only receive replies after they send first
+- `internal_only` users that may only talk to other TURN allocations on the same server
+- optional WireGuard packet filtering on each relay port
 
-Features:
-- TURN server allowing both inbound and outbound UDP connections
-- Open UDP relay support allowing applications behind firewalls to use a TURN server to open a UDP port to the internet
-- Wireguard support allowing the TURN server to filter Wireguard packets before arriving the target wireguard server/client, be able to validate on the server's public key
-- Full DoS firewall for Wireguard servers, with automatic mitigation if an attack is detected.
-- Supporting username and password authentication and source network filtering, plus port range method
-- optional public mapped address override for NAT/port-forwarded setups
-- selectable permission behavior
-
-When used with Wireguard, the TURN server will not be able to decrypt or MITM the connection, allowing the TURN server be able to hosted on a untrusted provider for cheap bandwidth, while keeping your personal traffic secure.
-
-Even if you have the ability to expose a port, when you want to protect your IP or your Wireguard server you can still run the TURN server as a firewall and let your wireguard server connect through TURN.
-
-## Start in 20 seconds
-
-Build and run:
+## Quick Start
 
 ```bash
 go build -o turn .
@@ -32,39 +25,32 @@ Docker:
 docker compose up --build
 ```
 
-## What it is for
+## Relay Model
 
-Use this when you want a TURN server to behave more like a **UDP relay appliance** than a classic WebRTC media relay.
+The server supports three allocation styles:
 
-Typical goal:
-- bind UDP relay ports
-- expose them to the internet
-- keep them consistent across users or ranges
-- optionally report a public IP/port different from the local bind IP/port
+1. Fixed user port:
+   one username always gets one relay port.
+2. Username-as-port range:
+   the TURN username itself is the requested relay port inside a configured range.
+3. Per-user dynamic port range:
+   one username can allocate any free port inside its configured range.
 
-This is especially useful when:
-- the server sits behind NAT
-- you use router port forwarding
-- you want simple firewall rules
-- you want `username -> UDP port` mapping
+When one TURN client sends to the public `XOR-RELAYED-ADDRESS` of another live TURN client on the same server, the packet is routed internally inside the Go process instead of going out to the network. WireGuard guards still apply on both sides.
 
-## Config file
+## Config Overview
 
-Main fields:
+Top-level fields:
+- `realm`
+- `software`
+- `allocation_ttl`
+- `nonce_ttl`
+- `preopen_single_ports`
+- `listen.turn_listen`
+- `listen.relay_ip`
+- `max_sessions`
 
-- `realm`: TURN realm used for auth
-- `software`: label shown by the server
-- `allocation_ttl`: allocation lifetime, for example `10m`
-- `nonce_ttl`: auth nonce lifetime, for example `10m`
-- `preopen_single_ports`: reserved for future deterministic prebind behavior
-- `listen.turn_listen`: UDP address for the TURN server, for example `0.0.0.0:3478`
-- `listen.relay_ip`: IP used for relay addresses
-
-### Users
-
-A user gets one fixed relay port.
-
-Example:
+### Fixed User
 
 ```yaml
 users:
@@ -75,26 +61,30 @@ users:
     source_networks:
       - "0.0.0.0/0"
     mapped_address: "203.0.113.10:40000"
-    wireguard_mode: server-only # Options: disabled (no UDP), server-only (force server public key), default-with-overwrite (public key can be chosen by client by embedding in username), required-in-username
-    wireguard_public_key: QyKFXQYSiIBEP//EMBNonpi2PwHtp2c4dPwRWZt5RFI=
 ```
 
-Meaning:
-- username = `alice`
-- password = `alice-pass`
-- relay port = `40000`
-- client source must match `source_networks`
-- reported public relay address = `203.0.113.10:40000`
-- the UDP port may only be used for inbound/outbound Wireguard traffic
-- Only wireguard connections to the server's public key are allowed
+Key fields:
+- `port`: fixed relay port
+- `mapped_address`: public relay address returned to clients
+- `source_networks`: client IP allowlist
+- `permission_behavior`: parsed and stored for policy compatibility
 
-The wireguard public key is not sent over the wire, therefore its like a password the TURN server can use to verify inbound connections before even forwarding them to your server. its therefore crucial to keep your wireguard server public key secret outside of legitemate clients that need to connect to your server.
+### Per-User Dynamic Port Range
 
-### Port ranges
+```yaml
+users:
+  - username: "batch-worker"
+    password: "batch-pass"
+    port_range_start: 45000
+    port_range_end: 45031
+    mapped_range:
+      ip: "203.0.113.10"
+      start_port: 55000
+```
 
-For a port range, the **username is the port number**.
+The server will bind any free local port in `45000-45031`. If `mapped_range` is set, the returned public relay port is translated by offset.
 
-Example:
+### Username-As-Port Range
 
 ```yaml
 port_ranges:
@@ -107,82 +97,91 @@ port_ranges:
     mapped_range:
       ip: "203.0.113.10"
       start_port: 51000
-    wireguard_mode: required-in-username
 ```
-
-Meaning:
-- valid usernames are `41000` through `41099`
-- all use the same password
-- username `41005` maps to relay port `41005`
-- reported public relay address becomes `203.0.113.10:51005`
-- all these ports are Wireguard ports, the public key is provided by the TURN client inside the TURN username.
-
-## Permission behavior
-
-Three modes exist:
-
-### `allow`
-Allow peer traffic broadly. This is the most open mode and required when you want to use the TURN server as a UDP port forwarder.
-
-### `allow-if-no-permissions`
-Allow traffic when no explicit permissions exist yet. If permissions are created later, they can narrow behavior.
-
-### `reject-unless-permitted`
-Only allow traffic that is explicitly permitted. This is the most strict mode.
-
-## Source networks
-
-`source_networks` is a CIDR allowlist.
-
-Examples:
-
-```yaml
-source_networks:
-  - "127.0.0.0/8"
-  - "10.0.0.0/8"
-```
-
-If set, client source IPs must match one of those ranges.
-
-## Mapped address and mapped range
-
-Use these when the server is behind NAT or port forwarding.
-
-### Single user
-
-```yaml
-mapped_address: "203.0.113.10:50001"
-```
-
-The server can listen internally on one address, but tell clients to use another public endpoint.
-
-### Port range
-
-```yaml
-mapped_range:
-  ip: "203.0.113.10"
-  start_port: 51000
-```
-
-This translates the internal range to a public range with the same size.
 
 Example:
-- internal `41000-41099`
-- external `51000-51099`
+- username `41005`
+- password `shared-range-secret`
+- internal relay port `41005`
+- public relay address `203.0.113.10:51005`
 
-## Example credentials
+## Traffic Policies
 
-Fixed user:
-- username: `alice`
-- password: `alice-pass`
+### `outbound_only`
 
-Range user:
-- username: `41005`
-- password: `shared-range-secret`
+```yaml
+users:
+  - username: "egress-only"
+    password: "secret"
+    port: 40100
+    outbound_only: true
+```
 
-## Files
+Behavior:
+- the allocation may send to external peers
+- a peer may only send traffic back after the allocation has already sent to that exact peer
+- simply creating a TURN permission is not enough to open unsolicited inbound traffic
 
-- `open_turn_pion.go`: server
-- `turn-open-relay.example.yaml`: sample config
-- `Dockerfile`: two-stage scratch image build
-- `docker-compose.yml`: example container run
+### `internal_only`
+
+```yaml
+users:
+  - username: "mesh-node"
+    password: "secret"
+    port: 40101
+    internal_only: true
+```
+
+Behavior:
+- packets to external UDP endpoints are suppressed
+- packets from external UDP endpoints are suppressed
+- traffic to other live TURN relay addresses on the same server still works
+
+`internal_only` can be combined with `outbound_only`.
+
+## WireGuard Guarding
+
+Each user or range may optionally enable WireGuard filtering:
+
+```yaml
+users:
+  - username: "wg-server"
+    password: "secret"
+    port: 40000
+    wireguard_mode: server-only
+    wireguard_public_key: BASE64_PUBLIC_KEY_HERE
+```
+
+Supported `wireguard_mode` values:
+- `disabled`
+- `server-only`
+- `default-with-overwrite`
+- `required-in-username`
+
+The TURN server does not decrypt WireGuard traffic. It only validates and filters packet flow.
+
+## Mapped Addresses
+
+Use these when the server is behind NAT or port forwarding:
+- `mapped_address` for fixed users
+- `mapped_range` for username ranges or per-user dynamic port ranges
+
+Clients receive the mapped/public address in `XOR-RELAYED-ADDRESS`, while the server still binds the local relay socket on the internal interface.
+
+## Example Config
+
+See [turn-open-relay.example.yaml](./turn-open-relay.example.yaml).
+
+## Tests
+
+Default test suite:
+
+```bash
+go test ./...
+```
+
+The repository also contains a heavier WireGuard integration test behind the `integration` build tag because it depends on a real environment:
+
+```bash
+go test -tags=integration ./...
+```
