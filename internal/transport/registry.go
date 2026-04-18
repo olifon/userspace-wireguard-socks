@@ -6,7 +6,6 @@ package transport
 import (
 	"fmt"
 	"net/netip"
-	"time"
 )
 
 // BuildRegistry constructs a MultiTransportBind from a slice of Config
@@ -99,7 +98,7 @@ func buildDialer(cfg Config) (ProxyDialer, error) {
 		if cfg.Base == "tls" || cfg.Base == "https" {
 			scheme = "https"
 		}
-		return NewHTTPConnectDialer(pc.Server, scheme, pc.Username, pc.Password, pc.ValidateCert)
+		return NewHTTPConnectDialer(pc.Server, scheme, pc.Username, pc.Password, pc.TLS)
 
 	case "turn":
 		// TURN is a transport, not a dialer — handled in buildBaseTransport.
@@ -118,14 +117,14 @@ func buildBaseTransport(cfg Config, dialer ProxyDialer, wgPubKey [32]byte) (Tran
 	if cfg.WebSocket.HostHeader != "" {
 		wsOpts = append(wsOpts, WithWebSocketHostHeader(cfg.WebSocket.HostHeader))
 	}
-	if cfg.WebSocket.SNIHostname != "" {
+	if cfg.WebSocket.SNIHostname != "" && !cfg.TLS.ServerSNI.IsSet() {
 		wsOpts = append(wsOpts, WithWebSocketSNIHostname(cfg.WebSocket.SNIHostname))
 	}
 
 	switch cfg.Base {
 	case "", "udp":
 		if cfg.Proxy.Type == "turn" {
-			return NewTURNTransport(cfg.Name, cfg.Proxy.TURN, wgPubKey), nil
+			return NewTURNTransport(cfg.Name, cfg.Proxy.TURN, wgPubKey)
 		}
 		d, ok := dialer.(*DirectDialer)
 		if !ok {
@@ -138,49 +137,35 @@ func buildBaseTransport(cfg Config, dialer ProxyDialer, wgPubKey [32]byte) (Tran
 		return NewTCPTransport(cfg.Name, dialer, listenAddrs), nil
 
 	case "tls":
-		certMgr, err := buildCertManager(cfg.TLS)
+		certMgr, err := buildCertManager(cfg.TLS, cfg.Listen)
 		if err != nil {
 			return nil, err
 		}
-		return NewTLSTransport(cfg.Name, dialer, listenAddrs, certMgr, cfg.TLS.VerifyPeer), nil
+		return NewTLSTransport(cfg.Name, dialer, listenAddrs, certMgr, cfg.TLS), nil
 
 	case "dtls":
-		certMgr, err := buildCertManager(cfg.TLS)
+		certMgr, err := buildCertManager(cfg.TLS, true)
 		if err != nil {
 			return nil, err
 		}
-		return NewDTLSTransport(cfg.Name, dialer, listenAddrs, certMgr, cfg.TLS.VerifyPeer), nil
+		return NewDTLSTransport(cfg.Name, dialer, listenAddrs, certMgr, cfg.TLS), nil
 
 	case "http":
-		return NewWebSocketTransport(cfg.Name, "http", dialer, listenAddrs, nil, cfg.TLS.VerifyPeer, wsOpts...), nil
+		return NewWebSocketTransport(cfg.Name, "http", dialer, listenAddrs, nil, cfg.TLS, wsOpts...), nil
 
 	case "https":
-		certMgr, err := buildCertManager(cfg.TLS)
+		certMgr, err := buildCertManager(cfg.TLS, cfg.Listen)
 		if err != nil {
 			return nil, err
 		}
-		return NewWebSocketTransport(cfg.Name, "https", dialer, listenAddrs, certMgr, cfg.TLS.VerifyPeer, wsOpts...), nil
+		return NewWebSocketTransport(cfg.Name, "https", dialer, listenAddrs, certMgr, cfg.TLS, wsOpts...), nil
+
+	case "quic":
+		certMgr, err := buildCertManager(cfg.TLS, cfg.Listen)
+		if err != nil {
+			return nil, err
+		}
+		return NewQUICTransport(cfg.Name, dialer, listenAddrs, certMgr, cfg.TLS, cfg.WebSocket.Path, cfg.WebSocket.HostHeader), nil
 	}
 	return nil, fmt.Errorf("unsupported base protocol %q", cfg.Base)
-}
-
-// buildCertManager creates and starts a CertManager from TLS config.
-func buildCertManager(tlsCfg TLSConfig) (*CertManager, error) {
-	var reload time.Duration
-	if tlsCfg.ReloadInterval != "" {
-		var err error
-		reload, err = time.ParseDuration(tlsCfg.ReloadInterval)
-		if err != nil {
-			return nil, fmt.Errorf("tls.reload_interval: %w", err)
-		}
-	}
-	mgr := &CertManager{
-		CertFile:       tlsCfg.CertFile,
-		KeyFile:        tlsCfg.KeyFile,
-		ReloadInterval: reload,
-	}
-	if err := mgr.Start(); err != nil {
-		return nil, fmt.Errorf("cert manager: %w", err)
-	}
-	return mgr, nil
 }

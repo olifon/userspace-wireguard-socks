@@ -18,38 +18,35 @@ type TLSTransport struct {
 	dialer      ProxyDialer
 	listenAddrs []string
 	certMgr     *CertManager
-	// verifyPeer enables TLS certificate verification on the client side.
-	// Defaults to false because WireGuard already authenticates peers.
-	verifyPeer bool
+	tlsCfg      TLSConfig
 }
 
 // NewTLSTransport creates a TLSTransport.
-func NewTLSTransport(name string, dialer ProxyDialer, listenAddrs []string, certMgr *CertManager, verifyPeer bool) *TLSTransport {
+func NewTLSTransport(name string, dialer ProxyDialer, listenAddrs []string, certMgr *CertManager, tlsCfg TLSConfig) *TLSTransport {
 	return &TLSTransport{
 		name:        name,
 		dialer:      dialer,
 		listenAddrs: listenAddrs,
 		certMgr:     certMgr,
-		verifyPeer:  verifyPeer,
+		tlsCfg:      tlsCfg,
 	}
 }
 
 func (t *TLSTransport) Name() string               { return t.name }
 func (t *TLSTransport) IsConnectionOriented() bool { return true }
 
-// Dial opens a client-mode TLS session to target.  The TLS handshake is
-// deferred until the first ReadPacket/WritePacket so that Dial does not
-// block waiting for the server to initiate the handshake.  This is safe
-// because WireGuard already provides mutual authentication via Noise.
+// Dial opens a client-mode TLS session to target.
 func (t *TLSTransport) Dial(ctx context.Context, target string) (Session, error) {
 	tcpConn, err := t.dialer.DialContext(ctx, "tcp", target)
 	if err != nil {
 		return nil, fmt.Errorf("tls transport %s: dial %s: %w", t.name, target, err)
 	}
-	tlsConn := tls.Client(tcpConn, &tls.Config{
-		ServerName:         serverName(target),
-		InsecureSkipVerify: !t.verifyPeer, //nolint:gosec
-	})
+	clientCfg, err := buildTLSClientConfig(t.tlsCfg, t.certMgr, serverName(target), false)
+	if err != nil {
+		tcpConn.Close()
+		return nil, fmt.Errorf("tls transport %s: client config: %w", t.name, err)
+	}
+	tlsConn := tls.Client(tcpConn, clientCfg)
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
 		tcpConn.Close()
 		return nil, fmt.Errorf("tls transport %s: handshake %s: %w", t.name, target, err)
@@ -59,8 +56,9 @@ func (t *TLSTransport) Dial(ctx context.Context, target string) (Session, error)
 
 // Listen binds a TLS listener.
 func (t *TLSTransport) Listen(_ context.Context, port int) (Listener, error) {
-	serverCfg := &tls.Config{
-		GetCertificate: t.certMgr.GetCertificate,
+	serverCfg, err := buildTLSServerConfig(t.tlsCfg, t.certMgr)
+	if err != nil {
+		return nil, fmt.Errorf("tls transport %s: server config: %w", t.name, err)
 	}
 	addrs := t.listenAddrs
 	if len(addrs) == 0 {

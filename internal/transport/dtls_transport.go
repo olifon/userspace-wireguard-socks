@@ -5,7 +5,6 @@ package transport
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"net"
 
@@ -24,17 +23,17 @@ type DTLSTransport struct {
 	dialer      ProxyDialer
 	listenAddrs []string
 	certMgr     *CertManager
-	verifyPeer  bool
+	tlsCfg      TLSConfig
 }
 
 // NewDTLSTransport creates a DTLSTransport.
-func NewDTLSTransport(name string, dialer ProxyDialer, listenAddrs []string, certMgr *CertManager, verifyPeer bool) *DTLSTransport {
+func NewDTLSTransport(name string, dialer ProxyDialer, listenAddrs []string, certMgr *CertManager, tlsCfg TLSConfig) *DTLSTransport {
 	return &DTLSTransport{
 		name:        name,
 		dialer:      dialer,
 		listenAddrs: listenAddrs,
 		certMgr:     certMgr,
-		verifyPeer:  verifyPeer,
+		tlsCfg:      tlsCfg,
 	}
 }
 
@@ -53,15 +52,9 @@ func (t *DTLSTransport) Dial(ctx context.Context, target string) (Session, error
 		return nil, fmt.Errorf("dtls transport %s: resolve %s: %w", t.name, target, err)
 	}
 
-	cfg := &piondtls.Config{
-		InsecureSkipVerify: !t.verifyPeer, //nolint:gosec
-	}
-	if t.verifyPeer {
-		cfg.ServerName = host
-	}
-	// pion/dtls requires a certificate on both sides even with InsecureSkipVerify.
-	if cert, cerr := t.certMgr.GetCertificate(nil); cerr == nil && cert != nil {
-		cfg.Certificates = []tls.Certificate{*cert}
+	cfg, err := buildDTLSClientConfig(t.tlsCfg, t.certMgr, host, false)
+	if err != nil {
+		return nil, fmt.Errorf("dtls transport %s: client config: %w", t.name, err)
 	}
 
 	// pion/dtls v3 has no context-aware Dial; apply deadline from ctx if set.
@@ -92,9 +85,9 @@ func (t *DTLSTransport) Dial(ctx context.Context, target string) (Session, error
 
 // Listen starts a DTLS server listener.
 func (t *DTLSTransport) Listen(_ context.Context, port int) (Listener, error) {
-	cert, err := t.certMgr.GetCertificate(nil)
-	if err != nil || cert == nil {
-		return nil, fmt.Errorf("dtls transport %s: no certificate available", t.name)
+	serverCfg, err := buildDTLSServerConfig(t.tlsCfg, t.certMgr)
+	if err != nil {
+		return nil, fmt.Errorf("dtls transport %s: server config: %w", t.name, err)
 	}
 
 	addrs := t.listenAddrs
@@ -111,10 +104,7 @@ func (t *DTLSTransport) Listen(_ context.Context, port int) (Listener, error) {
 			}
 			return nil, fmt.Errorf("dtls transport %s: resolve %s:%d: %w", t.name, addr, port, err)
 		}
-		cfg := &piondtls.Config{
-			Certificates: []tls.Certificate{*cert},
-		}
-		ln, err := piondtls.Listen("udp4", udpAddr, cfg)
+		ln, err := piondtls.Listen("udp4", udpAddr, serverCfg)
 		if err != nil {
 			for _, l := range listeners {
 				l.listener.Close()

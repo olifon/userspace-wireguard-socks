@@ -15,6 +15,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	piondtls "github.com/pion/dtls/v3"
 )
 
 // CertManager manages a TLS certificate for server-mode transports.  When
@@ -26,15 +28,28 @@ type CertManager struct {
 	CertFile       string
 	KeyFile        string
 	ReloadInterval time.Duration
+	AutoGenerate   bool
 
 	mu      sync.RWMutex
 	current *tls.Certificate
+
+	stopOnce sync.Once
+	stopCh   chan struct{}
 }
 
 // Start initialises the certificate.  For auto-generated certs this happens
 // once; for file-based certs the goroutine polls for renewal until ctx is
 // cancelled.
 func (m *CertManager) Start() error {
+	if (m.CertFile == "") != (m.KeyFile == "") {
+		return os.ErrInvalid
+	}
+	if m.CertFile == "" && m.KeyFile == "" {
+		m.AutoGenerate = true
+	}
+	if m.stopCh == nil {
+		m.stopCh = make(chan struct{})
+	}
 	cert, err := m.load()
 	if err != nil {
 		return err
@@ -52,14 +67,19 @@ func (m *CertManager) Start() error {
 func (m *CertManager) reloadLoop() {
 	t := time.NewTicker(m.ReloadInterval)
 	defer t.Stop()
-	for range t.C {
-		cert, err := m.load()
-		if err != nil {
-			continue
+	for {
+		select {
+		case <-t.C:
+			cert, err := m.load()
+			if err != nil {
+				continue
+			}
+			m.mu.Lock()
+			m.current = cert
+			m.mu.Unlock()
+		case <-m.stopCh:
+			return
 		}
-		m.mu.Lock()
-		m.current = cert
-		m.mu.Unlock()
 	}
 }
 
@@ -74,6 +94,37 @@ func (m *CertManager) GetCertificate(_ *tls.ClientHelloInfo) (*tls.Certificate, 
 	return c, nil
 }
 
+// GetClientCertificate is suitable for use as tls.Config.GetClientCertificate.
+func (m *CertManager) GetClientCertificate(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+	cert, err := m.GetCertificate(nil)
+	if err != nil {
+		return nil, err
+	}
+	if cert == nil {
+		return &tls.Certificate{}, nil
+	}
+	return cert, nil
+}
+
+func (m *CertManager) GetDTLSCertificate(_ *piondtls.ClientHelloInfo) (*tls.Certificate, error) {
+	return m.GetCertificate(nil)
+}
+
+func (m *CertManager) GetDTLSClientCertificate(_ *piondtls.CertificateRequestInfo) (*tls.Certificate, error) {
+	cert, err := m.GetCertificate(nil)
+	if err != nil {
+		return nil, err
+	}
+	if cert == nil {
+		return &tls.Certificate{}, nil
+	}
+	return cert, nil
+}
+
+func (m *CertManager) CurrentCertificate() (*tls.Certificate, error) {
+	return m.GetCertificate(nil)
+}
+
 // TLSConfig returns a *tls.Config suitable for use as a server TLS config.
 func (m *CertManager) TLSConfig() *tls.Config {
 	return &tls.Config{
@@ -83,6 +134,9 @@ func (m *CertManager) TLSConfig() *tls.Config {
 
 func (m *CertManager) load() (*tls.Certificate, error) {
 	if m.CertFile == "" {
+		if !m.AutoGenerate {
+			return nil, nil
+		}
 		return generateSelfSigned()
 	}
 	cert, err := tls.LoadX509KeyPair(m.CertFile, m.KeyFile)
@@ -90,6 +144,14 @@ func (m *CertManager) load() (*tls.Certificate, error) {
 		return nil, err
 	}
 	return &cert, nil
+}
+
+func (m *CertManager) Close() {
+	m.stopOnce.Do(func() {
+		if m.stopCh != nil {
+			close(m.stopCh)
+		}
+	})
 }
 
 // generateSelfSigned creates a new ephemeral ECDSA P-256 self-signed

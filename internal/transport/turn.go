@@ -42,6 +42,7 @@ type TURNTransport struct {
 	name     string
 	cfg      TURNProxyConfig
 	wgPubKey [32]byte // injected when IncludeWGPublicKey is set
+	certMgr  *CertManager
 
 	mu                 sync.Mutex
 	client             *turn.Client
@@ -55,13 +56,19 @@ type TURNTransport struct {
 }
 
 // NewTURNTransport creates a TURNTransport from the given proxy config.
-func NewTURNTransport(name string, cfg TURNProxyConfig, wgPubKey [32]byte) *TURNTransport {
+func NewTURNTransport(name string, cfg TURNProxyConfig, wgPubKey [32]byte) (*TURNTransport, error) {
+	autoGenerate := cfg.Protocol == "dtls"
+	certMgr, err := buildCertManager(cfg.TLS, autoGenerate)
+	if err != nil {
+		return nil, err
+	}
 	return &TURNTransport{
 		name:            name,
 		cfg:             cfg,
 		wgPubKey:        wgPubKey,
+		certMgr:         certMgr,
 		basePermissions: append([]string(nil), cfg.Permissions...),
-	}
+	}, nil
 }
 
 func (t *TURNTransport) Name() string               { return t.name }
@@ -162,13 +169,11 @@ func (t *TURNTransport) dialCarrier(ctx context.Context) (net.PacketConn, error)
 		return turn.NewSTUNConn(conn), nil
 
 	case "tls", "turns":
-		skipVerify := false
-		if t.cfg.ValidateCert != nil {
-			skipVerify = !*t.cfg.ValidateCert
+		tlsCfg, err := buildTLSClientConfig(t.cfg.TLS, t.certMgr, serverName(t.cfg.Server), false)
+		if err != nil {
+			return nil, err
 		}
-		conn, err := tls.DialWithDialer(&net.Dialer{}, "tcp", t.cfg.Server, &tls.Config{
-			InsecureSkipVerify: skipVerify, //nolint:gosec
-		})
+		conn, err := tls.DialWithDialer(&net.Dialer{}, "tcp", t.cfg.Server, tlsCfg)
 		if err != nil {
 			return nil, err
 		}
@@ -183,13 +188,11 @@ func (t *TURNTransport) dialCarrier(ctx context.Context) (net.PacketConn, error)
 		if err != nil {
 			return nil, err
 		}
-		skipVerify := false
-		if t.cfg.ValidateCert != nil {
-			skipVerify = !*t.cfg.ValidateCert
+		cfg, err := buildDTLSClientConfig(t.cfg.TLS, t.certMgr, host, false)
+		if err != nil {
+			return nil, err
 		}
-		dtlsConn, err := piondtls.Dial("udp", udpAddr, &piondtls.Config{
-			InsecureSkipVerify: skipVerify, //nolint:gosec
-		})
+		dtlsConn, err := piondtls.Dial("udp", udpAddr, cfg)
 		if err != nil {
 			return nil, err
 		}

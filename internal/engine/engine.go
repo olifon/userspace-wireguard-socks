@@ -318,11 +318,13 @@ func (e *Engine) Start() error {
 func newTURNTransport(cfg config.Config) (*transport.TURNTransport, error) {
 	turnCfg := transport.TURNProxyConfig{
 		Server:             cfg.TURN.Server,
+		Protocol:           cfg.TURN.Protocol,
 		Username:           cfg.TURN.Username,
 		Password:           cfg.TURN.Password,
 		Realm:              cfg.TURN.Realm,
 		IncludeWGPublicKey: cfg.TURN.IncludeWGPublicKey,
 		Permissions:        append([]string(nil), cfg.TURN.Permissions...),
+		TLS:                cfg.TURN.TLS,
 	}
 	var wgPubKey [32]byte
 	if cfg.TURN.IncludeWGPublicKey {
@@ -333,7 +335,7 @@ func newTURNTransport(cfg config.Config) (*transport.TURNTransport, error) {
 		publicKey := privateKey.PublicKey()
 		copy(wgPubKey[:], publicKey[:])
 	}
-	return transport.NewTURNTransport("turn", turnCfg, wgPubKey), nil
+	return transport.NewTURNTransport("turn", turnCfg, wgPubKey)
 }
 
 func (e *Engine) updateTURNPermissions() {

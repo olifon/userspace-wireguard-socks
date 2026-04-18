@@ -35,15 +35,13 @@ type WebSocketTransport struct {
 	dialer      ProxyDialer
 	listenAddrs []string
 	certMgr     *CertManager // nil for ws://, non-nil for wss://
-	verifyPeer  bool
+	tlsCfg      TLSConfig
 	useTLS      bool
 	// path is the HTTP path for WebSocket upgrade. Defaults to "/".
 	path string
 	// hostHeader overrides the Host header sent in the HTTP upgrade request.
 	// When empty, the target host is used.
 	hostHeader string
-	// sniHostname overrides the TLS SNI name for wss://.
-	sniHostname string
 }
 
 type WebSocketOption func(*WebSocketTransport)
@@ -69,19 +67,22 @@ func WithWebSocketHostHeader(host string) WebSocketOption {
 
 func WithWebSocketSNIHostname(name string) WebSocketOption {
 	return func(t *WebSocketTransport) {
-		t.sniHostname = name
+		t.tlsCfg.ServerSNI = OptionalString{
+			set:   true,
+			value: &name,
+		}
 	}
 }
 
 // NewWebSocketTransport creates a WebSocketTransport.
 // scheme should be "http" (ws://) or "https" (wss://).
-func NewWebSocketTransport(name, scheme string, dialer ProxyDialer, listenAddrs []string, certMgr *CertManager, verifyPeer bool, opts ...WebSocketOption) *WebSocketTransport {
+func NewWebSocketTransport(name, scheme string, dialer ProxyDialer, listenAddrs []string, certMgr *CertManager, tlsCfg TLSConfig, opts ...WebSocketOption) *WebSocketTransport {
 	t := &WebSocketTransport{
 		name:        name,
 		dialer:      dialer,
 		listenAddrs: listenAddrs,
 		certMgr:     certMgr,
-		verifyPeer:  verifyPeer,
+		tlsCfg:      tlsCfg,
 		useTLS:      scheme == "https",
 		path:        "/",
 	}
@@ -106,16 +107,14 @@ func (t *WebSocketTransport) Dial(ctx context.Context, target string) (Session, 
 
 	var conn net.Conn = tcpConn
 	scheme := "ws"
-	sniServerName := serverName(target)
-	if t.sniHostname != "" {
-		sniServerName = t.sniHostname
-	}
 	if t.useTLS {
 		scheme = "wss"
-		tlsConn := tls.Client(tcpConn, &tls.Config{
-			ServerName:         sniServerName,
-			InsecureSkipVerify: !t.verifyPeer, //nolint:gosec
-		})
+		clientCfg, cfgErr := buildTLSClientConfig(t.tlsCfg, t.certMgr, serverName(target), false)
+		if cfgErr != nil {
+			tcpConn.Close()
+			return nil, fmt.Errorf("ws transport %s: TLS config: %w", t.name, cfgErr)
+		}
+		tlsConn := tls.Client(tcpConn, clientCfg)
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
 			tcpConn.Close()
 			return nil, fmt.Errorf("ws transport %s: TLS handshake: %w", t.name, err)
@@ -149,7 +148,13 @@ func (t *WebSocketTransport) Listen(_ context.Context, port int) (Listener, erro
 		var err error
 		listenAddr := fmt.Sprintf("%s:%d", addr, chosen)
 		if t.useTLS {
-			cfg := &tls.Config{GetCertificate: t.certMgr.GetCertificate}
+			cfg, cfgErr := buildTLSServerConfig(t.tlsCfg, t.certMgr)
+			if cfgErr != nil {
+				for _, l := range listeners {
+					l.Close()
+				}
+				return nil, fmt.Errorf("ws transport %s: TLS server config: %w", t.name, cfgErr)
+			}
 			ln, err = tls.Listen("tcp", listenAddr, cfg)
 		} else {
 			ln, err = net.Listen("tcp", listenAddr)

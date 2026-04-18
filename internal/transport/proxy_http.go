@@ -17,9 +17,9 @@ import (
 // It only supports TCP streams; UDP (DialPacket) returns ErrUDPNotSupported.
 //
 // Certificate validation behaviour when reaching the proxy over HTTPS:
-//   - If no credentials are set: InsecureSkipVerify=true (default).
-//   - If credentials are set:    InsecureSkipVerify=false (default).
-//   - ValidateCert overrides both defaults when non-nil.
+//   - If no credentials are set: skip server verification by default.
+//   - If credentials are set:    verify the proxy certificate by default.
+//   - tls.verify_peer overrides both defaults when explicitly configured.
 type HTTPConnectDialer struct {
 	// Server is the proxy host:port.
 	Server string
@@ -27,23 +27,29 @@ type HTTPConnectDialer struct {
 	HTTPS bool
 	// Username and Password for Proxy-Authorization.
 	Username, Password string
-	// ValidateCert overrides default certificate validation behaviour.
-	// nil = use the credential-based default.
-	ValidateCert *bool
+	// TLS configures HTTPS proxy TLS behavior.
+	TLS TLSConfig
+
+	certMgr *CertManager
 }
 
 // NewHTTPConnectDialer creates an HTTPConnectDialer.  scheme should be "http"
 // or "https"; the HTTPS flag is set automatically.
-func NewHTTPConnectDialer(server, scheme, username, password string, validateCert *bool) (*HTTPConnectDialer, error) {
+func NewHTTPConnectDialer(server, scheme, username, password string, tlsCfg TLSConfig) (*HTTPConnectDialer, error) {
 	if _, _, err := net.SplitHostPort(server); err != nil {
 		return nil, fmt.Errorf("http proxy: invalid server address %q: %w", server, err)
 	}
+	certMgr, err := buildCertManager(tlsCfg, false)
+	if err != nil {
+		return nil, err
+	}
 	return &HTTPConnectDialer{
-		Server:       server,
-		HTTPS:        scheme == "https",
-		Username:     username,
-		Password:     password,
-		ValidateCert: validateCert,
+		Server:   server,
+		HTTPS:    scheme == "https",
+		Username: username,
+		Password: password,
+		TLS:      tlsCfg,
+		certMgr:  certMgr,
 	}, nil
 }
 
@@ -59,11 +65,12 @@ func (d *HTTPConnectDialer) DialContext(ctx context.Context, _, addr string) (ne
 	// 2. Optionally wrap in TLS for HTTPS proxies.
 	var conn net.Conn = raw
 	if d.HTTPS {
-		skip := d.skipVerify()
-		tlsConn := tls.Client(raw, &tls.Config{
-			ServerName:         serverName(d.Server),
-			InsecureSkipVerify: skip, //nolint:gosec
-		})
+		clientCfg, cfgErr := buildTLSClientConfig(d.TLS, d.certMgr, serverName(d.Server), d.Username != "")
+		if cfgErr != nil {
+			raw.Close()
+			return nil, fmt.Errorf("http proxy: TLS config: %w", cfgErr)
+		}
+		tlsConn := tls.Client(raw, clientCfg)
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
 			raw.Close()
 			return nil, fmt.Errorf("http proxy: TLS handshake: %w", err)
@@ -111,13 +118,6 @@ func (d *HTTPConnectDialer) DialPacket(_ context.Context, _ string) (net.PacketC
 
 // SupportsHostname returns true; HTTP CONNECT forwards the hostname verbatim.
 func (d *HTTPConnectDialer) SupportsHostname() bool { return true }
-
-func (d *HTTPConnectDialer) skipVerify() bool {
-	if d.ValidateCert != nil {
-		return !*d.ValidateCert
-	}
-	return d.Username == "" // skip when no credentials
-}
 
 // serverName extracts the host portion for SNI.
 func serverName(hostport string) string {

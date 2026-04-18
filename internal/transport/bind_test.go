@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -106,6 +107,107 @@ func writeSelfSignedCert(t *testing.T, dnsName string) (string, string) {
 		t.Fatal(err)
 	}
 	return certFile, keyFile
+}
+
+type testCA struct {
+	cert   *x509.Certificate
+	key    *ecdsa.PrivateKey
+	caFile string
+	dir    string
+}
+
+func newTestCA(t *testing.T) *testCA {
+	t.Helper()
+
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: "transport-test-ca"},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	caFile := dir + "/ca.crt"
+	if err := os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return &testCA{
+		cert:   cert,
+		key:    priv,
+		caFile: caFile,
+		dir:    dir,
+	}
+}
+
+func (ca *testCA) issueLeaf(t *testing.T, name string, dnsNames []string, ipAddrs []net.IP, usages []x509.ExtKeyUsage) (string, string) {
+	t.Helper()
+
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: name},
+		DNSNames:     dnsNames,
+		IPAddresses:  ipAddrs,
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  usages,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, &priv.PublicKey, ca.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := fmt.Sprintf("%s/%s", ca.dir, strings.ReplaceAll(name, " ", "_"))
+	certFile := base + ".crt"
+	keyFile := base + ".key"
+	if err := os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return certFile, keyFile
+}
+
+func newCertManagerFromFiles(t *testing.T, certFile, keyFile string) *transport.CertManager {
+	t.Helper()
+	mgr := &transport.CertManager{
+		CertFile: certFile,
+		KeyFile:  keyFile,
+	}
+	if err := mgr.Start(); err != nil {
+		t.Fatal(err)
+	}
+	return mgr
 }
 
 func websocketAcceptForTest(key string) string {
@@ -198,7 +300,7 @@ func TestTLSTransportSelfSigned(t *testing.T) {
 	if err := certMgr.Start(); err != nil {
 		t.Fatal(err)
 	}
-	tr := transport.NewTLSTransport("tls-test", loopbackDialer{}, []string{"127.0.0.1"}, certMgr, false)
+	tr := transport.NewTLSTransport("tls-test", loopbackDialer{}, []string{"127.0.0.1"}, certMgr, transport.TLSConfig{})
 
 	ctx := context.Background()
 	ln, err := tr.Listen(ctx, 0)
@@ -233,7 +335,7 @@ func TestDTLSTransportRoundTrip(t *testing.T) {
 	if err := certMgr.Start(); err != nil {
 		t.Fatal(err)
 	}
-	tr := transport.NewDTLSTransport("dtls-test", loopbackDialer{}, []string{"127.0.0.1"}, certMgr, false)
+	tr := transport.NewDTLSTransport("dtls-test", loopbackDialer{}, []string{"127.0.0.1"}, certMgr, transport.TLSConfig{})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -283,7 +385,7 @@ func TestWebSocketTransportRoundTrip(t *testing.T) {
 		loopbackDialer{},
 		[]string{"127.0.0.1"},
 		nil,
-		false,
+		transport.TLSConfig{},
 		transport.WithWebSocketPath("/wireguard"),
 	)
 
@@ -374,7 +476,7 @@ func TestWebSocketTransportTLSSNIOverride(t *testing.T) {
 		loopbackDialer{},
 		nil,
 		nil,
-		false,
+		transport.TLSConfig{},
 		transport.WithWebSocketPath("/wireguard"),
 		transport.WithWebSocketHostHeader("inner.example"),
 		transport.WithWebSocketSNIHostname("ws.test"),
@@ -582,7 +684,7 @@ func TestHTTPConnectDialer(t *testing.T) {
 	}()
 
 	proxyAddr := startMockHTTPProxy(t)
-	d, err := transport.NewHTTPConnectDialer(proxyAddr, "http", "", "", nil)
+	d, err := transport.NewHTTPConnectDialer(proxyAddr, "http", "", "", transport.TLSConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -605,7 +707,7 @@ func TestHTTPConnectDialer(t *testing.T) {
 }
 
 func TestHTTPConnectDialerNoUDP(t *testing.T) {
-	d, _ := transport.NewHTTPConnectDialer("127.0.0.1:1080", "http", "", "", nil)
+	d, _ := transport.NewHTTPConnectDialer("127.0.0.1:1080", "http", "", "", transport.TLSConfig{})
 	_, _, err := d.DialPacket(context.Background(), "")
 	if err != transport.ErrUDPNotSupported {
 		t.Fatalf("expected ErrUDPNotSupported, got %v", err)
@@ -809,7 +911,7 @@ func TestTLSOverHTTPConnectProxy(t *testing.T) {
 	if err := certMgr.Start(); err != nil {
 		t.Fatal(err)
 	}
-	tlsTr := transport.NewTLSTransport("tls", loopbackDialer{}, []string{"127.0.0.1"}, certMgr, false)
+	tlsTr := transport.NewTLSTransport("tls", loopbackDialer{}, []string{"127.0.0.1"}, certMgr, transport.TLSConfig{})
 	ctx := context.Background()
 	ln, err := tlsTr.Listen(ctx, 0)
 	if err != nil {
@@ -828,7 +930,7 @@ func TestTLSOverHTTPConnectProxy(t *testing.T) {
 	proxyAddr := startMockHTTPProxy(t)
 
 	// Build TLS transport that dials through the HTTP proxy.
-	httpDialer, err := transport.NewHTTPConnectDialer(proxyAddr, "http", "", "", nil)
+	httpDialer, err := transport.NewHTTPConnectDialer(proxyAddr, "http", "", "", transport.TLSConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -848,6 +950,119 @@ func TestTLSOverHTTPConnectProxy(t *testing.T) {
 		t.Fatal("nil server session")
 	}
 	defer srvSess.Close()
+}
+
+func TestTLSTransportMutualTLS(t *testing.T) {
+	ca := newTestCA(t)
+	serverCert, serverKey := ca.issueLeaf(t, "tls-server", nil, []net.IP{net.ParseIP("127.0.0.1")}, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth})
+	clientCert, clientKey := ca.issueLeaf(t, "tls-client", nil, nil, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth})
+
+	serverMgr := newCertManagerFromFiles(t, serverCert, serverKey)
+	clientMgr := newCertManagerFromFiles(t, clientCert, clientKey)
+
+	serverTLS := transport.TLSConfig{
+		VerifyPeer: true,
+		CAFile:     ca.caFile,
+	}
+	clientTLS := transport.TLSConfig{
+		VerifyPeer: true,
+		CAFile:     ca.caFile,
+	}
+
+	serverTr := transport.NewTLSTransport("tls-server", loopbackDialer{}, []string{"127.0.0.1"}, serverMgr, serverTLS)
+	clientTr := transport.NewTLSTransport("tls-client", loopbackDialer{}, nil, clientMgr, clientTLS)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ln, err := serverTr.Listen(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	serverSess := make(chan transport.Session, 1)
+	go func() {
+		sess, err := ln.Accept(ctx)
+		if err == nil {
+			serverSess <- sess
+		}
+	}()
+
+	clientSess, err := clientTr.Dial(ctx, ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSess.Close()
+
+	srvSess := <-serverSess
+	defer srvSess.Close()
+
+	sendRecv(t, clientSess, srvSess, 20)
+}
+
+func TestQUICTransportRoundTrip(t *testing.T) {
+	ca := newTestCA(t)
+	serverCert, serverKey := ca.issueLeaf(t, "quic-server", nil, []net.IP{net.ParseIP("127.0.0.1")}, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth})
+
+	serverMgr := newCertManagerFromFiles(t, serverCert, serverKey)
+	trServer := transport.NewQUICTransport(
+		"quic-server",
+		loopbackDialer{},
+		[]string{"127.0.0.1"},
+		serverMgr,
+		transport.TLSConfig{},
+		"/wireguard",
+		"",
+	)
+	trClient := transport.NewQUICTransport(
+		"quic-client",
+		loopbackDialer{},
+		nil,
+		nil,
+		transport.TLSConfig{
+			VerifyPeer: true,
+			CAFile:     ca.caFile,
+		},
+		"/wireguard",
+		"inner.example",
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ln, err := trServer.Listen(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	serverSess := make(chan transport.Session, 1)
+	serverErr := make(chan error, 1)
+	go func() {
+		sess, err := ln.Accept(ctx)
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		serverSess <- sess
+	}()
+
+	clientSess, err := trClient.Dial(ctx, ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSess.Close()
+
+	select {
+	case srvSess := <-serverSess:
+		defer srvSess.Close()
+		sendRecv(t, clientSess, srvSess, 20)
+	case err := <-serverErr:
+		t.Fatalf("server accept: %v", err)
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for QUIC session")
+	}
 }
 
 // --------------------------------------------------------------------------

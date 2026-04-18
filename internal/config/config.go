@@ -82,6 +82,8 @@ type WireGuard struct {
 type TURN struct {
 	// Server is the TURN server address (host:port).
 	Server string `yaml:"server"`
+	// Protocol is how to reach the TURN server: udp | tcp | tls | dtls.
+	Protocol string `yaml:"protocol"`
 	// Username for TURN authentication.
 	Username string `yaml:"username"`
 	// Password for TURN authentication.
@@ -96,6 +98,8 @@ type TURN struct {
 	// WireGuard public key to the TURN username. The companion open TURN relay
 	// can use that metadata to bind allocations to a WireGuard identity.
 	IncludeWGPublicKey bool `yaml:"include_wg_public_key"`
+	// TLS configures TURNS and TURN-over-DTLS.
+	TLS transport.TLSConfig `yaml:"tls"`
 }
 
 type Peer struct {
