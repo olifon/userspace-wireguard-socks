@@ -125,6 +125,10 @@ type Proxy struct {
 	FallbackSOCKS5            string          `yaml:"fallback_socks5"`
 	IPv6                      *bool           `yaml:"ipv6"`
 	UDPAssociate              *bool           `yaml:"udp_associate"`
+	UDPAssociatePorts         string          `yaml:"udp_associate_ports"`
+	HTTPSProxying             *bool           `yaml:"https_proxying"`
+	HTTPSProxyVerify          string          `yaml:"https_proxy_verify"`
+	HTTPSProxyCAFile          string          `yaml:"https_proxy_ca_file"`
 	Bind                      *bool           `yaml:"bind"`
 	LowBind                   *bool           `yaml:"lowbind"`
 	PreferIPv6ForUDPOverSOCKS *bool           `yaml:"prefer_ipv6_for_udp_over_socks"`
@@ -301,6 +305,8 @@ func Default() Config {
 		Proxy: Proxy{
 			FallbackDirect:            boolPtr(true),
 			UDPAssociate:              boolPtr(true),
+			HTTPSProxying:             boolPtr(true),
+			HTTPSProxyVerify:          "pki",
 			Bind:                      boolPtr(false),
 			LowBind:                   boolPtr(false),
 			PreferIPv6ForUDPOverSOCKS: boolPtr(false),
@@ -408,6 +414,36 @@ func (c *Config) Normalize() error {
 	if c.Proxy.UDPAssociate == nil {
 		t := true
 		c.Proxy.UDPAssociate = &t
+	}
+	if c.Proxy.UDPAssociatePorts != "" {
+		if _, _, err := ParsePortRange(c.Proxy.UDPAssociatePorts); err != nil {
+			return fmt.Errorf("proxy.udp_associate_ports %q: %w", c.Proxy.UDPAssociatePorts, err)
+		}
+	}
+	if c.Proxy.HTTPSProxying == nil {
+		t := true
+		c.Proxy.HTTPSProxying = &t
+	}
+	if c.Proxy.HTTPSProxyVerify == "" {
+		if c.Proxy.HTTPSProxyCAFile != "" {
+			c.Proxy.HTTPSProxyVerify = "both"
+		} else {
+			c.Proxy.HTTPSProxyVerify = "pki"
+		}
+	}
+	switch c.Proxy.HTTPSProxyVerify {
+	case "none", "pki":
+	case "ca", "both":
+		if c.Proxy.HTTPSProxyCAFile == "" {
+			return fmt.Errorf("proxy.https_proxy_ca_file is required when proxy.https_proxy_verify is %q", c.Proxy.HTTPSProxyVerify)
+		}
+	default:
+		return fmt.Errorf("invalid proxy.https_proxy_verify %q", c.Proxy.HTTPSProxyVerify)
+	}
+	if c.Proxy.HTTPSProxyCAFile != "" {
+		if _, err := os.Stat(c.Proxy.HTTPSProxyCAFile); err != nil {
+			return fmt.Errorf("proxy.https_proxy_ca_file %q: %w", c.Proxy.HTTPSProxyCAFile, err)
+		}
 	}
 	if c.Proxy.Bind == nil {
 		f := false
@@ -659,6 +695,40 @@ func normalizeTrafficShaper(name string, cfg *TrafficShaper) error {
 		cfg.LatencyMillis = 15
 	}
 	return nil
+}
+
+// ParsePortRange parses "port" or "start-end" into an inclusive port range.
+func ParsePortRange(raw string) (int, int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, 0, fmt.Errorf("port range is empty")
+	}
+	startText, endText, hasDash := strings.Cut(raw, "-")
+	if !hasDash {
+		port, err := strconv.Atoi(raw)
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid port %q", raw)
+		}
+		if port < 1 || port > 65535 {
+			return 0, 0, fmt.Errorf("port %d must be between 1 and 65535", port)
+		}
+		return port, port, nil
+	}
+	start, err := strconv.Atoi(strings.TrimSpace(startText))
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid start port %q", startText)
+	}
+	end, err := strconv.Atoi(strings.TrimSpace(endText))
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid end port %q", endText)
+	}
+	if start < 1 || start > 65535 || end < 1 || end > 65535 {
+		return 0, 0, fmt.Errorf("ports must be between 1 and 65535")
+	}
+	if start > end {
+		return 0, 0, fmt.Errorf("start port %d must be <= end port %d", start, end)
+	}
+	return start, end, nil
 }
 
 func normalizeForwards(name string, forwards []Forward) error {
