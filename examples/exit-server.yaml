@@ -13,13 +13,6 @@ dns_server:
   # Tunnel-side DNS listener. This is not a host port 53 bind.
   listen: 100.64.90.1:53
 
-
-transports:
-    - base: udp
-      listen: true
-      listen_port: 51821
-      name: udp
-
 api:
   listen: 127.0.0.1:9090
   token: replace-with-a-long-random-token
