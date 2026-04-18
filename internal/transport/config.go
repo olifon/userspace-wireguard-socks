@@ -76,11 +76,12 @@ type TURNProxyConfig struct {
 	Password string `yaml:"password" json:"password"`
 	Realm    string `yaml:"realm,omitempty" json:"realm,omitempty"`
 	// Protocol is how to reach the TURN server: udp | tcp | tls | dtls
+	// Note: TURN does not need encryption for security, its only to bypass firewalls or hide the VPN as web traffic
 	Protocol string `yaml:"protocol,omitempty" json:"protocol,omitempty"`
 	// NoCreatePermission skips CreatePermission calls (open relays).
 	NoCreatePermission bool `yaml:"no_create_permission,omitempty" json:"no_create_permission,omitempty"`
 	// IncludeWGPublicKey appends the encrypted WireGuard public key to the
-	// TURN username so the relay can associate allocations.
+	// TURN username so the relay can associate allocations. The Wireguard public key is encrypted with the TURN password
 	IncludeWGPublicKey bool `yaml:"include_wg_public_key,omitempty" json:"include_wg_public_key,omitempty"`
 	// ValidateCert controls TLS certificate validation when reaching the
 	// TURN server over TLS/DTLS. Default true (nil = use true).
