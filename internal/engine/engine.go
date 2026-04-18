@@ -2202,9 +2202,6 @@ func (e *Engine) allowRelayPacket(packet []byte) bool {
 	if !ok || e.localAddrContains(meta.src.Addr()) {
 		return true
 	}
-	if e.localPrefixContainsUnrouted(meta.dst.Addr()) {
-		return false
-	}
 	allowed := false
 	if e.cfg.Relay.Conntrack == nil || *e.cfg.Relay.Conntrack {
 		allowed = e.allowRelayTracked(meta, time.Now())
