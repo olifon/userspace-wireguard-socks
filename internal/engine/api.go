@@ -966,16 +966,22 @@ func writeAPIError(w http.ResponseWriter, status int, message string) {
 // --- /v1/transports --------------------------------------------------------
 
 type apiTransport struct {
-	Name            string            `json:"name"`
-	Base            string            `json:"base"`
-	Listen          bool              `json:"listen"`
-	ListenPort      *int              `json:"listen_port,omitempty"`
-	ListenAddresses []string          `json:"listen_addresses,omitempty"`
-	TLS             transport.TLSConfig   `json:"tls,omitempty"`
-	Proxy           transport.ProxyConfig `json:"proxy,omitempty"`
-	IPv6Translate   bool              `json:"ipv6_translate,omitempty"`
-	IPv6Prefix      string            `json:"ipv6_prefix,omitempty"`
-	ActiveSessions  int               `json:"active_sessions"`
+	Name              string                `json:"name"`
+	Base              string                `json:"base"`
+	Listen            bool                  `json:"listen"`
+	ListenPort        *int                  `json:"listen_port,omitempty"`
+	ListenAddresses   []string              `json:"listen_addresses,omitempty"`
+	TLS               transport.TLSConfig   `json:"tls,omitempty"`
+	TURN              transport.TURNConfig  `json:"turn,omitempty"`
+	Proxy             transport.ProxyConfig `json:"proxy,omitempty"`
+	IPv6Translate     bool                  `json:"ipv6_translate,omitempty"`
+	IPv6Prefix        string                `json:"ipv6_prefix,omitempty"`
+	ActiveSessions    int                   `json:"active_sessions"`
+	Connected         bool                  `json:"connected,omitempty"`
+	CarrierProtocol   string                `json:"carrier_protocol,omitempty"`
+	CarrierLocalAddr  string                `json:"carrier_local_addr,omitempty"`
+	CarrierRemoteAddr string                `json:"carrier_remote_addr,omitempty"`
+	RelayAddr         string                `json:"relay_addr,omitempty"`
 }
 
 // handleAPITransports handles GET /v1/transports and POST /v1/transports.
@@ -988,6 +994,7 @@ func (e *Engine) handleAPITransports(w http.ResponseWriter, r *http.Request) {
 
 		out := make([]apiTransport, 0, len(cfgs))
 		for _, tc := range cfgs {
+			tc = transport.NormalizeConfig(tc)
 			at := apiTransport{
 				Name:            tc.Name,
 				Base:            tc.Base,
@@ -995,12 +1002,22 @@ func (e *Engine) handleAPITransports(w http.ResponseWriter, r *http.Request) {
 				ListenPort:      tc.ListenPort,
 				ListenAddresses: tc.ListenAddresses,
 				TLS:             tc.TLS,
+				TURN:            tc.TURN,
 				Proxy:           tc.Proxy,
 				IPv6Translate:   tc.IPv6Translate,
 				IPv6Prefix:      tc.IPv6Prefix,
 			}
-			if e.transportBind != nil {
-				at.ActiveSessions = e.transportBind.ActiveSessions()
+			for _, ts := range e.GetTransportStatus() {
+				if ts.Name != tc.Name {
+					continue
+				}
+				at.ActiveSessions = ts.ActiveSessions
+				at.Connected = ts.Connected
+				at.CarrierProtocol = ts.CarrierProtocol
+				at.CarrierLocalAddr = ts.CarrierLocalAddr
+				at.CarrierRemoteAddr = ts.CarrierRemoteAddr
+				at.RelayAddr = ts.RelayAddr
+				break
 			}
 			out = append(out, at)
 		}
@@ -1021,6 +1038,7 @@ func (e *Engine) handleAPITransports(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusBadRequest, "name is required")
 			return
 		}
+		tc = transport.NormalizeConfig(tc)
 		if err := transport.ValidateBase(tc.Base); err != nil {
 			writeAPIError(w, http.StatusBadRequest, err.Error())
 			return
@@ -1065,17 +1083,27 @@ func (e *Engine) handleAPITransport(w http.ResponseWriter, r *http.Request) {
 		}
 		at := apiTransport{
 			Name:            found.Name,
-			Base:            found.Base,
+			Base:            transport.NormalizeConfig(*found).Base,
 			Listen:          found.Listen,
 			ListenPort:      found.ListenPort,
 			ListenAddresses: found.ListenAddresses,
 			TLS:             found.TLS,
-			Proxy:           found.Proxy,
+			TURN:            transport.NormalizeConfig(*found).TURN,
+			Proxy:           transport.NormalizeConfig(*found).Proxy,
 			IPv6Translate:   found.IPv6Translate,
 			IPv6Prefix:      found.IPv6Prefix,
 		}
-		if e.transportBind != nil {
-			at.ActiveSessions = e.transportBind.ActiveSessions()
+		for _, ts := range e.GetTransportStatus() {
+			if ts.Name != found.Name {
+				continue
+			}
+			at.ActiveSessions = ts.ActiveSessions
+			at.Connected = ts.Connected
+			at.CarrierProtocol = ts.CarrierProtocol
+			at.CarrierLocalAddr = ts.CarrierLocalAddr
+			at.CarrierRemoteAddr = ts.CarrierRemoteAddr
+			at.RelayAddr = ts.RelayAddr
+			break
 		}
 		writeAPIJSON(w, http.StatusOK, at)
 

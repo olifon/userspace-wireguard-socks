@@ -96,6 +96,13 @@ func newStreamSession(conn net.Conn, remote string, idle time.Duration) *streamS
 
 func (s *streamSession) RemoteAddr() string { return s.remote }
 func (s *streamSession) Close() error       { return s.conn.Close() }
+func (s *streamSession) SessionInfo() SessionInfo {
+	return SessionInfo{
+		LocalAddr:         addrString(s.conn.LocalAddr()),
+		CarrierRemoteAddr: addrString(s.conn.RemoteAddr()),
+		LogicalRemoteAddr: s.remote,
+	}
+}
 
 // SetIdleTimeout updates the idle timeout.  Pass 0 to disable.
 func (s *streamSession) SetIdleTimeout(d time.Duration) {

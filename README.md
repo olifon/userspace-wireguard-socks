@@ -36,14 +36,12 @@ For a complete local two-peer demo, start `examples/exit-server.yaml` and
   raw socket API clients.
 - `turn/`: standalone open TURN relay for deterministic UDP relay ports. It can
   be used with `uwgsocks` TURN mode when peers need a relay-friendly UDP path.
-- `uwgsocks-ui/`: separate web UI repo embedded in this checkout for managing
-  users, peers, ACLs, generated YAML, daemon restarts, 2FA/OIDC, and per-peer
-  traffic shaping.
 
 ## What Works Today
 
 - Rootless WireGuard client and server mode.
 - IPv4, IPv6, TCP, UDP, DNS, and ping-style ICMP/ICMPv6.
+- Tested on amd64, arm64, gvisor sandbox, termux on android, libc and musl libc (also for uwgwrapper)
 - HTTP proxy, SOCKS5 CONNECT, SOCKS5 UDP ASSOCIATE, and SOCKS5 BIND.
 - Local forwards and tunnel-side reverse forwards with optional PROXY protocol.
 - Transparent inbound termination from WireGuard peers to host sockets.

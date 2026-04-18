@@ -69,6 +69,21 @@ type Session interface {
 	Close() error
 }
 
+// SessionInfo exposes optional low-level socket details for status/debugging.
+// Implementations may leave fields empty when the underlying transport does
+// not expose them cleanly.
+type SessionInfo struct {
+	LocalAddr         string
+	CarrierRemoteAddr string
+	LogicalRemoteAddr string
+}
+
+// SessionInfoProvider is implemented by Session types that can report the
+// local/remote OS-level addresses currently backing the transport session.
+type SessionInfoProvider interface {
+	SessionInfo() SessionInfo
+}
+
 // Listener accepts incoming sessions from remote peers.
 type Listener interface {
 	// Accept blocks until a new session arrives or ctx is cancelled.
@@ -117,3 +132,26 @@ type PeerInfo struct {
 // oriented session dies and the effective endpoint for a peer needs to be
 // reset.  The engine uses this to update the WireGuard IPC state.
 type EndpointResetFunc func(identBytes []byte, fallbackEndpoint string)
+
+// TransportInfo is optional runtime state exported by a transport instance.
+// It is mainly used for management/status APIs.
+type TransportInfo struct {
+	Connected         bool
+	CarrierProtocol   string
+	CarrierLocalAddr  string
+	CarrierRemoteAddr string
+	RelayAddr         string
+}
+
+// TransportInfoProvider is implemented by transports that can report shared
+// runtime state, for example a TURN allocation.
+type TransportInfoProvider interface {
+	TransportInfo() TransportInfo
+}
+
+func addrString(addr net.Addr) string {
+	if addr == nil {
+		return ""
+	}
+	return addr.String()
+}

@@ -6,10 +6,12 @@ package engine
 import (
 	"encoding/hex"
 	"fmt"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/reindertpelsma/userspace-wireguard-socks/internal/transport"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
@@ -17,10 +19,11 @@ import (
 // safe to expose through the management API: private and preshared keys from
 // the WireGuard UAPI dump are deliberately ignored while parsing.
 type Status struct {
-	Running           bool         `json:"running"`
-	ListenPort        int          `json:"listen_port,omitempty"`
-	ActiveConnections int          `json:"active_connections"`
-	Peers             []PeerStatus `json:"peers"`
+	Running           bool              `json:"running"`
+	ListenPort        int               `json:"listen_port,omitempty"`
+	ActiveConnections int               `json:"active_connections"`
+	Peers             []PeerStatus      `json:"peers"`
+	Transports        []TransportStatus `json:"transports,omitempty"`
 }
 
 // PeerStatus mirrors the operational counters reported by wireguard-go for a
@@ -29,6 +32,7 @@ type Status struct {
 type PeerStatus struct {
 	PublicKey                  string   `json:"public_key"`
 	Endpoint                   string   `json:"endpoint,omitempty"`
+	EndpointIP                 string   `json:"endpoint_ip,omitempty"`
 	AllowedIPs                 []string `json:"allowed_ips,omitempty"`
 	PersistentKeepaliveSeconds int      `json:"persistent_keepalive_seconds,omitempty"`
 	HasHandshake               bool     `json:"has_handshake"`
@@ -37,6 +41,11 @@ type PeerStatus struct {
 	LastHandshakeTimeNsec      int64    `json:"last_handshake_time_nsec"`
 	TransmitBytes              uint64   `json:"transmit_bytes"`
 	ReceiveBytes               uint64   `json:"receive_bytes"`
+	TransportName              string   `json:"transport_name,omitempty"`
+	TransportState             string   `json:"transport_state,omitempty"`
+	TransportEndpoint          string   `json:"transport_endpoint,omitempty"`
+	TransportSourceAddr        string   `json:"transport_source_addr,omitempty"`
+	TransportCarrierRemoteAddr string   `json:"transport_carrier_remote_addr,omitempty"`
 }
 
 // Status returns a live snapshot of configured peers, transfer counters,
@@ -59,6 +68,8 @@ func (e *Engine) Status() (Status, error) {
 	}
 	parsed.Running = true
 	parsed.ActiveConnections = st.ActiveConnections
+	parsed.Transports = e.GetTransportStatus()
+	e.annotatePeerTransportStatus(&parsed)
 	return parsed, nil
 }
 
@@ -98,6 +109,7 @@ func parseStatusUAPI(raw string) (Status, error) {
 		case "endpoint":
 			if current != nil {
 				current.Endpoint = value
+				current.EndpointIP = endpointIPString(value)
 			}
 		case "allowed_ip":
 			if current != nil {
@@ -154,6 +166,189 @@ func parseStatusUAPI(raw string) (Status, error) {
 		peer.LastHandshakeTime = time.Unix(peer.LastHandshakeTimeSec, peer.LastHandshakeTimeNsec).UTC().Format(time.RFC3339Nano)
 	}
 	return st, nil
+}
+
+func (e *Engine) annotatePeerTransportStatus(st *Status) {
+	e.cfgMu.RLock()
+	configuredPeers := make([]struct {
+		PublicKey string
+		Endpoint  string
+		Transport string
+	}, 0, len(e.cfg.WireGuard.Peers))
+	transports := append([]transport.Config(nil), e.cfg.Transports...)
+	defaultTransport := transport.ResolveDefaultTransportName(transports, e.cfg.WireGuard.DefaultTransport)
+	for _, p := range e.cfg.WireGuard.Peers {
+		configuredPeers = append(configuredPeers, struct {
+			PublicKey string
+			Endpoint  string
+			Transport string
+		}{
+			PublicKey: p.PublicKey,
+			Endpoint:  p.Endpoint,
+			Transport: p.Transport,
+		})
+	}
+	e.cfgMu.RUnlock()
+
+	if len(st.Peers) == 0 {
+		return
+	}
+
+	transportKind := make(map[string]string, len(transports))
+	for _, tc := range transports {
+		tc = transport.NormalizeConfig(tc)
+		if transport.IsConnectionOriented(tc) {
+			transportKind[tc.Name] = "DialEndpoint"
+		} else {
+			transportKind[tc.Name] = "NotConnOriented"
+		}
+	}
+
+	var snapshots []transport.SessionSnapshot
+	if e.transportBind != nil {
+		snapshots = e.transportBind.SessionSnapshots()
+	}
+
+	for i := range st.Peers {
+		ps := &st.Peers[i]
+		cfgPeer := findConfiguredPeer(configuredPeers, ps.PublicKey)
+		configuredTransport := defaultTransport
+		configuredEndpoint := ""
+		if cfgPeer != nil {
+			if cfgPeer.Transport != "" {
+				configuredTransport = cfgPeer.Transport
+			}
+			configuredEndpoint = cfgPeer.Endpoint
+		}
+		if configuredTransport != "" {
+			ps.TransportName = configuredTransport
+			if state := transportKind[configuredTransport]; state != "" {
+				ps.TransportState = state
+			}
+		}
+		if configuredEndpoint != "" {
+			ps.TransportEndpoint = configuredEndpoint
+		}
+
+		if snap, ok := matchPeerSnapshot(ps, configuredTransport, configuredEndpoint, snapshots); ok {
+			if snap.TransportName != "" {
+				ps.TransportName = snap.TransportName
+			}
+			if snap.State != "" {
+				ps.TransportState = snap.State
+			}
+			if snap.LogicalRemoteAddr != "" {
+				ps.TransportEndpoint = snap.LogicalRemoteAddr
+			} else if snap.CurrentTarget != "" {
+				ps.TransportEndpoint = snap.CurrentTarget
+			} else if snap.StaticTarget != "" {
+				ps.TransportEndpoint = snap.StaticTarget
+			}
+			ps.TransportSourceAddr = snap.LocalAddr
+			ps.TransportCarrierRemoteAddr = snap.CarrierRemoteAddr
+		} else if ps.TransportEndpoint == "" {
+			ps.TransportEndpoint = stripTransportPrefix(ps.Endpoint)
+		}
+	}
+}
+
+func matchPeerSnapshot(ps *PeerStatus, configuredTransport, configuredEndpoint string, snapshots []transport.SessionSnapshot) (transport.SessionSnapshot, bool) {
+	if len(snapshots) == 0 {
+		return transport.SessionSnapshot{}, false
+	}
+	targets := []string{}
+	if configuredEndpoint != "" {
+		targets = append(targets, configuredEndpoint)
+	}
+	if ep := stripTransportPrefix(ps.Endpoint); ep != "" {
+		targets = append(targets, ep)
+	}
+
+	for _, snap := range snapshots {
+		if configuredTransport != "" && snap.TransportName != "" && snap.TransportName != configuredTransport {
+			continue
+		}
+		for _, target := range targets {
+			if target == "" {
+				continue
+			}
+			if endpointEqualLoose(target, snap.StaticTarget) ||
+				endpointEqualLoose(target, snap.CurrentTarget) ||
+				endpointEqualLoose(target, snap.LogicalRemoteAddr) ||
+				endpointEqualLoose(target, stripTransportPrefix(snap.StaticEndpoint)) ||
+				endpointEqualLoose(target, stripTransportPrefix(snap.CurrentEndpoint)) {
+				return snap, true
+			}
+		}
+	}
+
+	if configuredTransport == "" {
+		var matched *transport.SessionSnapshot
+		for i := range snapshots {
+			snap := &snapshots[i]
+			for _, target := range targets {
+				if endpointEqualLoose(target, snap.CurrentTarget) ||
+					endpointEqualLoose(target, snap.LogicalRemoteAddr) ||
+					endpointEqualLoose(target, stripTransportPrefix(snap.CurrentEndpoint)) {
+					if matched != nil {
+						return transport.SessionSnapshot{}, false
+					}
+					matched = snap
+				}
+			}
+		}
+		if matched != nil {
+			return *matched, true
+		}
+	}
+	return transport.SessionSnapshot{}, false
+}
+
+func findConfiguredPeer(peers []struct {
+	PublicKey string
+	Endpoint  string
+	Transport string
+}, publicKey string) *struct {
+	PublicKey string
+	Endpoint  string
+	Transport string
+} {
+	for i := range peers {
+		if peers[i].PublicKey == publicKey {
+			return &peers[i]
+		}
+	}
+	return nil
+}
+
+func stripTransportPrefix(endpoint string) string {
+	if idx := strings.LastIndex(endpoint, "@"); idx > 0 {
+		return endpoint[idx+1:]
+	}
+	return endpoint
+}
+
+func endpointEqualLoose(a, b string) bool {
+	a = stripTransportPrefix(strings.TrimSpace(a))
+	b = stripTransportPrefix(strings.TrimSpace(b))
+	if a == "" || b == "" {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	ap1, err1 := netip.ParseAddrPort(a)
+	ap2, err2 := netip.ParseAddrPort(b)
+	return err1 == nil && err2 == nil && ap1 == ap2
+}
+
+func endpointIPString(endpoint string) string {
+	endpoint = stripTransportPrefix(endpoint)
+	ap, err := netip.ParseAddrPort(endpoint)
+	if err != nil {
+		return ""
+	}
+	return ap.Addr().String()
 }
 
 func uapiHexKeyToString(value string) (string, error) {

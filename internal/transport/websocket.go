@@ -221,6 +221,13 @@ func (s *wsSession) ReadPacket() ([]byte, error)  { return s.conn.ReadFrame() }
 func (s *wsSession) WritePacket(pkt []byte) error { return s.conn.WriteFrame(pkt) }
 func (s *wsSession) RemoteAddr() string           { return s.remote }
 func (s *wsSession) Close() error                 { return s.conn.conn.Close() }
+func (s *wsSession) SessionInfo() SessionInfo {
+	return SessionInfo{
+		LocalAddr:         addrString(s.conn.conn.LocalAddr()),
+		CarrierRemoteAddr: addrString(s.conn.conn.RemoteAddr()),
+		LogicalRemoteAddr: s.remote,
+	}
+}
 
 // ReadFrame reads one binary WebSocket frame payload.
 func (w *wsConn) ReadFrame() ([]byte, error) {

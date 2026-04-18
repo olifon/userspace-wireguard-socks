@@ -3,11 +3,14 @@
 
 package transport
 
+import "strings"
+
 // Config describes one pluggable transport entry from the YAML config.
 type Config struct {
 	// Name is a unique identifier referenced by peers.
 	Name string `yaml:"name" json:"name"`
-	// Base is the framing protocol: udp | tcp | tls | dtls | http | https | quic
+	// Base is the framing protocol: udp | turn | tcp | tls | dtls | http |
+	// https | quic | quic-ws | url
 	Base string `yaml:"base" json:"base"`
 	// Listen enables server-mode: the transport binds a fixed port and
 	// accepts incoming WireGuard connections.
@@ -21,6 +24,10 @@ type Config struct {
 
 	// TLS holds TLS / DTLS / HTTPS / QUIC certificate and validation options.
 	TLS TLSConfig `yaml:"tls,omitempty" json:"tls,omitempty"`
+	// TURN configures TURN as the base transport. This replaces the older
+	// legacy form "base: udp" + "proxy.type: turn", which is still accepted
+	// and normalized into this field for backward compatibility.
+	TURN TURNConfig `yaml:"turn,omitempty" json:"turn,omitempty"`
 	// URL is the full base URL for the "url" auto-negotiation transport,
 	// e.g. "https://example.com/wg". Only used when Base = "url".
 	URL string `yaml:"url,omitempty" json:"url,omitempty"`
@@ -84,16 +91,17 @@ type WebSocketConfig struct {
 
 // ProxyConfig selects an optional proxy layer and its settings.
 type ProxyConfig struct {
-	// Type is: none | turn | socks5 | http
+	// Type is: none | socks5 | http. "turn" is still accepted as a legacy
+	// compatibility alias and is normalized into base: turn.
 	Type string `yaml:"type,omitempty" json:"type,omitempty"`
 
-	TURN   TURNProxyConfig   `yaml:"turn,omitempty" json:"turn,omitempty"`
+	TURN   TURNConfig        `yaml:"turn,omitempty" json:"turn,omitempty"`
 	SOCKS5 SOCKS5ProxyConfig `yaml:"socks5,omitempty" json:"socks5,omitempty"`
 	HTTP   HTTPProxyConfig   `yaml:"http,omitempty" json:"http,omitempty"`
 }
 
-// TURNProxyConfig configures a TURN relay as the proxy layer.
-type TURNProxyConfig struct {
+// TURNConfig configures a TURN relay as the transport base.
+type TURNConfig struct {
 	Server   string `yaml:"server" json:"server"`
 	Username string `yaml:"username" json:"username"`
 	Password string `yaml:"password" json:"password"`
@@ -111,6 +119,26 @@ type TURNProxyConfig struct {
 	TLS TLSConfig `yaml:"tls,omitempty" json:"tls,omitempty"`
 	// Permissions is a list of IP/CIDR allowed to send relay traffic.
 	Permissions []string `yaml:"permissions,omitempty" json:"permissions,omitempty"`
+}
+
+// TURNProxyConfig is kept as a compatibility alias for older code paths.
+type TURNProxyConfig = TURNConfig
+
+// NormalizeConfig rewrites legacy transport encodings into the current
+// canonical shape without changing behavior.
+func NormalizeConfig(cfg Config) Config {
+	if (cfg.Base == "" || cfg.Base == "udp") && strings.EqualFold(cfg.Proxy.Type, "turn") {
+		cfg.Base = "turn"
+		if cfg.TURN.Server == "" {
+			cfg.TURN = cfg.Proxy.TURN
+		}
+		cfg.Proxy.Type = ""
+		cfg.Proxy.TURN = TURNConfig{}
+	}
+	if cfg.Base == "turn" && cfg.TURN.Server == "" && cfg.Proxy.TURN.Server != "" {
+		cfg.TURN = cfg.Proxy.TURN
+	}
+	return cfg
 }
 
 // SOCKS5ProxyConfig configures a SOCKS5 proxy.
@@ -135,6 +163,7 @@ type HTTPProxyConfig struct {
 // connection-oriented transport (TCP/TLS/DTLS/HTTP/HTTPS, or anything
 // carried over a stream proxy such as SOCKS5 or HTTP CONNECT).
 func IsConnectionOriented(cfg Config) bool {
+	cfg = NormalizeConfig(cfg)
 	switch cfg.Base {
 	case "tcp", "tls", "dtls", "http", "https", "quic", "quic-ws", "url":
 		return true
@@ -151,10 +180,10 @@ func IsConnectionOriented(cfg Config) bool {
 // ValidateBase checks that the Base field is one of the supported values.
 func ValidateBase(base string) error {
 	switch base {
-	case "", "udp", "tcp", "tls", "dtls", "http", "https", "quic", "quic-ws", "url":
+	case "", "udp", "turn", "tcp", "tls", "dtls", "http", "https", "quic", "quic-ws", "url":
 		return nil
 	}
-	return &ConfigError{Field: "base", Value: base, Msg: "must be one of: udp tcp tls dtls http https quic quic-ws url"}
+	return &ConfigError{Field: "base", Value: base, Msg: "must be one of: udp turn tcp tls dtls http https quic quic-ws url"}
 }
 
 // ValidateProxyType checks that the proxy Type field is valid.
