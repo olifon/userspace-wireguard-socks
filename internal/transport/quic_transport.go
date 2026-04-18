@@ -30,6 +30,13 @@ type QUICTransport struct {
 	hostHeader  string
 }
 
+// quicClientPacketConn intentionally hides SyscallConn / OOB-specific methods
+// from quic-go. Some restricted sandboxes (notably gVisor) reject the DF /
+// PMTU socket options quic-go probes when it can see the raw UDP socket.
+type quicClientPacketConn struct {
+	net.PacketConn
+}
+
 func NewQUICTransport(name string, dialer ProxyDialer, listenAddrs []string, certMgr *CertManager, tlsCfg TLSConfig, path, hostHeader string) *QUICTransport {
 	if path == "" {
 		path = "/"
@@ -69,6 +76,7 @@ func (t *QUICTransport) Dial(ctx context.Context, target string) (Session, error
 		QUICConfig: &quic.Config{
 			EnableDatagrams:                  true,
 			EnableStreamResetPartialDelivery: true,
+			DisablePathMTUDiscovery:          true,
 		},
 		DialAddr: func(ctx context.Context, _ string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
 			pc, err := t.openPacketConn(ctx, target)
@@ -209,7 +217,7 @@ func (t *QUICTransport) openPacketConn(ctx context.Context, target string) (net.
 	if err != nil {
 		return nil, fmt.Errorf("open packet conn: %w", err)
 	}
-	return pc, nil
+	return quicClientPacketConn{PacketConn: pc}, nil
 }
 
 func (t *QUICTransport) resolveRemoteUDPAddr(target string) (net.Addr, error) {
