@@ -85,7 +85,9 @@ type TURNListenerConfig struct {
 	Listen         string `yaml:"listen"`
 	CertFile       string `yaml:"cert_file,omitempty"`
 	KeyFile        string `yaml:"key_file,omitempty"`
+	VerifyPeer     bool   `yaml:"verify_peer,omitempty"`
 	ReloadInterval string `yaml:"reload_interval,omitempty"`
+	CAFile         string `yaml:"ca_file,omitempty"`
 }
 
 type turnAuthRule struct {
@@ -1056,10 +1058,12 @@ func buildPionServer(cfg Config) (*openRelayPion, error) {
 				cleanup()
 				return nil, err
 			}
-			ln := tls.NewListener(rawListener, &tls.Config{
-				MinVersion:     tls.VersionTLS12,
-				GetCertificate: certMgr.GetCertificate,
-			})
+			tlsCfg, err := buildTurnTLSServerConfig(listener, certMgr)
+			if err != nil {
+				cleanup()
+				return nil, err
+			}
+			ln := tls.NewListener(rawListener, tlsCfg)
 			listenerConfigs = append(listenerConfigs, turn.ListenerConfig{
 				Listener:              ln,
 				RelayAddressGenerator: relayGen,
@@ -1078,9 +1082,12 @@ func buildPionServer(cfg Config) (*openRelayPion, error) {
 				cleanup()
 				return nil, err
 			}
-			ln, err := piondtls.Listen("udp", udpAddr, &piondtls.Config{
-				GetCertificate: certMgr.GetDTLSCertificate,
-			})
+			dtlsCfg, err := buildTurnDTLSServerConfig(listener, certMgr)
+			if err != nil {
+				cleanup()
+				return nil, err
+			}
+			ln, err := piondtls.Listen("udp", udpAddr, dtlsCfg)
 			if err != nil {
 				cleanup()
 				return nil, err

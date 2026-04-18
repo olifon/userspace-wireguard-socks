@@ -7,7 +7,7 @@ package transport
 type Config struct {
 	// Name is a unique identifier referenced by peers.
 	Name string `yaml:"name" json:"name"`
-	// Base is the framing protocol: udp | tcp | tls | dtls | http | https
+	// Base is the framing protocol: udp | tcp | tls | dtls | http | https | quic
 	Base string `yaml:"base" json:"base"`
 	// Listen enables server-mode: the transport binds a fixed port and
 	// accepts incoming WireGuard connections.
@@ -19,9 +19,9 @@ type Config struct {
 	// Empty means all interfaces.
 	ListenAddresses []string `yaml:"listen_addresses,omitempty" json:"listen_addresses,omitempty"`
 
-	// TLS holds TLS/DTLS certificate and validation options.
+	// TLS holds TLS / DTLS / HTTPS / QUIC certificate and validation options.
 	TLS TLSConfig `yaml:"tls,omitempty" json:"tls,omitempty"`
-	// WebSocket configures HTTP upgrade details for http/https base transports.
+	// WebSocket configures HTTP path / Host header details for HTTP-based transports.
 	WebSocket WebSocketConfig `yaml:"websocket,omitempty" json:"websocket,omitempty"`
 
 	// Proxy configures an optional proxy layer beneath the base transport.
@@ -33,8 +33,8 @@ type Config struct {
 	IPv6Prefix string `yaml:"ipv6_prefix,omitempty" json:"ipv6_prefix,omitempty"`
 }
 
-// TLSConfig holds certificate and validation settings for TLS, DTLS, and
-// HTTPS transports.
+// TLSConfig holds certificate and validation settings for all TLS-based
+// transports and proxies.
 type TLSConfig struct {
 	// CertFile path to PEM certificate. Empty → auto-generate self-signed.
 	CertFile string `yaml:"cert_file,omitempty" json:"cert_file,omitempty"`
@@ -46,6 +46,17 @@ type TLSConfig struct {
 	// ReloadInterval is how often the cert file is checked for renewal,
 	// e.g. "60s". Empty or zero means no hot-reload.
 	ReloadInterval string `yaml:"reload_interval,omitempty" json:"reload_interval,omitempty"`
+	// CAFile path to PEM CA bundle used to validate the peer certificate.
+	// For clients, empty means use the system roots. For servers that require
+	// client certificates, a CAFile is mandatory.
+	CAFile string `yaml:"ca_file,omitempty" json:"ca_file,omitempty"`
+	// ServerSNI controls the client-side TLS Server Name Indication.
+	// Unset means infer from the target hostname.
+	// Explicit null means send no SNI at all.
+	// A string value forces that SNI.
+	ServerSNI OptionalString `yaml:"server_sni,omitempty" json:"server_sni,omitempty"`
+
+	verifyPeerSet bool
 }
 
 type WebSocketConfig struct {
@@ -54,8 +65,7 @@ type WebSocketConfig struct {
 	// HostHeader overrides the HTTP Host header sent during the upgrade.
 	// Empty means use the target host.
 	HostHeader string `yaml:"host_header,omitempty" json:"host_header,omitempty"`
-	// SNIHostname overrides the outer TLS SNI name for https transports.
-	// Empty means use the dial target host.
+	// SNIHostname is deprecated. Use tls.server_sni instead.
 	SNIHostname string `yaml:"sni_hostname,omitempty" json:"sni_hostname,omitempty"`
 }
 
@@ -83,9 +93,9 @@ type TURNProxyConfig struct {
 	// IncludeWGPublicKey appends the encrypted WireGuard public key to the
 	// TURN username so the relay can associate allocations. The Wireguard public key is encrypted with the TURN password
 	IncludeWGPublicKey bool `yaml:"include_wg_public_key,omitempty" json:"include_wg_public_key,omitempty"`
-	// ValidateCert controls TLS certificate validation when reaching the
-	// TURN server over TLS/DTLS. Default true (nil = use true).
-	ValidateCert *bool `yaml:"validate_cert,omitempty" json:"validate_cert,omitempty"`
+	// TLS configures TURN over TLS / DTLS. For TURN this is primarily useful
+	// for obfuscation and optional client/server certificate filtering.
+	TLS TLSConfig `yaml:"tls,omitempty" json:"tls,omitempty"`
 	// Permissions is a list of IP/CIDR allowed to send relay traffic.
 	Permissions []string `yaml:"permissions,omitempty" json:"permissions,omitempty"`
 }
@@ -102,10 +112,10 @@ type HTTPProxyConfig struct {
 	Server   string `yaml:"server" json:"server"`
 	Username string `yaml:"username,omitempty" json:"username,omitempty"`
 	Password string `yaml:"password,omitempty" json:"password,omitempty"`
-	// ValidateCert overrides the default cert-validation behaviour.
-	// nil = auto (skip when no credentials, verify when credentials set).
-	// true = always verify. false = never verify.
-	ValidateCert *bool `yaml:"validate_cert,omitempty" json:"validate_cert,omitempty"`
+	// TLS configures HTTPS proxy transport.
+	// When verify_peer is omitted, HTTPS proxies default to:
+	// false for anonymous proxies, true when credentials are configured.
+	TLS TLSConfig `yaml:"tls,omitempty" json:"tls,omitempty"`
 }
 
 // IsConnectionOriented reports whether a transport config describes a
@@ -113,7 +123,7 @@ type HTTPProxyConfig struct {
 // carried over a stream proxy such as SOCKS5 or HTTP CONNECT).
 func IsConnectionOriented(cfg Config) bool {
 	switch cfg.Base {
-	case "tcp", "tls", "dtls", "http", "https":
+	case "tcp", "tls", "dtls", "http", "https", "quic":
 		return true
 	}
 	// UDP base can still be connection-oriented when routed through a stream
@@ -128,10 +138,10 @@ func IsConnectionOriented(cfg Config) bool {
 // ValidateBase checks that the Base field is one of the supported values.
 func ValidateBase(base string) error {
 	switch base {
-	case "", "udp", "tcp", "tls", "dtls", "http", "https":
+	case "", "udp", "tcp", "tls", "dtls", "http", "https", "quic":
 		return nil
 	}
-	return &ConfigError{Field: "base", Value: base, Msg: "must be one of: udp tcp tls dtls http https"}
+	return &ConfigError{Field: "base", Value: base, Msg: "must be one of: udp tcp tls dtls http https quic"}
 }
 
 // ValidateProxyType checks that the proxy Type field is valid.

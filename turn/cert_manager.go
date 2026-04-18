@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"os"
 	"sync"
 	"time"
 
@@ -107,6 +108,10 @@ func (m *turnCertManager) GetDTLSCertificate(_ *piondtls.ClientHelloInfo) (*tls.
 	return m.GetCertificate(nil)
 }
 
+func (m *turnCertManager) CurrentCertificate() (*tls.Certificate, error) {
+	return m.GetCertificate(nil)
+}
+
 func (m *turnCertManager) load() (*tls.Certificate, error) {
 	if m.CertFile == "" {
 		return generateTurnSelfSigned()
@@ -150,4 +155,66 @@ func generateTurnSelfSigned() (*tls.Certificate, error) {
 		return nil, err
 	}
 	return &cert, nil
+}
+
+func buildTurnTLSServerConfig(cfg TURNListenerConfig, certMgr *turnCertManager) (*tls.Config, error) {
+	if certMgr == nil {
+		return nil, fmt.Errorf("listener %q: certificate manager is required", cfg.Listen)
+	}
+	tlsCfg := &tls.Config{
+		MinVersion:     tls.VersionTLS12,
+		GetCertificate: certMgr.GetCertificate,
+	}
+	if !cfg.VerifyPeer {
+		tlsCfg.ClientAuth = tls.NoClientCert
+		return tlsCfg, nil
+	}
+	if cfg.CAFile == "" {
+		return nil, fmt.Errorf("listener %q: ca_file is required when verify_peer is true", cfg.Listen)
+	}
+	pool, err := loadTurnCertPoolFromFile(cfg.CAFile)
+	if err != nil {
+		return nil, fmt.Errorf("listener %q ca_file: %w", cfg.Listen, err)
+	}
+	tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
+	tlsCfg.ClientCAs = pool
+	return tlsCfg, nil
+}
+
+func buildTurnDTLSServerConfig(cfg TURNListenerConfig, certMgr *turnCertManager) (*piondtls.Config, error) {
+	if certMgr == nil {
+		return nil, fmt.Errorf("listener %q: certificate manager is required", cfg.Listen)
+	}
+	dtlsCfg := &piondtls.Config{
+		GetCertificate: certMgr.GetDTLSCertificate,
+	}
+	if cert, err := certMgr.CurrentCertificate(); err == nil && cert != nil {
+		dtlsCfg.Certificates = []tls.Certificate{*cert}
+	}
+	if !cfg.VerifyPeer {
+		dtlsCfg.ClientAuth = piondtls.NoClientCert
+		return dtlsCfg, nil
+	}
+	if cfg.CAFile == "" {
+		return nil, fmt.Errorf("listener %q: ca_file is required when verify_peer is true", cfg.Listen)
+	}
+	pool, err := loadTurnCertPoolFromFile(cfg.CAFile)
+	if err != nil {
+		return nil, fmt.Errorf("listener %q ca_file: %w", cfg.Listen, err)
+	}
+	dtlsCfg.ClientAuth = piondtls.RequireAndVerifyClientCert
+	dtlsCfg.ClientCAs = pool
+	return dtlsCfg, nil
+}
+
+func loadTurnCertPoolFromFile(path string) (*x509.CertPool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(data) {
+		return nil, os.ErrInvalid
+	}
+	return pool, nil
 }
