@@ -34,6 +34,7 @@ func BuildRegistry(
 	}
 
 	for i, cfg := range configs {
+		cfg = NormalizeConfig(cfg)
 		if cfg.Name == "" {
 			return nil, fmt.Errorf("transport[%d]: name is required", i)
 		}
@@ -45,7 +46,7 @@ func BuildRegistry(
 		}
 
 		// Validate UDP listen address count.
-		if (cfg.Base == "" || cfg.Base == "udp") && cfg.Proxy.Type != "turn" {
+		if cfg.Base == "" || cfg.Base == "udp" {
 			if len(cfg.ListenAddresses) > 1 {
 				return nil, fmt.Errorf("transport %q: udp transport only supports a single listen address", cfg.Name)
 			}
@@ -135,9 +136,6 @@ func buildDialer(cfg Config) (ProxyDialer, error) {
 		}
 		return NewHTTPConnectDialer(pc.Server, scheme, pc.Username, pc.Password, pc.TLS)
 
-	case "turn":
-		// TURN is a transport, not a dialer — handled in buildBaseTransport.
-		return direct, nil
 	}
 	return direct, nil
 }
@@ -161,15 +159,15 @@ func buildBaseTransport(cfg Config, dialer ProxyDialer, wgPubKey [32]byte) (Tran
 
 	switch cfg.Base {
 	case "", "udp":
-		if cfg.Proxy.Type == "turn" {
-			return NewTURNTransport(cfg.Name, cfg.Proxy.TURN, wgPubKey)
-		}
 		d, ok := dialer.(*DirectDialer)
 		if !ok {
 			// For UDP over SOCKS5 the DirectDialer is embedded in SOCKS5Dialer.
 			d = NewDirectDialer(cfg.IPv6Translate, netip.Prefix{})
 		}
 		return NewUDPTransport(cfg.Name, listenAddrs, d), nil
+
+	case "turn":
+		return NewTURNTransport(cfg.Name, cfg.TURN, dialer, wgPubKey)
 
 	case "tcp":
 		return NewTCPTransport(cfg.Name, dialer, listenAddrs), nil

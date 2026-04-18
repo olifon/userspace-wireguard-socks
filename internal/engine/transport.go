@@ -199,21 +199,54 @@ func (e *Engine) GetTransportStatus() []TransportStatus {
 	if e.transportBind == nil {
 		return nil
 	}
-	names := e.transportBind.TransportNames()
-	out := make([]TransportStatus, 0, len(names))
-	for _, name := range names {
-		out = append(out, TransportStatus{
-			Name:           name,
-			ActiveSessions: e.transportBind.ActiveSessions(),
-		})
+	snapshots := e.transportBind.SessionSnapshots()
+	activeByTransport := make(map[string]int)
+	for _, snap := range snapshots {
+		if snap.TransportName == "" {
+			continue
+		}
+		if snap.LocalAddr != "" || snap.State == "ConnEstablished" {
+			activeByTransport[snap.TransportName]++
+		}
+	}
+
+	e.cfgMu.RLock()
+	cfgs := append([]transport.Config(nil), e.cfg.Transports...)
+	e.cfgMu.RUnlock()
+
+	out := make([]TransportStatus, 0, len(cfgs))
+	for _, cfg := range cfgs {
+		cfg = transport.NormalizeConfig(cfg)
+		ts := TransportStatus{
+			Name:           cfg.Name,
+			Base:           cfg.Base,
+			ActiveSessions: activeByTransport[cfg.Name],
+		}
+		if tp := e.transportBind.GetTransport(cfg.Name); tp != nil {
+			if infoProvider, ok := tp.(transport.TransportInfoProvider); ok {
+				info := infoProvider.TransportInfo()
+				ts.Connected = info.Connected
+				ts.CarrierProtocol = info.CarrierProtocol
+				ts.CarrierLocalAddr = info.CarrierLocalAddr
+				ts.CarrierRemoteAddr = info.CarrierRemoteAddr
+				ts.RelayAddr = info.RelayAddr
+			}
+		}
+		out = append(out, ts)
 	}
 	return out
 }
 
 // TransportStatus is the API representation of one transport's runtime state.
 type TransportStatus struct {
-	Name           string `json:"name"`
-	ActiveSessions int    `json:"active_sessions"`
+	Name              string `json:"name"`
+	Base              string `json:"base,omitempty"`
+	ActiveSessions    int    `json:"active_sessions"`
+	Connected         bool   `json:"connected,omitempty"`
+	CarrierProtocol   string `json:"carrier_protocol,omitempty"`
+	CarrierLocalAddr  string `json:"carrier_local_addr,omitempty"`
+	CarrierRemoteAddr string `json:"carrier_remote_addr,omitempty"`
+	RelayAddr         string `json:"relay_addr,omitempty"`
 }
 
 // AddTransportConfig adds a new transport at runtime without restarting.

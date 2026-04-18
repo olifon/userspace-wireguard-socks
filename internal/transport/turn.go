@@ -40,7 +40,8 @@ const (
 // DTLS) may be replaced when it fails, triggering a full TURN reconnect.
 type TURNTransport struct {
 	name     string
-	cfg      TURNProxyConfig
+	cfg      TURNConfig
+	dialer   ProxyDialer
 	wgPubKey [32]byte // injected when IncludeWGPublicKey is set
 	certMgr  *CertManager
 
@@ -48,6 +49,8 @@ type TURNTransport struct {
 	client             *turn.Client
 	relayConn          net.PacketConn
 	relayAddr          *net.UDPAddr
+	carrierLocalAddr   string
+	carrierRemoteAddr  string
 	cancelKA           context.CancelFunc // keepalive goroutine cancel
 	basePermissions    []string
 	dynamicPermissions []string
@@ -55,16 +58,20 @@ type TURNTransport struct {
 	open               bool
 }
 
-// NewTURNTransport creates a TURNTransport from the given proxy config.
-func NewTURNTransport(name string, cfg TURNProxyConfig, wgPubKey [32]byte) (*TURNTransport, error) {
+// NewTURNTransport creates a TURNTransport from the given transport config.
+func NewTURNTransport(name string, cfg TURNConfig, dialer ProxyDialer, wgPubKey [32]byte) (*TURNTransport, error) {
 	autoGenerate := cfg.Protocol == "dtls"
 	certMgr, err := buildCertManager(cfg.TLS, autoGenerate)
 	if err != nil {
 		return nil, err
 	}
+	if dialer == nil {
+		dialer = NewDirectDialer(false, netip.Prefix{})
+	}
 	return &TURNTransport{
 		name:            name,
 		cfg:             cfg,
+		dialer:          dialer,
 		wgPubKey:        wgPubKey,
 		certMgr:         certMgr,
 		basePermissions: append([]string(nil), cfg.Permissions...),
@@ -157,6 +164,7 @@ func (t *TURNTransport) connectLocked(ctx context.Context) error {
 	t.client = client
 	t.relayConn = relayConn
 	t.relayAddr = relayConn.LocalAddr().(*net.UDPAddr)
+	t.carrierLocalAddr = addrString(carrier.LocalAddr())
 	t.grantedPeers = make(map[string]bool)
 	t.open = true
 
@@ -176,13 +184,19 @@ func (t *TURNTransport) connectLocked(ctx context.Context) error {
 func (t *TURNTransport) dialCarrier(ctx context.Context) (net.PacketConn, error) {
 	switch t.cfg.Protocol {
 	case "", "udp":
-		return net.ListenPacket("udp4", "0.0.0.0:0")
-
-	case "tcp":
-		conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", t.cfg.Server)
+		pc, _, err := t.dialer.DialPacket(ctx, t.cfg.Server)
 		if err != nil {
 			return nil, err
 		}
+		t.carrierRemoteAddr = t.cfg.Server
+		return pc, nil
+
+	case "tcp":
+		conn, err := t.dialer.DialContext(ctx, "tcp", t.cfg.Server)
+		if err != nil {
+			return nil, err
+		}
+		t.carrierRemoteAddr = addrString(conn.RemoteAddr())
 		return turn.NewSTUNConn(conn), nil
 
 	case "tls", "turns":
@@ -190,10 +204,16 @@ func (t *TURNTransport) dialCarrier(ctx context.Context) (net.PacketConn, error)
 		if err != nil {
 			return nil, err
 		}
-		conn, err := tls.DialWithDialer(&net.Dialer{}, "tcp", t.cfg.Server, tlsCfg)
+		rawConn, err := t.dialer.DialContext(ctx, "tcp", t.cfg.Server)
 		if err != nil {
 			return nil, err
 		}
+		conn := tls.Client(rawConn, tlsCfg)
+		if err := conn.HandshakeContext(ctx); err != nil {
+			rawConn.Close()
+			return nil, err
+		}
+		t.carrierRemoteAddr = addrString(conn.RemoteAddr())
 		return turn.NewSTUNConn(conn), nil
 
 	case "dtls":
@@ -205,14 +225,21 @@ func (t *TURNTransport) dialCarrier(ctx context.Context) (net.PacketConn, error)
 		if err != nil {
 			return nil, err
 		}
+		pc, _, err := t.dialer.DialPacket(ctx, t.cfg.Server)
+		if err != nil {
+			return nil, err
+		}
 		cfg, err := buildDTLSClientConfig(t.cfg.TLS, t.certMgr, host, false)
 		if err != nil {
+			pc.Close()
 			return nil, err
 		}
-		dtlsConn, err := piondtls.Dial("udp", udpAddr, cfg)
+		dtlsConn, err := piondtls.Client(pc, udpAddr, cfg)
 		if err != nil {
+			pc.Close()
 			return nil, err
 		}
+		t.carrierRemoteAddr = t.cfg.Server
 		return turn.NewSTUNConn(dtlsConn), nil
 	}
 	return nil, fmt.Errorf("turn: unknown carrier protocol %q", t.cfg.Protocol)
@@ -327,6 +354,9 @@ func (t *TURNTransport) handleCarrierFailure() {
 	}
 	t.client = nil
 	t.relayConn = nil
+	t.relayAddr = nil
+	t.carrierLocalAddr = ""
+	t.carrierRemoteAddr = ""
 	t.open = false
 }
 
@@ -343,6 +373,11 @@ func (t *TURNTransport) Close() {
 	if t.client != nil {
 		t.client.Close()
 	}
+	t.client = nil
+	t.relayConn = nil
+	t.relayAddr = nil
+	t.carrierLocalAddr = ""
+	t.carrierRemoteAddr = ""
 	t.open = false
 }
 
@@ -360,6 +395,18 @@ func (t *TURNTransport) RelayAddr() string {
 // WGPublicKeyForTest exposes the embedded WireGuard public key for package-external tests.
 func (t *TURNTransport) WGPublicKeyForTest() [32]byte {
 	return t.wgPubKey
+}
+
+func (t *TURNTransport) TransportInfo() TransportInfo {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return TransportInfo{
+		Connected:         t.open && t.relayConn != nil,
+		CarrierProtocol:   t.cfg.Protocol,
+		CarrierLocalAddr:  t.carrierLocalAddr,
+		CarrierRemoteAddr: t.carrierRemoteAddr,
+		RelayAddr:         addrString(t.relayAddr),
+	}
 }
 
 // --- turnListener ----------------------------------------------------------
@@ -439,6 +486,13 @@ func (s *turnSession) WritePacket(pkt []byte) error {
 
 func (s *turnSession) RemoteAddr() string { return s.from.String() }
 func (s *turnSession) Close() error       { return nil }
+func (s *turnSession) SessionInfo() SessionInfo {
+	return SessionInfo{
+		LocalAddr:         addrString(s.relayConn.LocalAddr()),
+		CarrierRemoteAddr: s.from.String(),
+		LogicalRemoteAddr: s.from.String(),
+	}
+}
 
 type turnOutboundSession struct {
 	relayConn net.PacketConn
@@ -456,6 +510,13 @@ func (s *turnOutboundSession) WritePacket(pkt []byte) error {
 
 func (s *turnOutboundSession) RemoteAddr() string { return s.target.String() }
 func (s *turnOutboundSession) Close() error       { return nil }
+func (s *turnOutboundSession) SessionInfo() SessionInfo {
+	return SessionInfo{
+		LocalAddr:         addrString(s.relayConn.LocalAddr()),
+		CarrierRemoteAddr: s.target.String(),
+		LogicalRemoteAddr: s.target.String(),
+	}
+}
 
 // --- helpers ---------------------------------------------------------------
 

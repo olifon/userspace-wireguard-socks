@@ -45,9 +45,9 @@ type TransportEndpoint interface {
 // NotConnOrientedEndpoint represents a UDP or TURN relay endpoint.
 // Packets are sent directly without establishing a persistent connection.
 type NotConnOrientedEndpoint struct {
-	AP            netip.AddrPort
-	TransportID   string
-	ident         []byte
+	AP          netip.AddrPort
+	TransportID string
+	ident       []byte
 }
 
 // NewNotConnOrientedEndpoint creates an endpoint for a not-connection-
@@ -60,7 +60,7 @@ func NewNotConnOrientedEndpoint(transportName string, ap netip.AddrPort) *NotCon
 	}
 }
 
-func (e *NotConnOrientedEndpoint) Kind() EndpointKind  { return KindNotConnOriented }
+func (e *NotConnOrientedEndpoint) Kind() EndpointKind    { return KindNotConnOriented }
 func (e *NotConnOrientedEndpoint) TransportName() string { return e.TransportID }
 func (e *NotConnOrientedEndpoint) IdentBytes() []byte    { return e.ident }
 func (e *NotConnOrientedEndpoint) ClearSrc()             {}
@@ -91,7 +91,7 @@ func NewDialEndpoint(transportName, target string) *DialEndpoint {
 	}
 }
 
-func (e *DialEndpoint) Kind() EndpointKind   { return KindDial }
+func (e *DialEndpoint) Kind() EndpointKind    { return KindDial }
 func (e *DialEndpoint) TransportName() string { return e.TransportID }
 func (e *DialEndpoint) IdentBytes() []byte    { return e.ident }
 func (e *DialEndpoint) ClearSrc()             {}
@@ -127,7 +127,7 @@ func NewConnEstablishedEndpoint(transportName, remoteAddr string, sess Session, 
 	}
 }
 
-func (e *ConnEstablishedEndpoint) Kind() EndpointKind   { return KindConnEstablished }
+func (e *ConnEstablishedEndpoint) Kind() EndpointKind    { return KindConnEstablished }
 func (e *ConnEstablishedEndpoint) TransportName() string { return e.TransportID }
 func (e *ConnEstablishedEndpoint) IdentBytes() []byte    { return e.peerIdent }
 func (e *ConnEstablishedEndpoint) Session() Session      { return e.session }
@@ -150,6 +150,17 @@ func buildIdent(transportName, addr string) []byte {
 	copy(buf[2:], nb)
 	copy(buf[2+len(nb):], ab)
 	return buf
+}
+
+func identTargetAddr(b []byte) string {
+	if len(b) < 2 {
+		return ""
+	}
+	nameLen := int(b[0])<<8 | int(b[1])
+	if len(b) < 2+nameLen {
+		return ""
+	}
+	return string(b[2+nameLen:])
 }
 
 func parseAddrFromTarget(target string) netip.Addr {

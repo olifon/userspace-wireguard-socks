@@ -16,7 +16,7 @@ import (
 
 // WireGuard timer constants (from wireguard-go device/timers.go).
 const (
-	rekeyTimeout    = 5 * time.Second
+	rekeyTimeout     = 5 * time.Second
 	keepaliveTimeout = 10 * time.Second
 	// reconnectRateLimit: if last establish < 2×rekeyTimeout ago, wait
 	// rekeyTimeout before a new attempt.
@@ -56,6 +56,20 @@ type sessionState struct {
 	idleTimer *time.Timer
 	// idleDisabled is set when PersistentKeepalive > 0.
 	idleDisabled bool
+}
+
+// SessionSnapshot is a read-only runtime view of one tracked peer transport
+// session, used by status APIs.
+type SessionSnapshot struct {
+	TransportName     string
+	State             string
+	StaticTarget      string
+	CurrentTarget     string
+	StaticEndpoint    string
+	CurrentEndpoint   string
+	LocalAddr         string
+	CarrierRemoteAddr string
+	LogicalRemoteAddr string
 }
 
 // MultiTransportBind implements conn.Bind by multiplexing across multiple
@@ -106,8 +120,8 @@ type MultiTransportBind struct {
 }
 
 type listenEntry struct {
-	transport   Transport
-	listener    Listener
+	transport    Transport
+	listener     Listener
 	portOverride int // 0 means use the port passed to Open
 }
 
@@ -864,6 +878,62 @@ func (b *MultiTransportBind) ActiveSessions() int {
 	return n
 }
 
+// SessionSnapshots returns a point-in-time view of the tracked transport
+// sessions. The result is safe to use after the method returns.
+func (b *MultiTransportBind) SessionSnapshots() []SessionSnapshot {
+	b.mu.RLock()
+	sessions := make([]*sessionState, 0, len(b.sessions))
+	for _, s := range b.sessions {
+		sessions = append(sessions, s)
+	}
+	b.mu.RUnlock()
+
+	out := make([]SessionSnapshot, 0, len(sessions))
+	for _, s := range sessions {
+		s.mu.Lock()
+		staticEP := s.staticEP
+		currentEP := s.currentEP
+		activeSession := s.activeSession
+		transport := s.transport
+		s.mu.Unlock()
+
+		snap := SessionSnapshot{}
+		if te := AsTransportEndpoint(staticEP); te != nil {
+			snap.TransportName = te.TransportName()
+			snap.StaticTarget = identTargetAddr(te.IdentBytes())
+			snap.StaticEndpoint = staticEP.DstToString()
+		}
+		if te := AsTransportEndpoint(currentEP); te != nil {
+			if snap.TransportName == "" {
+				snap.TransportName = te.TransportName()
+			}
+			snap.State = endpointKindString(te.Kind())
+			snap.CurrentTarget = identTargetAddr(te.IdentBytes())
+			snap.CurrentEndpoint = currentEP.DstToString()
+		}
+		if snap.TransportName == "" && transport != nil {
+			snap.TransportName = transport.Name()
+		}
+		if snap.State == "" {
+			if snap.StaticTarget != "" || snap.StaticEndpoint != "" {
+				if te := AsTransportEndpoint(staticEP); te != nil {
+					snap.State = endpointKindString(te.Kind())
+				}
+			} else if activeSession != nil {
+				snap.State = "ConnEstablished"
+			}
+		}
+		if infoProvider, ok := activeSession.(SessionInfoProvider); ok {
+			info := infoProvider.SessionInfo()
+			snap.LocalAddr = info.LocalAddr
+			snap.CarrierRemoteAddr = info.CarrierRemoteAddr
+			snap.LogicalRemoteAddr = info.LogicalRemoteAddr
+		}
+		out = append(out, snap)
+	}
+	return out
+}
+
 // --- helpers ---------------------------------------------------------------
 
 func sendAll(sess Session, bufs [][]byte) error {
@@ -907,4 +977,17 @@ func resolveAddrPort(s string) (netip.AddrPort, error) {
 		}
 	}
 	return netip.AddrPort{}, &net.AddrError{Err: "no usable address", Addr: s}
+}
+
+func endpointKindString(kind EndpointKind) string {
+	switch kind {
+	case KindNotConnOriented:
+		return "NotConnOriented"
+	case KindDial:
+		return "DialEndpoint"
+	case KindConnEstablished:
+		return "ConnEstablished"
+	default:
+		return ""
+	}
 }
