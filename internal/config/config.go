@@ -676,7 +676,7 @@ func (c *Config) Normalize() error {
 // Peer into proper transport.Config entries appended to c.Transports, and
 // updates peer.Transport references accordingly.
 func (c *Config) synthesizeDirectiveTransports() error {
-	// TURN directives → one transport.Config per entry (UDP base + TURN proxy).
+	// TURN directives → one transport.Config per entry (TURN base transport).
 	for i, rawURL := range c.WireGuard.TURNDirectives {
 		tc, err := parseTURNDirectiveURL(fmt.Sprintf("_wg-turn-%d", i), rawURL)
 		if err != nil {
@@ -748,15 +748,12 @@ func parseTURNDirectiveURL(name, rawURL string) (transport.Config, error) {
 	}
 	return transport.Config{
 		Name: name,
-		Base: "udp",
-		Proxy: transport.ProxyConfig{
-			Type: "turn",
-			TURN: transport.TURNProxyConfig{
-				Server:   u.Host,
-				Username: username,
-				Password: password,
-				Protocol: proto,
-			},
+		Base: "turn",
+		TURN: transport.TURNConfig{
+			Server:   u.Host,
+			Username: username,
+			Password: password,
+			Protocol: proto,
 		},
 	}, nil
 }
@@ -765,6 +762,7 @@ func parseTURNDirectiveURL(name, rawURL string) (transport.Config, error) {
 // transport references.
 func (c *Config) normalizeTransports() error {
 	for i := range c.Transports {
+		c.Transports[i] = transport.NormalizeConfig(c.Transports[i])
 		cfg := &c.Transports[i]
 		if cfg.Name == "" {
 			return fmt.Errorf("transports[%d]: name is required", i)
