@@ -64,8 +64,7 @@ func BuildRegistry(
 
 		bind.AddTransport(t)
 		if cfg.Listen {
-			_ = listenPort
-			bind.AddListenTransport(t)
+			bind.AddListenTransportWithPort(t, listenPort)
 		}
 	}
 	return bind, nil
