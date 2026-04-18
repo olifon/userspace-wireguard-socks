@@ -142,6 +142,13 @@ func (s *dtlsSession) WritePacket(pkt []byte) error {
 
 func (s *dtlsSession) RemoteAddr() string { return s.remote }
 func (s *dtlsSession) Close() error       { return s.conn.Close() }
+func (s *dtlsSession) SessionInfo() SessionInfo {
+	return SessionInfo{
+		LocalAddr:         addrString(s.conn.LocalAddr()),
+		CarrierRemoteAddr: addrString(s.conn.RemoteAddr()),
+		LogicalRemoteAddr: s.remote,
+	}
+}
 
 // --- dtlsMultiListener -----------------------------------------------------
 
@@ -271,3 +278,10 @@ func (s *dtlsConnSession) WritePacket(pkt []byte) error {
 
 func (s *dtlsConnSession) RemoteAddr() string { return s.remote }
 func (s *dtlsConnSession) Close() error       { return s.conn.Close() }
+func (s *dtlsConnSession) SessionInfo() SessionInfo {
+	return SessionInfo{
+		LocalAddr:         addrString(s.conn.LocalAddr()),
+		CarrierRemoteAddr: addrString(s.conn.RemoteAddr()),
+		LogicalRemoteAddr: s.remote,
+	}
+}

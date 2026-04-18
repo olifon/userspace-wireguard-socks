@@ -15,8 +15,8 @@ import (
 // (fixed source port, accepts packets from any peer) or outbound-only mode
 // (ephemeral source port per peer).
 type UDPTransport struct {
-	name     string
-	dialer   *DirectDialer
+	name   string
+	dialer *DirectDialer
 	// listenAddrs is the set of local IP addresses to bind in listen mode.
 	// Empty means all interfaces.
 	listenAddrs []string
@@ -30,8 +30,8 @@ func NewUDPTransport(name string, listenAddrs []string, dialer *DirectDialer) *U
 	return &UDPTransport{name: name, dialer: dialer, listenAddrs: listenAddrs}
 }
 
-func (t *UDPTransport) Name() string                  { return t.name }
-func (t *UDPTransport) IsConnectionOriented() bool    { return false }
+func (t *UDPTransport) Name() string               { return t.name }
+func (t *UDPTransport) IsConnectionOriented() bool { return false }
 
 // Dial creates an outbound-only UDP session to the given target.  A
 // connected UDP socket is used so the OS assigns a stable ephemeral source
@@ -109,14 +109,21 @@ func (s *udpSession) WritePacket(pkt []byte) error {
 
 func (s *udpSession) RemoteAddr() string { return s.remote }
 func (s *udpSession) Close() error       { return s.conn.Close() }
+func (s *udpSession) SessionInfo() SessionInfo {
+	return SessionInfo{
+		LocalAddr:         addrString(s.conn.LocalAddr()),
+		CarrierRemoteAddr: addrString(s.conn.RemoteAddr()),
+		LogicalRemoteAddr: s.remote,
+	}
+}
 
 // --- udpListener -----------------------------------------------------------
 
 // udpListener listens on one or more UDP sockets and vends inbound packets as
 // per-source sessions.
 type udpListener struct {
-	conns  []*net.UDPConn
-	name   string
+	conns []*net.UDPConn
+	name  string
 	// acceptCh funnels inbound packets from all listener goroutines.
 	acceptCh chan inboundUDP
 	once     chan struct{} // closed when started
@@ -213,6 +220,13 @@ func (s *udpListenerSession) WritePacket(pkt []byte) error {
 
 func (s *udpListenerSession) RemoteAddr() string { return s.from.String() }
 func (s *udpListenerSession) Close() error       { return nil }
+func (s *udpListenerSession) SessionInfo() SessionInfo {
+	return SessionInfo{
+		LocalAddr:         addrString(s.sender.LocalAddr()),
+		CarrierRemoteAddr: s.from.String(),
+		LogicalRemoteAddr: s.from.String(),
+	}
+}
 
 // --- connSession (generic fallback) ----------------------------------------
 
@@ -239,6 +253,13 @@ func (s *connSession) WritePacket(pkt []byte) error {
 
 func (s *connSession) RemoteAddr() string { return s.remote }
 func (s *connSession) Close() error       { return s.conn.Close() }
+func (s *connSession) SessionInfo() SessionInfo {
+	return SessionInfo{
+		LocalAddr:         addrString(s.conn.LocalAddr()),
+		CarrierRemoteAddr: addrString(s.conn.RemoteAddr()),
+		LogicalRemoteAddr: s.remote,
+	}
+}
 
 // maxUDPPayload is the maximum WireGuard packet size over UDP.
 const maxUDPPayload = 65535
