@@ -597,7 +597,10 @@ func (e *Engine) SetWireGuardConfig(wg config.WireGuard) error {
 	if err := validateWireGuardConfig(next); err != nil {
 		return err
 	}
-	uapi, err := wireGuardUAPI(next)
+	e.cfgMu.RLock()
+	transports := e.cfg.Transports
+	e.cfgMu.RUnlock()
+	uapi, err := wireGuardUAPI(next, transports)
 	if err != nil {
 		return err
 	}

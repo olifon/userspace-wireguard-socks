@@ -97,8 +97,9 @@ type MultiTransportBind struct {
 }
 
 type listenEntry struct {
-	transport Transport
-	listener  Listener
+	transport   Transport
+	listener    Listener
+	portOverride int // 0 means use the port passed to Open
 }
 
 // NewMultiTransportBind creates a MultiTransportBind.
@@ -170,13 +171,17 @@ func (b *MultiTransportBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, erro
 
 	chosenPort := uint16(0)
 	for _, t := range b.listenTransports {
-		ln, err := t.transport.Listen(ctx, int(port))
+		listenPort := int(port)
+		if t.portOverride != 0 {
+			listenPort = t.portOverride
+		}
+		ln, err := t.transport.Listen(ctx, listenPort)
 		if err != nil {
 			cancel()
 			b.closeLocked()
 			return nil, 0, err
 		}
-		entry := listenEntry{transport: t.transport, listener: ln}
+		entry := listenEntry{transport: t.transport, listener: ln, portOverride: t.portOverride}
 		b.listenTransports = append(b.listenTransports, entry)
 		if chosenPort == 0 {
 			if addr := ln.Addr(); addr != nil {
@@ -197,10 +202,18 @@ func (b *MultiTransportBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, erro
 }
 
 // AddListenTransport adds a transport that should be started in listen mode.
-// Must be called before Open.
+// Must be called before Open. The transport uses the port passed to Open.
 func (b *MultiTransportBind) AddListenTransport(t Transport) {
 	b.mu.Lock()
 	b.listenTransports = append(b.listenTransports, listenEntry{transport: t})
+	b.mu.Unlock()
+}
+
+// AddListenTransportWithPort adds a transport in listen mode with a specific
+// port override. When port != 0 it takes priority over the port passed to Open.
+func (b *MultiTransportBind) AddListenTransportWithPort(t Transport, port int) {
+	b.mu.Lock()
+	b.listenTransports = append(b.listenTransports, listenEntry{transport: t, portOverride: port})
 	b.mu.Unlock()
 }
 

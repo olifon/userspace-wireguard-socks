@@ -418,10 +418,10 @@ func (e *Engine) Addr(name string) string {
 func (e *Engine) uapiConfig() (string, error) {
 	e.cfgMu.RLock()
 	defer e.cfgMu.RUnlock()
-	return wireGuardUAPI(e.cfg.WireGuard)
+	return wireGuardUAPI(e.cfg.WireGuard, e.cfg.Transports)
 }
 
-func wireGuardUAPI(wg config.WireGuard) (string, error) {
+func wireGuardUAPI(wg config.WireGuard, transports []transport.Config) (string, error) {
 	var b strings.Builder
 	key, err := wgtypes.ParseKey(wg.PrivateKey)
 	if err != nil {
@@ -446,7 +446,18 @@ func wireGuardUAPI(wg config.WireGuard) (string, error) {
 			fmt.Fprintf(&b, "preshared_key=%s\n", hex.EncodeToString(psk[:]))
 		}
 		if peer.Endpoint != "" {
-			fmt.Fprintf(&b, "endpoint=%s\n", peer.Endpoint)
+			ep := peer.Endpoint
+			// Prepend "transportName@" so ParseEndpoint creates a DialEndpoint
+			// for connection-oriented transports rather than a plain UDP endpoint.
+			if peer.Transport != "" {
+				for _, tc := range transports {
+					if tc.Name == peer.Transport && transport.IsConnectionOriented(tc) {
+						ep = peer.Transport + "@" + peer.Endpoint
+						break
+					}
+				}
+			}
+			fmt.Fprintf(&b, "endpoint=%s\n", ep)
 		}
 		if peer.PersistentKeepalive > 0 {
 			fmt.Fprintf(&b, "persistent_keepalive_interval=%d\n", peer.PersistentKeepalive)
