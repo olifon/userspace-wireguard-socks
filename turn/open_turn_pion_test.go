@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	piondtls "github.com/pion/dtls/v3"
 	turn "github.com/pion/turn/v4"
 )
 
@@ -102,6 +104,38 @@ func TestLookupPortRangeMapping(t *testing.T) {
 	}
 	if rule.MappedAddr == nil || rule.MappedAddr.String() != "203.0.113.10:51005" {
 		t.Fatalf("unexpected mapped address %v", rule.MappedAddr)
+	}
+}
+
+func TestBuildPionServerMultiListenerAllocations(t *testing.T) {
+	cfg := Config{
+		Realm: "example.org",
+		Listen: ListenConfig{
+			RelayIP: "127.0.0.1",
+		},
+		Listeners: []TURNListenerConfig{
+			{Type: "udp", Listen: "127.0.0.1:0"},
+			{Type: "tcp", Listen: "127.0.0.1:0"},
+			{Type: "tls", Listen: "127.0.0.1:0"},
+			{Type: "dtls", Listen: "127.0.0.1:0"},
+		},
+		Users: []UserConfig{{
+			Username:       "alice",
+			Password:       "alice-pass",
+			SourceNetworks: []string{"127.0.0.0/8"},
+		}},
+	}
+	server := newTestTURNServer(t, cfg)
+
+	for _, listenerType := range []string{"udp", "tcp", "tls", "dtls"} {
+		t.Run(listenerType, func(t *testing.T) {
+			client := newTestTURNClientWithTransport(t, server, listenerType, "alice", "alice-pass", "example.org")
+			relayAddr, closeRelay := allocateRelayForTransport(t, client, listenerType)
+			defer closeRelay()
+			if relayAddr == nil {
+				t.Fatalf("%s relay did not expose a local address", listenerType)
+			}
+		})
 	}
 }
 
@@ -275,6 +309,14 @@ func TestInternalOnlyBlocksExternalTraffic(t *testing.T) {
 	alice := newTestTURNClient(t, server.listenAddr.String(), "alice", "alice-pass", "example.org")
 	aliceRelay := allocateRelay(t, alice)
 	defer aliceRelay.Close()
+	hostProbe, err := net.ListenUDP("udp4", &net.UDPAddr{
+		IP:   net.ParseIP("127.0.0.1"),
+		Port: aliceRelay.LocalAddr().(*net.UDPAddr).Port,
+	})
+	if err != nil {
+		t.Fatalf("expected internal-only relay port %d to stay unbound on host: %v", aliceRelay.LocalAddr().(*net.UDPAddr).Port, err)
+	}
+	_ = hostProbe.Close()
 
 	bob := newTestTURNClient(t, server.listenAddr.String(), "bob", "bob-pass", "example.org")
 	bobRelay := allocateRelay(t, bob)
@@ -317,6 +359,42 @@ func TestInternalOnlyBlocksExternalTraffic(t *testing.T) {
 	if _, _, err := peerConn.ReadFromUDP(readBuf); !isTimeout(err) {
 		t.Fatalf("expected internal-only relay to suppress external traffic, got %v", err)
 	}
+}
+
+func TestInternalOnlyMappedAddressDoesNotBindHostPort(t *testing.T) {
+	cfg := Config{
+		Realm: "example.org",
+		Listen: ListenConfig{
+			RelayIP: "127.0.0.1",
+		},
+		Listeners: []TURNListenerConfig{
+			{Type: "udp", Listen: "127.0.0.1:0"},
+		},
+		Users: []UserConfig{{
+			Username:       "alice",
+			Password:       "alice-pass",
+			Port:           40122,
+			MappedAddress:  "127.0.0.1:45122",
+			SourceNetworks: []string{"127.0.0.0/8"},
+			InternalOnly:   true,
+		}},
+	}
+	server := newTestTURNServer(t, cfg)
+	client := newTestTURNClient(t, server.listenAddr.String(), "alice", "alice-pass", "example.org")
+	relayConn := allocateRelay(t, client)
+	defer relayConn.Close()
+
+	if got := relayConn.LocalAddr().String(); got != "127.0.0.1:45122" {
+		t.Fatalf("unexpected mapped relay address %s", got)
+	}
+	hostProbe, err := net.ListenUDP("udp4", &net.UDPAddr{
+		IP:   net.ParseIP("127.0.0.1"),
+		Port: 45122,
+	})
+	if err != nil {
+		t.Fatalf("expected internal-only mapped relay port to stay unbound on host: %v", err)
+	}
+	_ = hostProbe.Close()
 }
 
 func TestUserPortRangeSkipsOccupiedPort(t *testing.T) {
@@ -375,7 +453,54 @@ func newTestTURNServer(t *testing.T, cfg Config) *openRelayPion {
 
 func newTestTURNClient(t *testing.T, serverAddr, username, password, realm string) *turn.Client {
 	t.Helper()
-	clientConn, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	return newTestTURNClientWithTransportFromAddr(t, "udp", serverAddr, username, password, realm)
+}
+
+func newTestTURNClientWithTransport(t *testing.T, server *openRelayPion, listenerType, username, password, realm string) *turn.Client {
+	t.Helper()
+	addr := server.listenerAddrByType(listenerType)
+	if addr == nil {
+		t.Fatalf("listener type %q not found", listenerType)
+	}
+	return newTestTURNClientWithTransportFromAddr(t, listenerType, addr.String(), username, password, realm)
+}
+
+func newTestTURNClientWithTransportFromAddr(t *testing.T, listenerType, serverAddr, username, password, realm string) *turn.Client {
+	t.Helper()
+	var (
+		clientConn net.PacketConn
+		err        error
+	)
+	switch listenerType {
+	case "udp":
+		clientConn, err = net.ListenPacket("udp4", "127.0.0.1:0")
+	case "tcp":
+		rawConn, dialErr := net.Dial("tcp", serverAddr)
+		if dialErr != nil {
+			t.Fatal(dialErr)
+		}
+		clientConn = turn.NewSTUNConn(rawConn)
+	case "tls":
+		rawConn, dialErr := tls.Dial("tcp", serverAddr, &tls.Config{InsecureSkipVerify: true}) //nolint:gosec
+		if dialErr != nil {
+			t.Fatal(dialErr)
+		}
+		clientConn = turn.NewSTUNConn(rawConn)
+	case "dtls":
+		udpAddr, resolveErr := net.ResolveUDPAddr("udp", serverAddr)
+		if resolveErr != nil {
+			t.Fatal(resolveErr)
+		}
+		rawConn, dialErr := piondtls.Dial("udp", udpAddr, &piondtls.Config{
+			InsecureSkipVerify: true, //nolint:gosec
+		})
+		if dialErr != nil {
+			t.Fatal(dialErr)
+		}
+		clientConn = turn.NewSTUNConn(rawConn)
+	default:
+		t.Fatalf("unsupported listener type %q", listenerType)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,6 +531,21 @@ func allocateRelay(t *testing.T, client *turn.Client) net.PacketConn {
 		t.Fatalf("allocate relay: %v", err)
 	}
 	return relayConn
+}
+
+func allocateRelayForTransport(t *testing.T, client *turn.Client, listenerType string) (net.Addr, func()) {
+	t.Helper()
+	switch listenerType {
+	case "tcp", "tls":
+		allocation, err := client.AllocateTCP()
+		if err != nil {
+			t.Fatalf("allocate tcp relay: %v", err)
+		}
+		return allocation.Addr(), func() { _ = allocation.Close() }
+	default:
+		relayConn := allocateRelay(t, client)
+		return relayConn.LocalAddr(), func() { _ = relayConn.Close() }
+	}
 }
 
 func udpEchoServer(conn *net.UDPConn) {
@@ -443,8 +583,10 @@ func TestLoadConfigUserPortRangeRoundTrip(t *testing.T) {
 	cfgPath := filepath.Join(tmp, "turn.yaml")
 	cfgText := `realm: "example.org"
 listen:
-  turn_listen: "127.0.0.1:3478"
   relay_ip: "127.0.0.1"
+listeners:
+  - type: "udp"
+    listen: "127.0.0.1:3478"
 users:
   - username: "alice"
     password: "alice-pass"
@@ -470,5 +612,8 @@ users:
 	}
 	if !cfg.Users[0].OutboundOnly || !cfg.Users[0].InternalOnly {
 		t.Fatalf("expected outbound_only and internal_only to round-trip, got %+v", cfg.Users[0])
+	}
+	if len(cfg.Listeners) != 1 || cfg.Listeners[0].Type != "udp" || cfg.Listeners[0].Listen != "127.0.0.1:3478" {
+		t.Fatalf("unexpected listeners %+v", cfg.Listeners)
 	}
 }

@@ -94,8 +94,7 @@ type Engine struct {
 	localAddrs     []netip.Addr
 	localPrefixes  []netip.Prefix
 	dnsSem         chan struct{}
-	turnBind        *wgbind.TURNBind
-	transportBind   *transport.MultiTransportBind
+	transportBind  *transport.MultiTransportBind
 }
 
 type trackedConn struct {
@@ -225,9 +224,9 @@ func (e *Engine) Start() error {
 		e.net.SetICMPForwarder(e.handleICMPForward)
 	}
 
-	// Build the WireGuard bind layer.  When transports are configured in the
+	// Build the WireGuard bind layer. When transports are configured in the
 	// config use the pluggable transport system; otherwise fall back to the
-	// legacy UDP / TURN bind implementations for backward compatibility.
+	// legacy UDP bind path or the compatibility TURN transport wrapper.
 	var bind conn.Bind
 	if len(e.cfg.Transports) > 0 {
 		wgPubKey, err := e.wgPublicKey()
@@ -252,15 +251,19 @@ func (e *Engine) Start() error {
 		e.transportBind = tb
 		// Configure per-peer static transport endpoints.
 		e.initPeerTransportEndpoints()
+		e.updateTURNPermissions()
 		bind = tb
 	} else if e.cfg.TURN.Server != "" {
-		turnBind, err := newTURNBind(e.cfg)
+		turnTransport, err := newTURNTransport(e.cfg)
 		if err != nil {
 			return err
 		}
-		e.turnBind = turnBind
+		tb := transport.NewMultiTransportBind(e.transportPeerLookup, e.onTransportEndpointReset)
+		tb.AddTransport(turnTransport)
+		tb.AddListenTransport(turnTransport)
+		e.transportBind = tb
 		e.updateTURNPermissions()
-		bind = turnBind
+		bind = tb
 	} else if e.cfg.WireGuard.ListenPort == nil {
 		bind = wgbind.NewOutboundOnlyBind()
 	} else if len(e.cfg.WireGuard.ListenAddresses) > 0 {
@@ -312,28 +315,29 @@ func (e *Engine) Start() error {
 	return nil
 }
 
-func newTURNBind(cfg config.Config) (*wgbind.TURNBind, error) {
-	turnBind := &wgbind.TURNBind{
+func newTURNTransport(cfg config.Config) (*transport.TURNTransport, error) {
+	turnCfg := transport.TURNProxyConfig{
 		Server:             cfg.TURN.Server,
 		Username:           cfg.TURN.Username,
 		Password:           cfg.TURN.Password,
 		Realm:              cfg.TURN.Realm,
-		AllowedPeers:       append([]string(nil), cfg.TURN.Permissions...),
 		IncludeWGPublicKey: cfg.TURN.IncludeWGPublicKey,
+		Permissions:        append([]string(nil), cfg.TURN.Permissions...),
 	}
+	var wgPubKey [32]byte
 	if cfg.TURN.IncludeWGPublicKey {
 		privateKey, err := wgtypes.ParseKey(cfg.WireGuard.PrivateKey)
 		if err != nil {
 			return nil, fmt.Errorf("turn.include_wg_public_key private key: %w", err)
 		}
 		publicKey := privateKey.PublicKey()
-		copy(turnBind.WGPublicKey[:], publicKey[:])
+		copy(wgPubKey[:], publicKey[:])
 	}
-	return turnBind, nil
+	return transport.NewTURNTransport("turn", turnCfg, wgPubKey), nil
 }
 
 func (e *Engine) updateTURNPermissions() {
-	if e.turnBind == nil {
+	if e.transportBind == nil {
 		return
 	}
 
@@ -345,7 +349,14 @@ func (e *Engine) updateTURNPermissions() {
 		}
 	}
 	e.cfgMu.RUnlock()
-	e.turnBind.UpdatePermissions(ips)
+	for _, name := range e.transportBind.TransportNames() {
+		t := e.transportBind.GetTransport(name)
+		turnTransport, ok := t.(*transport.TURNTransport)
+		if !ok {
+			continue
+		}
+		turnTransport.UpdatePermissions(ips)
+	}
 }
 
 func (e *Engine) Close() error {

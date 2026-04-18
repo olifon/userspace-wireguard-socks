@@ -5,8 +5,23 @@ nonce_ttl: "10m"
 preopen_single_ports: false
 
 listen:
-  turn_listen: "0.0.0.0:3478"
   relay_ip: "203.0.113.10"
+
+listeners:
+  - type: "udp"
+    listen: "0.0.0.0:3478"
+  - type: "tcp"
+    listen: "0.0.0.0:3478"
+  - type: "tls"
+    listen: "0.0.0.0:5349"
+    # cert_file: "/etc/letsencrypt/live/example/fullchain.pem"
+    # key_file: "/etc/letsencrypt/live/example/privkey.pem"
+    # reload_interval: "1m"
+  - type: "dtls"
+    listen: "0.0.0.0:5349"
+    # cert_file: "/etc/letsencrypt/live/example/fullchain.pem"
+    # key_file: "/etc/letsencrypt/live/example/privkey.pem"
+    # reload_interval: "1m"
 
 users:
   - username: "alice"

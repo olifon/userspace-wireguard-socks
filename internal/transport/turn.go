@@ -39,26 +39,28 @@ const (
 // flows over the same allocation.  However, the underlying carrier (TCP, TLS,
 // DTLS) may be replaced when it fails, triggering a full TURN reconnect.
 type TURNTransport struct {
-	name   string
-	cfg    TURNProxyConfig
+	name     string
+	cfg      TURNProxyConfig
 	wgPubKey [32]byte // injected when IncludeWGPublicKey is set
 
-	mu            sync.Mutex
-	client        *turn.Client
-	relayConn     net.PacketConn
-	relayAddr     *net.UDPAddr
-	cancelKA      context.CancelFunc // keepalive goroutine cancel
-	allowedPeers  []string           // requested permissions
-	grantedPeers  map[string]bool    // already granted
-	open          bool
+	mu                 sync.Mutex
+	client             *turn.Client
+	relayConn          net.PacketConn
+	relayAddr          *net.UDPAddr
+	cancelKA           context.CancelFunc // keepalive goroutine cancel
+	basePermissions    []string
+	dynamicPermissions []string
+	grantedPeers       map[string]bool // already granted
+	open               bool
 }
 
 // NewTURNTransport creates a TURNTransport from the given proxy config.
 func NewTURNTransport(name string, cfg TURNProxyConfig, wgPubKey [32]byte) *TURNTransport {
 	return &TURNTransport{
-		name:     name,
-		cfg:      cfg,
-		wgPubKey: wgPubKey,
+		name:            name,
+		cfg:             cfg,
+		wgPubKey:        wgPubKey,
+		basePermissions: append([]string(nil), cfg.Permissions...),
 	}
 }
 
@@ -201,7 +203,7 @@ func (t *TURNTransport) dialCarrier(ctx context.Context) (net.PacketConn, error)
 func (t *TURNTransport) UpdatePermissions(ips []string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.allowedPeers = ips
+	t.dynamicPermissions = append(t.dynamicPermissions[:0], ips...)
 	if t.open {
 		t.refreshPermissionsLocked()
 	}
@@ -213,7 +215,7 @@ func (t *TURNTransport) refreshPermissionsLocked() {
 	if t.cfg.NoCreatePermission || t.client == nil {
 		return
 	}
-	for _, ip := range t.allowedPeers {
+	for _, ip := range t.permissionListLocked() {
 		if t.grantedPeers[ip] {
 			continue
 		}
@@ -223,6 +225,32 @@ func (t *TURNTransport) refreshPermissionsLocked() {
 			_ = t.client.CreatePermission(addr)
 		}
 	}
+}
+
+func (t *TURNTransport) permissionListLocked() []string {
+	out := make([]string, 0, len(t.basePermissions)+len(t.dynamicPermissions))
+	seen := make(map[string]struct{}, len(t.basePermissions)+len(t.dynamicPermissions))
+	for _, ip := range t.basePermissions {
+		if ip == "" {
+			continue
+		}
+		if _, ok := seen[ip]; ok {
+			continue
+		}
+		seen[ip] = struct{}{}
+		out = append(out, ip)
+	}
+	for _, ip := range t.dynamicPermissions {
+		if ip == "" {
+			continue
+		}
+		if _, ok := seen[ip]; ok {
+			continue
+		}
+		seen[ip] = struct{}{}
+		out = append(out, ip)
+	}
+	return out
 }
 
 // keepaliveLoop sends periodic STUN binding requests to prevent NAT timeout.
@@ -307,6 +335,11 @@ func (t *TURNTransport) RelayAddr() string {
 		return ""
 	}
 	return t.relayAddr.String()
+}
+
+// WGPublicKeyForTest exposes the embedded WireGuard public key for package-external tests.
+func (t *TURNTransport) WGPublicKeyForTest() [32]byte {
+	return t.wgPubKey
 }
 
 // --- turnListener ----------------------------------------------------------
@@ -419,4 +452,3 @@ func encryptPubKey(pubKey []byte, password string) (string, error) {
 	combined := append(nonce, ct...)
 	return base64.StdEncoding.EncodeToString(combined), nil
 }
-

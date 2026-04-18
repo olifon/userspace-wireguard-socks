@@ -5,8 +5,11 @@ nonce_ttl: "10m"
 preopen_single_ports: false
 
 listen:
-  turn_listen: "0.0.0.0:3478"
   relay_ip: "203.0.113.10"
+
+listeners:
+  - type: "udp"
+    listen: "0.0.0.0:3478"
 
 users:
   - username: "alice"
