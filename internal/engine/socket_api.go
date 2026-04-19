@@ -20,7 +20,7 @@ import (
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/socketproto"
 )
 
-var maxSocketUDPPeers = 4096
+var maxSocketUDPPeers = 24576
 
 type socketSession struct {
 	id       uint64

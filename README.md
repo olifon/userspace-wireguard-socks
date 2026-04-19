@@ -24,7 +24,7 @@ curl -x http://127.0.0.1:8080 https://example.com
 ```
 
 For a complete local two-peer demo, start `examples/exit-server.yaml` and
-`examples/exit-client.yaml` as described in [docs/howto/build-and-quickstart.md](docs/howto/build-and-quickstart.md).
+`examples/exit-client.yaml` as described in [Full-Technical-How-To.md](Full-Technical-How-To.md).
 
 ## Binaries
 
@@ -32,8 +32,6 @@ For a complete local two-peer demo, start `examples/exit-server.yaml` and
   forwarding engine, DNS helper, ACL engine, and runtime API.
 - `uwgwrapper`: Linux launcher that routes ordinary applications through
   `uwgsocks` using `LD_PRELOAD`, seccomp-assisted ptrace, or ptrace fallback.
-- `uwgfdproxy`: local Unix-socket bridge used by the wrapper and by advanced
-  raw socket API clients.
 - `turn/`: standalone open TURN relay for deterministic UDP relay ports. It can
   be used with `uwgsocks` TURN mode when peers need a relay-friendly UDP path.
 
@@ -41,7 +39,6 @@ For a complete local two-peer demo, start `examples/exit-server.yaml` and
 
 - Rootless WireGuard client and server mode.
 - IPv4, IPv6, TCP, UDP, DNS, and ping-style ICMP/ICMPv6.
-- Tested on amd64, arm64, gvisor sandbox, termux on android, libc and musl libc (also for uwgwrapper)
 - HTTP proxy, SOCKS5 CONNECT, SOCKS5 UDP ASSOCIATE, and SOCKS5 BIND.
 - Local forwards and tunnel-side reverse forwards with optional PROXY protocol.
 - Transparent inbound termination from WireGuard peers to host sockets.
@@ -57,6 +54,30 @@ For a complete local two-peer demo, start `examples/exit-server.yaml` and
   latency. Runtime peer API updates can change shapers without restarting.
 - Optional TURN bind mode, including `turn.include_wg_public_key` for relays
   that want the WireGuard public key embedded in the TURN username.
+
+# Supported platforms
+
+The following platforms are tested
+
+Primary platforms: Both uwgsocks (wireguard server/client) and the uwgwrapper (routing any application through VPN):
+
+- amd64 on ubuntu laptop (libc)
+- amd64 on Digitalocean (libc)
+- amd64 on Alpine (musl libc)
+- amd64 on a Gvisor sandbox. Gvisor has some minor restrictions
+- arm64 on Raspberry PI (libc)
+- arm64 on termux on Android
+
+All tests passed on these platforms
+
+Secundary platforms: Then the following platforms uwgsocks worked and tested:
+
+- Windows amd64 desktop
+- Windows arm64, arm64 VM on Raspberry PI
+
+Limitations on secundary platforms:
+- no uwgwrapper, so you cannot route existing applications without system VPN
+- tun device is not yet supported, for Windows requires wintun
 
 ## Routing Model
 
@@ -95,9 +116,6 @@ require `proxy.lowbind`.
 
 Start with [docs/configuration.md](docs/configuration.md). The raw socket
 protocol is documented in [docs/socket-protocol.md](docs/socket-protocol.md).
-The configuration reference now lists the current YAML schema exhaustively,
-including `transports`, shared TLS settings, SOCKS5 UDP relay port ranges, and
-absolute-form HTTPS proxy verification controls.
 
 ## Build And Test
 
@@ -115,12 +133,11 @@ traffic shaping, and runtime API updates. See [docs/testing.md](docs/testing.md)
 
 ## More Documentation
 
-- [Technical how-to](docs/howto/README.md)
+- [Full technical how-to](Full-Technical-How-To.md)
 - [Configuration reference](docs/configuration.md)
 - [Raw socket API](docs/socket-protocol.md)
 - [Proxy routing](docs/proxy-routing.md)
 - [Testing and security plan](docs/testing.md)
-- [Live matrix validation (2026-04-18)](docs/live-matrix-2026-04-18.md)
 - [Termux arm64 bring-up plan](docs/termux-arm64-bringup.md)
 - [TURN relay](turn/README.md)
 - [UI server](uwgsocks-ui/README.md)
