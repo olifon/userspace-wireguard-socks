@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -268,7 +269,7 @@ func (e *Engine) listenSOCKSUDPAssociatePacketConn(control net.Conn) (net.Packet
 				},
 			}, nil
 		}
-		if errors.Is(err, syscall.EADDRINUSE) || errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM) {
+		if isRetryableUDPBindErr(err) {
 			lastErr = err
 			continue
 		}
@@ -278,6 +279,22 @@ func (e *Engine) listenSOCKSUDPAssociatePacketConn(control net.Conn) (net.Packet
 		lastErr = fmt.Errorf("no free UDP relay port found")
 	}
 	return nil, fmt.Errorf("socks5 udp associate ports %q: %w", e.cfg.Proxy.UDPAssociatePorts, lastErr)
+}
+
+func isRetryableUDPBindErr(err error) bool {
+	if errors.Is(err, syscall.EADDRINUSE) || errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM) {
+		return true
+	}
+	var errno syscall.Errno
+	if !errors.As(err, &errno) {
+		return false
+	}
+	switch errno {
+	case 10048, 10013:
+		return true
+	default:
+		return false
+	}
 }
 
 func (e *Engine) socksUDPRelayPortKnownOccupied(host string, port int) bool {
@@ -393,6 +410,9 @@ func (e *Engine) serveSOCKSUDPRelay(pc net.PacketConn, src netip.AddrPort, done 
 	)
 	if c, ok := pc.(connectablePacketConn); ok {
 		relayConn, canConnect = c, true
+		if runtime.GOOS == "windows" {
+			canConnect = false
+		}
 	}
 	sessions := make(map[string]*socksUDPSession)
 	timeout := e.udpIdleTimeout()
