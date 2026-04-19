@@ -77,7 +77,7 @@ Secundary platforms: Then the following platforms uwgsocks worked:
 - Mac OS X 15.6.1 on arm64 (mac mini m1)
 
 Limitations on secundary platforms:
-- no uwgwrapper, so you cannot route existing applications without system VPN
+- no uwgwrapper, so you cannot transperantly route existing applications that do not support SOCKS5/HTTP proxy without system VPN rootless
 - tun device is not yet supported, for Windows requires wintun
 
 Except from uwgtrace, uwgwrapper and fdproxy that were disabled, the tests passed on secundary platforms.
