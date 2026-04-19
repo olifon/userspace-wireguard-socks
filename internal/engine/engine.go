@@ -295,6 +295,10 @@ func (e *Engine) Start() error {
 	}
 	go e.watchStaticEndpointFallback()
 	if e.cfg.Scripts.Allow {
+		if (e.cfg.WireGuard.ConfigFile != "" || e.cfg.WireGuard.Config != "") &&
+			(len(e.cfg.WireGuard.PostUp) > 0 || len(e.cfg.WireGuard.PostDown) > 0) {
+			e.log.Printf("warning: scripts.allow is enabled and PostUp/PostDown came from wg-quick input; only use this with trusted local configs")
+		}
 		for _, cmd := range e.cfg.WireGuard.PostUp {
 			if err := runShell(cmd); err != nil {
 				return fmt.Errorf("PostUp %q: %w", cmd, err)

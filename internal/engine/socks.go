@@ -52,6 +52,12 @@ var (
 	errProxyFallbackDisabled = errors.New("fallback_direct is false")
 	errVirtualSubnetUnrouted = errors.New("destination is inside a WireGuard Address subnet but no peer AllowedIPs route it")
 	errAddressFiltered       = errors.New("destination address is blocked by tunnel address filters")
+	errSOCKSUDPRelayAtLimit  = errors.New("too many SOCKS UDP relay sessions")
+)
+
+var (
+	socksRequestDeadline       = 30 * time.Second
+	maxSOCKSUDPSessionsPerConn = 4096
 )
 
 type socksAddr struct {
@@ -84,9 +90,10 @@ func (e *Engine) serveSOCKSConn(c net.Conn) {
 	if err := e.socksHandshake(c); err != nil {
 		return
 	}
-	_ = c.SetDeadline(time.Time{})
+	_ = c.SetDeadline(time.Now().Add(socksRequestDeadline))
 
 	cmd, dst, err := readSOCKSRequest(c)
+	_ = c.SetDeadline(time.Time{})
 	if err != nil {
 		_ = writeSOCKSReply(c, socksRepGeneralFailure, netip.AddrPort{})
 		return
@@ -483,6 +490,10 @@ func (e *Engine) socksUDPSession(ctx context.Context, sessions map[string]*socks
 			touch(sess)
 			mu.Unlock()
 			return sess.conn, target, key, nil
+		}
+		if maxSOCKSUDPSessionsPerConn > 0 && len(sessions) >= maxSOCKSUDPSessionsPerConn {
+			mu.Unlock()
+			return nil, netip.AddrPort{}, "", errSOCKSUDPRelayAtLimit
 		}
 		mu.Unlock()
 		conn, err := e.dialProxyCandidate(ctx, "udp", target, src)
