@@ -10,8 +10,11 @@ the Linux `uwgwrapper`/`uwgfdproxy` path, or the Go library API.
 ## Quick Start
 
 ```bash
-# Build the local binaries.
+# For linux: Build the local binaries.
 bash compile.sh
+
+# For windows/mac use, build uwgsocks only
+go build -trimpath -ldflags='-s -w' -o uwgsocks ./cmd/uwgsocks
 
 # Start a rootless WireGuard client exposing HTTP and SOCKS proxies.
 ./uwgsocks --wg-config ./client.conf --http 127.0.0.1:8080 --socks5 127.0.0.1:1080
@@ -63,9 +66,10 @@ Primary platforms: Both uwgsocks (wireguard server/client) and the uwgwrapper (r
 
 - Linux amd64 on ubuntu laptop (libc)
 - Linux amd64 on Digitalocean (libc)
-- Linux amd64 on Alpine (musl libc)
+- Linux amd64 on Alpine container (musl libc)
 - Linux amd64 on a Gvisor sandbox. Gvisor has some minor restrictions
 - Linux arm64 on Raspberry PI (libc)
+- Linux arm64 on Alpine container (musl libc)
 - Linux arm64 on termux on Android
 
 All tests passed on these platforms. uwgsocks has the same binary for libc/musl libc, only uwgwrapper has a different binary since it embeds a preload library.
