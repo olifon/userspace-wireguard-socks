@@ -614,7 +614,8 @@ log:
 
 `scripts.allow` gates all shell-hook execution, including `wireguard.post_up`,
 `wireguard.post_down`, `tun.up`, and `tun.down`. Leave it false for untrusted
-config files. `log.verbose` switches WireGuard device logging from error-only to
+config files, including provider-supplied or internet-downloaded `wg-quick`
+files. `log.verbose` switches WireGuard device logging from error-only to
 verbose mode and also enables additional runtime warnings from higher layers.
 
 API client commands:
@@ -651,4 +652,5 @@ client command. `--api` accepts `http://host:port`, `host:port`, or
 ```
 
 `--allow-scripts` enables `PostUp`, `PostDown`, `tun.up`, and `tun.down`
-commands. Leave it off for untrusted config files.
+commands. Leave it off for untrusted config files, especially `wg-quick`
+configs that were downloaded or supplied by a remote party.
