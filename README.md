@@ -61,23 +61,26 @@ The following platforms are tested
 
 Primary platforms: Both uwgsocks (wireguard server/client) and the uwgwrapper (routing any application through VPN):
 
-- amd64 on ubuntu laptop (libc)
-- amd64 on Digitalocean (libc)
-- amd64 on Alpine (musl libc)
-- amd64 on a Gvisor sandbox. Gvisor has some minor restrictions
-- arm64 on Raspberry PI (libc)
-- arm64 on termux on Android
+- Linux amd64 on ubuntu laptop (libc)
+- Linux amd64 on Digitalocean (libc)
+- Linux amd64 on Alpine (musl libc)
+- Linux amd64 on a Gvisor sandbox. Gvisor has some minor restrictions
+- Linux arm64 on Raspberry PI (libc)
+- Linux arm64 on termux on Android
 
-All tests passed on these platforms
+All tests passed on these platforms. uwgsocks has the same binary for libc/musl libc, only uwgwrapper has a different binary since it embeds a preload library.
 
-Secundary platforms: Then the following platforms uwgsocks worked and tested:
+Secundary platforms: Then the following platforms uwgsocks worked:
 
 - Windows amd64 desktop
 - Windows arm64, arm64 VM on Raspberry PI
+- Mac OS X 15.6.1 on arm64 (mac mini m1)
 
 Limitations on secundary platforms:
 - no uwgwrapper, so you cannot route existing applications without system VPN
 - tun device is not yet supported, for Windows requires wintun
+
+Except from uwgtrace, uwgwrapper and fdproxy that were disabled, the tests passed on secundary platforms.
 
 ## Routing Model
 
