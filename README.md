@@ -35,20 +35,12 @@ For a complete local two-peer demo, start `examples/exit-server.yaml` and
 - `turn/`: standalone open TURN relay for deterministic UDP relay ports. It can
   be used with `uwgsocks` TURN mode when peers need a relay-friendly UDP path.
 
-## Routing Model
+## Wrapper for Linux applications
 
-For proxy and raw socket clients, `uwgsocks` first checks local tunnel
-addresses and reverse forwards, then peer `AllowedIPs`, then configured
-outbound proxy fallbacks, then direct fallback if `proxy.fallback_direct` is
-enabled. Destinations inside local `Address=` subnets but not routed by peer
-`AllowedIPs` are rejected instead of leaking to the host network.
+Use SOCKS or HTTP when an application supports it. For inbound connections, use Proxy Protocol (v1/v2) instead of uwgwrapper if the application supports it. Use `uwgwrapper` when the app
+does not. Many apps work with this wrapper, it intercepts OS networking calls to actually make the network requests over Wireguard
 
-See [docs/proxy-routing.md](docs/proxy-routing.md) for the detailed order.
-
-## Wrapper Notes
-
-Use SOCKS or HTTP when an application supports it. Use `uwgwrapper` when the app
-does not.
+Unlike socksify/graftcp/tsocks/proxychains it uses a preload + ptrace combination to both be fast and compatibile with all kinds of applications, in addition it also supports that applications 'bind' to Wireguard for inbound UDP/TCP connections natively, without requiring forwards or system VPN.
 
 ```bash
 ./uwgsocks --config ./examples/socksify.yaml

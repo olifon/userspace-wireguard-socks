@@ -5,13 +5,9 @@ This TURN server is tuned for UDP relay use cases where relay ports, WireGuard f
 It is built on Pion TURN and adds:
 - fixed relay ports per user
 - username-as-port range mode
-<<<<<<< HEAD
-- per-user dynamic port ranges, for outbound clients and for clients not needing a fixed port.
-=======
 - per-user dynamic port ranges
 - multiple TURN listeners: UDP, TCP, TLS, and DTLS
 - auto-generated TLS/DTLS certs when no files are configured, plus hot reload for certificate files
->>>>>>> droplet/master
 - optional mapped/public relay addresses
 - internal relay-to-relay routing optimization
 - `outbound_only` users that may only receive replies after they send first
