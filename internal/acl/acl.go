@@ -31,19 +31,26 @@ func (r PortRange) Contains(port uint16) bool {
 type Rule struct {
 	Action Action `yaml:"action" json:"action"`
 
-	// The string fields are kept so YAML/JSON/API users see the same compact
-	// representation they configured. Normalize parses them into the private
-	// fields below for fast per-connection checks.
-	Source      string `yaml:"source" json:"source"`
-	Destination string `yaml:"destination" json:"destination"`
-	SourcePort  string `yaml:"source_port" json:"source_port"`
-	DestPort    string `yaml:"destination_port" json:"destination_port"`
-	Protocol    string `yaml:"protocol" json:"protocol"`
+	// Singular string fields are kept for backward-compatible YAML/JSON/API
+	// representations. Normalize parses them into the private fields below for
+	// fast per-connection checks.
+	//
+	// Sources / Destinations are the list variants: when non-empty they are
+	// used instead of (and merged with) the singular Source / Destination.
+	// This lets the UI push one rule with multiple CIDRs instead of many
+	// single-CIDR rules.
+	Source       string   `yaml:"source,omitempty" json:"source,omitempty"`
+	Destination  string   `yaml:"destination,omitempty" json:"destination,omitempty"`
+	Sources      []string `yaml:"sources,omitempty" json:"sources,omitempty"`
+	Destinations []string `yaml:"destinations,omitempty" json:"destinations,omitempty"`
+	SourcePort   string   `yaml:"source_port,omitempty" json:"source_port,omitempty"`
+	DestPort     string   `yaml:"destination_port,omitempty" json:"destination_port,omitempty"`
+	Protocol     string   `yaml:"protocol,omitempty" json:"protocol,omitempty"`
 
-	sourcePrefix *netip.Prefix
-	destPrefix   *netip.Prefix
-	sourcePorts  *PortRange
-	destPorts    *PortRange
+	sourcePrefixes []netip.Prefix
+	destPrefixes   []netip.Prefix
+	sourcePorts    *PortRange
+	destPorts      *PortRange
 }
 
 type List struct {
@@ -79,20 +86,43 @@ func (r *Rule) Normalize() error {
 	if r.Action != Allow && r.Action != Deny {
 		return fmt.Errorf("invalid action %q", r.Action)
 	}
+
+	// Collect all source entries: singular Source + multi Sources list.
+	srcEntries := make([]string, 0, 1+len(r.Sources))
 	if r.Source != "" {
-		p, err := parsePrefix(r.Source)
-		if err != nil {
-			return fmt.Errorf("source: %w", err)
-		}
-		r.sourcePrefix = &p
+		srcEntries = append(srcEntries, r.Source)
 	}
+	srcEntries = append(srcEntries, r.Sources...)
+	r.sourcePrefixes = r.sourcePrefixes[:0]
+	for _, s := range srcEntries {
+		if s == "" {
+			continue
+		}
+		p, err := parsePrefix(s)
+		if err != nil {
+			return fmt.Errorf("source %q: %w", s, err)
+		}
+		r.sourcePrefixes = append(r.sourcePrefixes, p)
+	}
+
+	// Collect all destination entries.
+	dstEntries := make([]string, 0, 1+len(r.Destinations))
 	if r.Destination != "" {
-		p, err := parsePrefix(r.Destination)
-		if err != nil {
-			return fmt.Errorf("destination: %w", err)
-		}
-		r.destPrefix = &p
+		dstEntries = append(dstEntries, r.Destination)
 	}
+	dstEntries = append(dstEntries, r.Destinations...)
+	r.destPrefixes = r.destPrefixes[:0]
+	for _, s := range dstEntries {
+		if s == "" {
+			continue
+		}
+		p, err := parsePrefix(s)
+		if err != nil {
+			return fmt.Errorf("destination %q: %w", s, err)
+		}
+		r.destPrefixes = append(r.destPrefixes, p)
+	}
+
 	if r.SourcePort != "" {
 		p, err := ParsePortRange(r.SourcePort)
 		if err != nil {
@@ -180,11 +210,31 @@ func (r Rule) matches(src, dst netip.AddrPort, network string) bool {
 	if network != "" && r.Protocol != "" && r.Protocol != network {
 		return false
 	}
-	if r.sourcePrefix != nil && !r.sourcePrefix.Contains(src.Addr()) {
-		return false
+	// Source check: if any prefixes are configured, src must match at least one.
+	if len(r.sourcePrefixes) > 0 {
+		matched := false
+		for _, p := range r.sourcePrefixes {
+			if p.Contains(src.Addr()) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
 	}
-	if r.destPrefix != nil && !r.destPrefix.Contains(dst.Addr()) {
-		return false
+	// Destination check: if any prefixes are configured, dst must match at least one.
+	if len(r.destPrefixes) > 0 {
+		matched := false
+		for _, p := range r.destPrefixes {
+			if p.Contains(dst.Addr()) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
 	}
 	if r.sourcePorts != nil && !r.sourcePorts.Contains(src.Port()) {
 		return false
