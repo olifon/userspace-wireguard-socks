@@ -7,10 +7,8 @@ package uwgtrace
 
 import (
 	"errors"
-	"runtime"
 
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/uwgshared"
-	"golang.org/x/sys/unix"
 )
 
 var (
@@ -48,8 +46,5 @@ func RunTraceeHelper(args []string) error {
 }
 
 func SetNoNewPrivileges() error {
-	if runtime.GOOS == "linux" || runtime.GOOS == "android" {
-		return unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
-	}
 	return ErrPtraceUnavailable
 }

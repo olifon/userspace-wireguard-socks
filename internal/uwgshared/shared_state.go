@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Copyright (c) 2026 Reindert Pelsma
 // SPDX-License-Identifier: ISC
 
@@ -462,7 +464,7 @@ func (t *Table) wrlock() {
 	for !atomic.CompareAndSwapUint32(&lock.Writer, 0, 1) {
 		runtime.Gosched()
 	}
-	atomic.StoreInt32(&lock.WriterTID, int32(unix.Gettid()))
+	atomic.StoreInt32(&lock.WriterTID, int32(currentTID()))
 	for atomic.LoadUint32(&lock.Readers) != 0 {
 		runtime.Gosched()
 	}

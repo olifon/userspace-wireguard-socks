@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Copyright (c) 2026 Reindert Pelsma
 // SPDX-License-Identifier: ISC
 
