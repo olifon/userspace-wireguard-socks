@@ -23,6 +23,15 @@ jobs:
           - goos: linux
             goarch: arm64
             artifact_name: uwgsocks-linux-arm64
+          - goos: linux
+            goarch: riscv64
+            artifact_name: uwgsocks-linux-riscv64
+          - goos: linux
+            goarch: mips
+            artifact_name: uwgsocks-linux-mips
+          - goos: linux
+            goarch: mipsle
+            artifact_name: uwgsocks-linux-mipsle
           - goos: darwin
             goarch: amd64
             artifact_name: uwgsocks-darwin-amd64
@@ -66,25 +75,29 @@ jobs:
 
   build-uwgwrapper:
     name: uwgwrapper linux ${{ matrix.goarch }} ${{ matrix.libc }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - goarch: amd64
             libc: gnu
+            runner: ubuntu-latest
             zig_target: x86_64-linux-gnu
             artifact_name: uwgwrapper-linux-amd64-gnu
           - goarch: amd64
             libc: musl
+            runner: ubuntu-latest
             zig_target: x86_64-linux-musl
             artifact_name: uwgwrapper-linux-amd64-musl
           - goarch: arm64
             libc: gnu
+            runner: ubuntu-24.04-arm
             zig_target: aarch64-linux-gnu
             artifact_name: uwgwrapper-linux-arm64-gnu
           - goarch: arm64
             libc: musl
+            runner: ubuntu-24.04-arm
             zig_target: aarch64-linux-musl
             artifact_name: uwgwrapper-linux-arm64-musl
     steps:
@@ -97,6 +110,35 @@ jobs:
       - uses: goto-bus-stop/setup-zig@v2
         with:
           version: 0.14.1
+
+      # Run preload and wrapper tests before building the release artifact.
+      # gnu: test natively using the system gcc (glibc), so LD_PRELOAD works correctly.
+      # musl: test inside a Docker golang:alpine container (musl libc) for the same reason.
+      - name: Test preload and wrapper (gnu)
+        if: matrix.libc == 'gnu'
+        run: |
+          set -euo pipefail
+          mkdir -p cmd/uwgwrapper/assets
+          gcc -shared -fPIC -O2 -Wall -Wextra \
+            -o cmd/uwgwrapper/assets/uwgpreload.so preload/uwgpreload.c -ldl -pthread
+          go test ./tests/preload/... ./internal/uwgtrace/... ./internal/fdproxy/...
+
+      - name: Test preload and wrapper (musl)
+        if: matrix.libc == 'musl'
+        run: |
+          set -euo pipefail
+          # golang:alpine uses musl; tests must run inside it so LD_PRELOAD resolves against musl.
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            --cap-add SYS_PTRACE \
+            --security-opt seccomp=unconfined \
+            golang:alpine \
+            sh -c "apk add --no-cache gcc musl-dev linux-headers && \
+                   mkdir -p cmd/uwgwrapper/assets && \
+                   gcc -shared -fPIC -O2 -Wall -Wextra \
+                     -o cmd/uwgwrapper/assets/uwgpreload.so preload/uwgpreload.c -ldl -pthread && \
+                   go test ./tests/preload/... ./internal/uwgtrace/... ./internal/fdproxy/..."
 
       - name: Build uwgwrapper preload asset
         run: |

@@ -14,8 +14,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: linux
+          - name: linux-amd64
             runner: ubuntu-latest
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
           - name: macos
             runner: macos-latest
           - name: windows
@@ -27,7 +29,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Build Linux uwgwrapper preload asset
+      - name: Build Linux uwgwrapper preload asset (glibc)
         if: runner.os == 'Linux'
         shell: bash
         run: |

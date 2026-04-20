@@ -1212,7 +1212,7 @@ func TestPacketLossTransfer(t *testing.T) {
 	}
 	conn := retryDial(t, dialer, net.JoinHostPort(hostIP.String(), echo.Port))
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(30 * time.Second * testDeadlineScale))
 
 	payload := make([]byte, 3*1024*1024)
 	if _, err := rand.Read(payload); err != nil {

@@ -1,99 +1,89 @@
 # Userspace WireGuard Gateway
 
-Run WireGuard networking without root, without `/dev/net/tun`, without routing
-table changes, and without a system VPN interface.
+WireGuard networking without root, without kernel modules, and without touching the host network stack.
 
-`uwgsocks` embeds WireGuard and a userspace TCP/IP stack in one process. Apps can
-enter that stack through HTTP/SOCKS proxies, local forwards, the raw socket API,
-the Linux `uwgwrapper`/`uwgfdproxy` path, or the Go library API.
+`uwgsocks` embeds WireGuard and a userspace TCP/IP stack into a single binary. It runs anywhere: containers, CI pipelines, Android Termux, and locked-down hosts where kernel WireGuard or `/dev/net/tun` are unavailable.
+
+## Why this exists
+
+Standard WireGuard requires root and a kernel TUN interface. That rules it out for containers, unprivileged CI jobs, and any system where you cannot change the routing table. It also uses plain UDP, which is easily detected and blocked by firewalls and DPI.
+
+`uwgsocks` removes both constraints — and uniquely, it works as a **server** too. You can host a WireGuard exit node or SD-WAN hub on any machine, under any account, with no installation: a Mac mini, a Termux session, a Windows desktop, a container, or an IoT device. Two binaries, no root, no kernel module.
+
+## Looking for a VPN server with a web UI?
+
+See [simple-wireguard-server](https://github.com/reindertpelsma/simple-wireguard-server) — a zero-install WireGuard server manager built on top of `uwgsocks`. It adds a dashboard, user management, OIDC login, and shareable client configs, and runs under any unprivileged account.
 
 ## Quick Start
 
 ```bash
-# Build the local binaries.
 bash compile.sh
 
-# Start a rootless WireGuard client exposing HTTP and SOCKS proxies.
-./uwgsocks --wg-config ./client.conf --http 127.0.0.1:8080 --socks5 127.0.0.1:1080
+# Start a rootless WireGuard client.
+./uwgsocks --wg-config client.conf --socks5 127.0.0.1:1080
 
-# Use a proxy-aware app.
-curl -x http://127.0.0.1:8080 https://example.com
+# Use a proxy-aware app through the tunnel.
+curl --proxy socks5://127.0.0.1:1080 https://example.com
 
-# Or run an app that does not know about proxies.
-./uwgwrapper --api http://127.0.0.1:8080 -- curl https://example.com
+# Or transparently route any Linux app — no proxy support required.
+./uwgsocks --config examples/socksify.yaml
+./uwgwrapper -- curl https://example.com
 ```
 
-For a complete local two-peer demo, start `examples/exit-server.yaml` and
-`examples/exit-client.yaml` as described in [Full-Technical-How-To.md](Full-Technical-How-To.md).
+## How apps enter the tunnel
+
+| Method | When to use |
+|---|---|
+| SOCKS5 / HTTP proxy | App has built-in proxy support |
+| Port forwards | Fixed ports you want mapped locally |
+| `uwgwrapper` (Linux) | App has no proxy support — intercepts socket calls via LD_PRELOAD, falls back to ptrace for static Go/Rust binaries |
+| Raw socket API | Embedding `uwgsocks` as a Go library |
+
+## Surviving restrictive firewalls
+
+Standard WireGuard UDP is easily fingerprinted and blocked. `uwgsocks` can carry WireGuard over:
+
+`udp` · `tcp` · `tls` · `https` (WebSocket) · `quic` (WebTransport) · `dtls` · `turn`
+
+A single `#!TCP=required` comment in your wg-quick config is enough to switch a peer to TCP transport — no YAML needed.
+
+## vs. Alternatives
+
+| | `uwgsocks` | Kernel WireGuard | Tailscale / Headscale | proxychains |
+|---|---|---|---|---|
+| Root required | No | Yes | No | No |
+| Works in containers | Yes | Requires CAP_NET_ADMIN | Requires CAP_NET_ADMIN | Yes |
+| **Host a server rootlessly** | **Yes** | No | No | — |
+| Runs on macOS / Windows / Android as server | Yes | No | No | — |
+| Survives DPI / port blocks | Yes | No | No | No |
+| Routes apps without proxy support | Yes (uwgwrapper) | Via system routing | Via system routing | Partially (TCP only, no static binaries) |
+| Standard WireGuard peers | Yes | Yes | No (Tailscale protocol) | — |
+| Self-hosted, no SaaS dependency | Yes | Yes | Headscale (partial) | — |
 
 ## Binaries
 
-- `uwgsocks`: rootless userspace WireGuard client/server, proxy, raw socket API,
-  forwarding engine, DNS helper, ACL engine, and runtime API.
-- `uwgwrapper`: Linux launcher that routes ordinary applications through
-  `uwgsocks` using `LD_PRELOAD`, seccomp-assisted ptrace, or ptrace fallback.
-- `turn/`: standalone open TURN relay for deterministic UDP relay ports. It can
-  be used with `uwgsocks` TURN mode when peers need a relay-friendly UDP path.
+- **`uwgsocks`** — WireGuard engine, SOCKS5/HTTP proxy, port forwards, ACL engine, DNS, relay, and runtime API. Runs on Linux, macOS, and Windows.
+- **`uwgwrapper`** — Linux-only launcher that transparently routes any application through `uwgsocks`. Uses LD_PRELOAD for the fast path and ptrace/seccomp for static binaries.
+- **`turn/`** — standalone TURN relay for relay-friendly UDP paths and CGNAT traversal.
 
-## Wrapper for Linux applications
-
-Use SOCKS or HTTP when an application supports it. For inbound connections, use Proxy Protocol (v1/v2) instead of uwgwrapper if the application supports it. Use `uwgwrapper` when the app
-does not. Many apps work with this wrapper, it intercepts OS networking calls to actually make the network requests over Wireguard
-
-Unlike socksify/graftcp/tsocks/proxychains it uses a preload + ptrace combination to both be fast and compatibile with all kinds of applications, in addition it also supports that applications 'bind' to Wireguard for inbound UDP/TCP connections natively, without requiring forwards or system VPN.
+## Build
 
 ```bash
-./uwgsocks --config ./examples/socksify.yaml
-./uwgwrapper --api unix:/tmp/uwgsocks-http.sock --transport auto -- curl https://example.com
-```
-
-`uwgwrapper --transport auto` picks the fastest available correct mode. In
-restricted containers it can fall back when seccomp or ptrace are unavailable.
-Explicit loopback connections and binds bypass the tunnel. Binding tunnel-side
-listeners requires `proxy.bind` or `socket_api.bind`; low ports additionally
-require `proxy.lowbind`.
-
-## Configuration
-
-`uwgsocks` merges:
-
-1. YAML runtime config from `--config`.
-2. wg-quick config from `wireguard.config_file`, `wireguard.config`,
-   `--wg-config`, or `--wg-inline`.
-3. CLI overrides and repeated additions.
-
-Start with [docs/configuration.md](docs/configuration.md). The raw socket
-protocol is documented in [docs/socket-protocol.md](docs/socket-protocol.md).
-
-## Build And Test
-
-Requirements: Go, gcc on Linux when building `uwgwrapper`, and npm only when
-building `uwgsocks-ui`.
-
-```bash
-export GOTOOLCHAIN=auto
-bash compile.sh
+bash compile.sh   # builds uwgsocks everywhere; builds uwgwrapper on Linux amd64/arm64
 go test ./...
-go test -race ./internal/config ./internal/engine ./tests/malicious ./tests/preload
 ```
 
-On macOS, `bash compile.sh` builds `uwgsocks` and skips the Linux-only
-`uwgwrapper`. On Windows, use `compile.bat`, which builds `uwgsocks.exe`.
+Requires Go. Building `uwgwrapper` additionally requires gcc on Linux. See [docs/compatibility.md](docs/compatibility.md) for supported platforms.
 
-The test suite runs rootless local WireGuard instances and covers proxy paths,
-raw socket API, wrapper preload/ptrace paths, IPv6, ICMP, relay ACLs, DNS,
-traffic shaping, and runtime API updates. See [docs/testing.md](docs/testing.md).
+## Documentation
 
-## More Documentation
-
-- [Full technical how-to](Full-Technical-How-To.md)
 - [Configuration reference](docs/configuration.md)
+- [Transport modes](docs/transport-modes.md)
+- [Proxy routing order](docs/proxy-routing.md)
 - [Raw socket API](docs/socket-protocol.md)
-- [Proxy routing](docs/proxy-routing.md)
-- [Testing and security plan](docs/testing.md)
-- [Termux arm64 bring-up plan](docs/termux-arm64-bringup.md)
+- [Testing](docs/testing.md)
 - [TURN relay](turn/README.md)
-- [UI server](uwgsocks-ui/README.md)
+- [How-to guides](docs/howto/README.md)
 
 ## License
 

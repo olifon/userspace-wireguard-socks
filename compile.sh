@@ -32,11 +32,16 @@ build_uwgwrapper_linux() {
 case "${OS}" in
   linux)
     build_uwgsocks
-    if command -v gcc >/dev/null 2>&1; then
-      build_uwgwrapper_linux
-      echo "COMPILE SUCCEEDED. Built uwgsocks and uwgwrapper."
+    ARCH="$(uname -m)"
+    if [[ "$ARCH" == "x86_64" || "$ARCH" == "aarch64" ]]; then
+      if command -v gcc >/dev/null 2>&1; then
+        build_uwgwrapper_linux
+        echo "COMPILE SUCCEEDED. Built uwgsocks and uwgwrapper."
+      else
+        echo "COMPILE PARTIAL. Built uwgsocks, but skipped uwgwrapper because gcc is unavailable." >&2
+      fi
     else
-      echo "COMPILE PARTIAL. Built uwgsocks, but skipped uwgwrapper because gcc is unavailable." >&2
+      echo "COMPILE SUCCEEDED. Built uwgsocks. uwgwrapper is only built for amd64/arm64 Linux." >&2
     fi
     ;;
   darwin)

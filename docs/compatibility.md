@@ -1,5 +1,6 @@
+# Compatibility
 
-## What Works Today
+## Feature support
 
 - Rootless WireGuard client and server mode.
 - IPv4, IPv6, TCP, UDP, DNS, and ping-style ICMP/ICMPv6.
@@ -19,29 +20,71 @@
 - Optional TURN bind mode, including `turn.include_wg_public_key` for relays
   that want the WireGuard public key embedded in the TURN username.
 
-# Supported platforms
+## Platform support
 
-The following platforms are tested
+`uwgsocks` is the same binary for glibc and musl libc. `uwgwrapper` ships
+separate binaries per libc because it embeds an `LD_PRELOAD` shared library.
 
-Primary platforms: Both uwgsocks (wireguard server/client) and the uwgwrapper (routing any application through VPN):
+### Primary platforms
 
-- Linux amd64 on ubuntu laptop (libc)
-- Linux amd64 on Digitalocean (libc)
-- Linux amd64 on Alpine (musl libc)
-- Linux amd64 on a Gvisor sandbox. Gvisor has some minor restrictions
-- Linux arm64 on Raspberry PI (libc)
-- Linux arm64 on termux on Android
+Full test suite passing, including `uwgwrapper` preload and ptrace paths.
 
-All tests passed on these platforms. uwgsocks has the same binary for libc/musl libc, only uwgwrapper has a different binary since it embeds a preload library.
+| Platform | Notes |
+|---|---|
+| Linux amd64 glibc | CI on every push (GitHub Actions `ubuntu-latest`) |
+| Linux arm64 glibc | CI on every push (GitHub Actions `ubuntu-24.04-arm`) |
+| Linux amd64 musl | CI on every release (Docker Alpine in GitHub Actions) |
+| Linux arm64 musl | Manually tested on Raspberry Pi 4 running Alpine Linux |
+| Linux amd64 gVisor | Tested; gVisor has minor sandboxing restrictions on ptrace paths |
 
-Secundary platforms: Then the following platforms uwgsocks worked:
+### Secondary platforms
 
-- Windows amd64 desktop
-- Windows arm64, arm64 VM on Raspberry PI
-- Mac OS X 15.6.1 on arm64 (mac mini m1)
+`uwgsocks` passes its full test suite. `uwgwrapper` is not built on these
+platforms (no `LD_PRELOAD` / ptrace support outside Linux).
 
-Limitations on secundary platforms:
-- no uwgwrapper, so you cannot transperantly route existing applications that do not support SOCKS5/HTTP proxy without system VPN rootless
-- tun device is not yet supported, for Windows requires wintun
+| Platform | Notes |
+|---|---|
+| macOS arm64 | CI on every push (GitHub Actions `macos-latest`); soak and race-detector tests run on Mac Mini M1 |
+| Windows amd64 | CI on every push (GitHub Actions `windows-latest`) |
+| Windows arm64 | Manually tested (arm64 VM on Raspberry Pi) |
+| Linux arm64 Termux (Android) | Manually tested |
 
-Except from uwgtrace, uwgwrapper and fdproxy that were disabled, the tests passed on secundary platforms.
+### Exotic architecture builds
+
+`uwgsocks` cross-compiles cleanly (`CGO_ENABLED=0`) and binaries are shipped
+in releases. Runtime test coverage is limited to QEMU emulation.
+
+| Platform | Status |
+|---|---|
+| Linux riscv64 | QEMU-tested: all core tests pass; one IPv6 ICMP test skipped due to QEMU network limitation |
+| Linux mips (big-endian) | Build-only; no container images available for QEMU runtime testing |
+| Linux mipsle (little-endian) | Build-only; targeted at EdgeRouter X and similar devices |
+
+`uwgwrapper` is not built for exotic architectures. The `LD_PRELOAD` shim and
+ptrace/seccomp filter tables are architecture-specific and only maintained for
+amd64 and arm64.
+
+## Known limitations by platform
+
+**All non-Linux platforms:**
+- No `uwgwrapper`. Applications without proxy support must use a system-level
+  VPN or configure SOCKS5/HTTP proxy manually.
+- No `uwgtrace`, `uwgfdproxy`, or ptrace-based interception.
+
+**Windows:**
+- TUN device support requires [wintun](https://www.wintun.net/). SOCKS5/HTTP
+  proxy and socket API modes work without it.
+
+**macOS:**
+- TUN device support is available but not the primary use case.
+- UDP buffer size warnings from quic-go are cosmetic on macOS; QUIC transport
+  functions correctly.
+
+**gVisor:**
+- ptrace-based `uwgwrapper` modes are restricted by the sandbox. Preload-only
+  mode works if the gVisor policy permits `dlopen`.
+
+**riscv64 / mips / mipsle:**
+- No `uwgwrapper`.
+- IPv6 ICMP (ping6 through the tunnel) is unverified on real hardware; all
+  other tested paths pass.
