@@ -173,6 +173,9 @@ func TestUWGWrapperBothStdIOHeavyStaysOffPtrace(t *testing.T) {
 }
 
 func TestUWGWrapperBothStress(t *testing.T) {
+	if os.Getenv("UWGS_SOAK") == "" {
+		t.Skip("set UWGS_SOAK=1 to run long wrapper stress tests")
+	}
 	requireWrapperToolchain(t)
 	art := buildWrapperArtifacts(t)
 	_, httpSock := setupWrapperNetwork(t)
