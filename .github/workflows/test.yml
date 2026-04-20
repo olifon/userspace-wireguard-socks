@@ -27,6 +27,15 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Build Linux uwgwrapper preload asset
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p cmd/uwgwrapper/assets
+          gcc -shared -fPIC -O2 -Wall -Wextra \
+            -o cmd/uwgwrapper/assets/uwgpreload.so preload/uwgpreload.c -ldl -pthread
+
       - name: Run tests
         shell: bash
         run: go test ./...

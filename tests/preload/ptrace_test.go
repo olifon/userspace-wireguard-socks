@@ -587,6 +587,8 @@ func buildWrapperArtifacts(t *testing.T) wrapperArtifacts {
 	t.Helper()
 	repo := filepath.Clean(filepath.Join("..", ".."))
 	tmp := t.TempDir()
+	embeddedPreloadDir := filepath.Join(repo, "cmd", "uwgwrapper", "assets")
+	embeddedPreload := filepath.Join(embeddedPreloadDir, "uwgpreload.so")
 	art := wrapperArtifacts{
 		wrapper:      filepath.Join(tmp, "uwgwrapper"),
 		preload:      filepath.Join(tmp, "uwgpreload.so"),
@@ -599,6 +601,10 @@ func buildWrapperArtifacts(t *testing.T) wrapperArtifacts {
 		reentrant:    filepath.Join(tmp, "reentrant_client"),
 		stdioHeavy:   filepath.Join(tmp, "stdio_heavy"),
 	}
+	if err := os.MkdirAll(embeddedPreloadDir, 0o755); err != nil {
+		t.Fatalf("mkdir embedded preload dir: %v", err)
+	}
+	run(t, repo, "gcc", "-shared", "-fPIC", "-O2", "-Wall", "-Wextra", "-o", embeddedPreload, "preload/uwgpreload.c", "-ldl", "-pthread")
 	run(t, repo, "gcc", "-shared", "-fPIC", "-O2", "-Wall", "-Wextra", "-o", art.preload, "preload/uwgpreload.c", "-ldl", "-pthread")
 	run(t, repo, "gcc", "-O2", "-Wall", "-Wextra", "-o", art.stub, "tests/preload/testdata/stub_client.c")
 	run(t, repo, "gcc", "-O2", "-Wall", "-Wextra", "-o", art.mixed, "tests/preload/testdata/mixed_client.c")
