@@ -17,6 +17,7 @@ import (
 
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/acl"
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/config"
+	"github.com/reindertpelsma/userspace-wireguard-socks/internal/transport"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
@@ -110,6 +111,31 @@ func TestMeshControlPeersRequiresAuthAndReturnsEncryptedPeers(t *testing.T) {
 	}
 	if peers[0].PublicKey != client2Key.PublicKey().String() || peers[0].Endpoint == "" || len(peers[0].AllowedIPs) != 1 || peers[0].AllowedIPs[0] != "100.64.94.3/32" || peers[0].PSK == "" || peers[0].MeshTrust != string(config.MeshTrustTrustedAlways) {
 		t.Fatalf("unexpected mesh peer: %+v", peers[0])
+	}
+}
+
+func TestMeshAdvertisedEndpointByTransport(t *testing.T) {
+	st := PeerStatus{Endpoint: "198.51.100.10:51820"}
+	if got := meshAdvertisedEndpoint(config.Peer{}, st, nil, ""); got != st.Endpoint {
+		t.Fatalf("legacy udp endpoint=%q want %q", got, st.Endpoint)
+	}
+	transports := []transport.Config{
+		{Name: "udp", Base: "udp"},
+		{Name: "turn-udp", Base: "turn", TURN: transport.TURNConfig{Protocol: "udp"}},
+		{Name: "turn-tls", Base: "turn", TURN: transport.TURNConfig{Protocol: "tls"}},
+		{Name: "web", Base: "https"},
+	}
+	if got := meshAdvertisedEndpoint(config.Peer{Transport: "udp"}, st, transports, ""); got != st.Endpoint {
+		t.Fatalf("udp endpoint=%q want %q", got, st.Endpoint)
+	}
+	if got := meshAdvertisedEndpoint(config.Peer{Transport: "turn-udp"}, st, transports, ""); got != st.Endpoint {
+		t.Fatalf("turn udp endpoint=%q want %q", got, st.Endpoint)
+	}
+	if got := meshAdvertisedEndpoint(config.Peer{Transport: "turn-tls"}, st, transports, ""); got != "" {
+		t.Fatalf("turn tls endpoint=%q want empty", got)
+	}
+	if got := meshAdvertisedEndpoint(config.Peer{Transport: "web"}, st, transports, ""); got != "" {
+		t.Fatalf("https endpoint=%q want empty", got)
 	}
 }
 

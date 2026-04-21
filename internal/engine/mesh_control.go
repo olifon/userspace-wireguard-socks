@@ -386,6 +386,8 @@ func (e *Engine) meshPeersForRequester(requester string) ([]meshDiscoveredPeer, 
 	}
 	e.cfgMu.RLock()
 	configPeers := append([]config.Peer(nil), e.cfg.WireGuard.Peers...)
+	transports := append([]transport.Config(nil), e.cfg.Transports...)
+	defaultTransport := transport.ResolveDefaultTransportName(transports, e.cfg.WireGuard.DefaultTransport)
 	window := time.Duration(e.cfg.MeshControl.ActivePeerWindowSeconds) * time.Second
 	advertiseSelf := e.cfg.MeshControl.AdvertiseSelf
 	e.cfgMu.RUnlock()
@@ -413,7 +415,7 @@ func (e *Engine) meshPeersForRequester(requester string) ([]meshDiscoveredPeer, 
 			continue
 		}
 		st, ok := statusByKey[peer.PublicKey]
-		if !ok || !st.HasHandshake || st.Endpoint == "" {
+		if !ok || !st.HasHandshake {
 			continue
 		}
 		if last := time.Unix(st.LastHandshakeTimeSec, st.LastHandshakeTimeNsec); now.Sub(last) > window {
@@ -425,9 +427,10 @@ func (e *Engine) meshPeersForRequester(requester string) ([]meshDiscoveredPeer, 
 		if err != nil {
 			return nil, err
 		}
+		endpoint := meshAdvertisedEndpoint(peer, st, transports, defaultTransport)
 		out = append(out, meshDiscoveredPeer{
 			PublicKey:  peer.PublicKey,
-			Endpoint:   st.Endpoint,
+			Endpoint:   endpoint,
 			AllowedIPs: allowed,
 			PSK:        base64.StdEncoding.EncodeToString(psk),
 			MeshAccept: peer.MeshAcceptACLs,
@@ -462,6 +465,41 @@ func (e *Engine) meshACLsForRequester(requester string) (meshACLResponse, error)
 		}
 	}
 	return meshACLResponse{Default: def, Inbound: inbound, Outbound: outbound}, nil
+}
+
+func meshAdvertisedEndpoint(peer config.Peer, st PeerStatus, transports []transport.Config, defaultTransport string) string {
+	if st.Endpoint == "" {
+		return ""
+	}
+	if len(transports) == 0 {
+		return st.Endpoint
+	}
+	name := peer.Transport
+	if name == "" {
+		name = defaultTransport
+	}
+	if name == "" {
+		return st.Endpoint
+	}
+	for _, tc := range transports {
+		tc = transport.NormalizeConfig(tc)
+		if tc.Name != name {
+			continue
+		}
+		switch tc.Base {
+		case "", "udp":
+			return st.Endpoint
+		case "turn":
+			proto := strings.ToLower(strings.TrimSpace(tc.TURN.Protocol))
+			if proto == "" || proto == "udp" {
+				return st.Endpoint
+			}
+			return ""
+		default:
+			return ""
+		}
+	}
+	return ""
 }
 
 func (e *Engine) meshServerPublicKey() string {
@@ -527,13 +565,6 @@ func (e *Engine) runMeshPolling() {
 	peers := e.meshStaticPeers()
 	for _, parent := range peers {
 		if !parent.MeshEnabled || !parent.MeshAcceptACLs || parent.ControlURL == "" {
-			continue
-		}
-		e.cfgMu.RLock()
-		hasTransports := len(e.cfg.Transports) > 0
-		e.cfgMu.RUnlock()
-		if hasTransports {
-			e.log.Printf("mesh control: skipping peer %s because dynamic peers over custom transports are not supported yet", parent.PublicKey)
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -603,7 +634,7 @@ func (e *Engine) applyMeshDiscoveredPeers(parent config.Peer, discovered []meshD
 			continue
 		}
 		allowed := meshTrimAllowedIPs(disc.AllowedIPs, parentPrefixes)
-		if len(allowed) == 0 || disc.Endpoint == "" {
+		if len(allowed) == 0 {
 			continue
 		}
 		seen[disc.PublicKey] = struct{}{}
