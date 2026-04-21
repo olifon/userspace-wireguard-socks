@@ -69,12 +69,13 @@ func (e *Engine) startHostTUN(localAddrs []netip.Addr) error {
 	}
 	dnsServers, _ := config.DNSAddrs(e.cfg.TUN.DNSServers)
 	hostMgr, err := createHostTUNManager(hosttun.Options{
-		Name:       e.cfg.TUN.Name,
-		MTU:        mtu,
-		Configure:  e.cfg.TUN.Configure,
-		Addresses:  addresses,
-		Routes:     e.hostTUNRoutePrefixes(),
-		DNSServers: dnsServers,
+		Name:          e.cfg.TUN.Name,
+		MTU:           mtu,
+		Configure:     e.cfg.TUN.Configure,
+		Addresses:     addresses,
+		Routes:        e.hostTUNRoutePrefixes(),
+		DNSServers:    dnsServers,
+		DNSResolvConf: e.cfg.TUN.DNSResolvConf,
 	})
 	if err != nil {
 		return fmt.Errorf("create host TUN %q: %w", e.cfg.TUN.Name, err)
@@ -90,12 +91,13 @@ func (e *Engine) startHostTUN(localAddrs []netip.Addr) error {
 		name = e.cfg.TUN.Name
 	}
 	if err = hosttun.Configure(hostMgr, hosttun.Options{
-		Name:       name,
-		MTU:        mtu,
-		Configure:  e.cfg.TUN.Configure,
-		Addresses:  addresses,
-		Routes:     e.hostTUNRoutePrefixes(),
-		DNSServers: dnsServers,
+		Name:          name,
+		MTU:           mtu,
+		Configure:     e.cfg.TUN.Configure,
+		Addresses:     addresses,
+		Routes:        e.hostTUNRoutePrefixes(),
+		DNSServers:    dnsServers,
+		DNSResolvConf: e.cfg.TUN.DNSResolvConf,
 	}); err != nil {
 		return fmt.Errorf("configure host TUN %s: %w", name, err)
 	}

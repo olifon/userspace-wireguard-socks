@@ -33,11 +33,12 @@ func Create(opts Options) (Manager, error) {
 	local4, local6 := captureBypassLocalAddrs()
 	return &linuxManager{
 		baseManager: baseManager{
-			device:    dev,
-			name:      name,
-			mtu:       opts.MTU,
-			localIPv4: local4,
-			localIPv6: local6,
+			device:        dev,
+			name:          name,
+			mtu:           opts.MTU,
+			localIPv4:     local4,
+			localIPv6:     local6,
+			dnsResolvConf: opts.DNSResolvConf,
 		},
 	}, nil
 }
@@ -91,6 +92,9 @@ func (m *linuxManager) RemoveRoute(prefix netip.Prefix) error {
 }
 
 func (m *linuxManager) SetDNSServers(addrs []netip.Addr) error {
+	if handled, err := m.writeResolvConf(addrs); handled {
+		return err
+	}
 	if len(addrs) == 0 {
 		return nil
 	}
@@ -115,6 +119,9 @@ func (m *linuxManager) SetDNSServers(addrs []netip.Addr) error {
 }
 
 func (m *linuxManager) ClearDNSServers() error {
+	if handled, err := m.restoreResolvConf(); handled {
+		return err
+	}
 	if _, err := exec.LookPath("resolvectl"); err == nil {
 		return runCmd("resolvectl", "revert", m.name)
 	}

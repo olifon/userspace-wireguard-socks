@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -250,6 +251,9 @@ type TUN struct {
 	// DNSServers are optional host DNS servers configured on the TUN interface
 	// when the platform backend supports it.
 	DNSServers []string `yaml:"dns_servers"`
+	// DNSResolvConf, when set, writes tun.dns_servers as plain "nameserver"
+	// lines into this file instead of using platform DNS manager APIs.
+	DNSResolvConf string `yaml:"dns_resolv_conf"`
 	// FallbackSystemDNS is used only for resolving outer WireGuard transport
 	// hostnames outside the tunnel when host-TUN routes are active.
 	FallbackSystemDNS []string `yaml:"fallback_system_dns"`
@@ -583,6 +587,9 @@ func (c *Config) Normalize() error {
 		if _, err := netip.ParseAddr(server); err != nil {
 			return fmt.Errorf("tun.dns_servers %q: %w", server, err)
 		}
+	}
+	if c.TUN.DNSResolvConf != "" && !filepath.IsAbs(c.TUN.DNSResolvConf) {
+		return fmt.Errorf("tun.dns_resolv_conf must be an absolute path")
 	}
 	for _, server := range c.TUN.FallbackSystemDNS {
 		if _, err := netip.ParseAddr(server); err != nil {

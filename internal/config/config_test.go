@@ -344,6 +344,11 @@ func TestNormalizeRejectsInvalidTUNDNSServer(t *testing.T) {
 	if err := cfg.Normalize(); err == nil || !strings.Contains(err.Error(), "tun.fallback_system_dns") {
 		t.Fatalf("Normalize err=%v, want tun.fallback_system_dns rejection", err)
 	}
+	cfg = Default()
+	cfg.TUN.DNSResolvConf = "relative/resolv.conf"
+	if err := cfg.Normalize(); err == nil || !strings.Contains(err.Error(), "tun.dns_resolv_conf") {
+		t.Fatalf("Normalize err=%v, want tun.dns_resolv_conf rejection", err)
+	}
 }
 
 func TestParseForwardArgProxyProtocolOption(t *testing.T) {

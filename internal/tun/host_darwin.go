@@ -30,11 +30,12 @@ func Create(opts Options) (Manager, error) {
 	local4, local6 := captureBypassLocalAddrs()
 	return &darwinManager{
 		baseManager: baseManager{
-			device:    dev,
-			name:      name,
-			mtu:       opts.MTU,
-			localIPv4: local4,
-			localIPv6: local6,
+			device:        dev,
+			name:          name,
+			mtu:           opts.MTU,
+			localIPv4:     local4,
+			localIPv6:     local6,
+			dnsResolvConf: opts.DNSResolvConf,
 		},
 	}, nil
 }
@@ -69,13 +70,21 @@ func (m *darwinManager) RemoveRoute(prefix netip.Prefix) error {
 }
 
 func (m *darwinManager) SetDNSServers(addrs []netip.Addr) error {
+	if handled, err := m.writeResolvConf(addrs); handled {
+		return err
+	}
 	if len(addrs) == 0 {
 		return nil
 	}
 	return fmt.Errorf("tun dns configuration is not supported on darwin utun interfaces")
 }
 
-func (m *darwinManager) ClearDNSServers() error { return nil }
+func (m *darwinManager) ClearDNSServers() error {
+	if handled, err := m.restoreResolvConf(); handled {
+		return err
+	}
+	return nil
+}
 
 func (m *darwinManager) Start() error {
 	if m.mtu > 0 {

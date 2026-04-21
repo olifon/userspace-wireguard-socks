@@ -30,11 +30,12 @@ func Create(opts Options) (Manager, error) {
 	local4, local6 := captureBypassLocalAddrs()
 	return &windowsManager{
 		baseManager: baseManager{
-			device:    dev,
-			name:      name,
-			mtu:       opts.MTU,
-			localIPv4: local4,
-			localIPv6: local6,
+			device:        dev,
+			name:          name,
+			mtu:           opts.MTU,
+			localIPv4:     local4,
+			localIPv6:     local6,
+			dnsResolvConf: opts.DNSResolvConf,
 		},
 	}, nil
 }
@@ -70,6 +71,9 @@ func (m *windowsManager) RemoveRoute(prefix netip.Prefix) error {
 }
 
 func (m *windowsManager) SetDNSServers(addrs []netip.Addr) error {
+	if handled, err := m.writeResolvConf(addrs); handled {
+		return err
+	}
 	var v4, v6 []netip.Addr
 	for _, addr := range addrs {
 		if addr.Is4() {
@@ -101,7 +105,12 @@ func (m *windowsManager) SetDNSServers(addrs []netip.Addr) error {
 	return nil
 }
 
-func (m *windowsManager) ClearDNSServers() error { return nil }
+func (m *windowsManager) ClearDNSServers() error {
+	if handled, err := m.restoreResolvConf(); handled {
+		return err
+	}
+	return nil
+}
 
 func (m *windowsManager) Start() error { return nil }
 func (m *windowsManager) Stop() error  { return nil }

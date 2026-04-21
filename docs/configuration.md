@@ -494,6 +494,7 @@ tun:
   route_allowed_ips: true
   routes: []
   dns_servers: []
+  dns_resolv_conf: ""
   fallback_system_dns: []
   up: []
   down: []
@@ -519,6 +520,12 @@ so a broader route such as `172.16.0.0/12` suppresses a contained route such as
 the platform backend supports it. Today that is best-effort on Linux
 (`resolvectl` or `systemd-resolve`) and Windows (`netsh`). macOS `utun` DNS
 configuration is not currently automated by `uwgsocks`.
+
+`dns_resolv_conf` is an explicit opt-in override for DNS server updates. When
+set to an absolute path, `uwgsocks` writes `tun.dns_servers` as plain
+`nameserver ...` lines to that file instead of talking to the host DNS manager.
+This is useful in containers, VMs, or custom DNS setups where `/etc/resolv.conf`
+or a dedicated resolver include file is the integration point.
 
 `fallback_system_dns` is only for the outer WireGuard transport itself. When
 host-TUN routes are active and a peer endpoint is configured as a hostname,
