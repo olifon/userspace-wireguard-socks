@@ -331,9 +331,9 @@ func apiListenRequiresToken(addr string, allowUnauthenticatedUnix bool) bool {
 }
 
 func (e *Engine) apiAuth(next http.Handler) http.Handler {
-	token := e.cfg.API.Token
-	allowUnix := e.cfg.API.AllowUnauthenticatedUnix
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := e.cfg.API.Token
+		allowUnix := e.cfg.API.AllowUnauthenticatedUnix
 		isUnix := r.RemoteAddr == "@" || r.RemoteAddr == "" || strings.HasPrefix(r.RemoteAddr, "/")
 		if isUnix && allowUnix {
 			next.ServeHTTP(w, r)

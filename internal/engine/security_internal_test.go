@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"testing"
 	"time"
@@ -65,6 +66,38 @@ func TestServeSOCKSConnTimesOutAfterHandshakeBeforeRequest(t *testing.T) {
 	case <-done:
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("SOCKS connection did not time out after a completed handshake stall")
+	}
+}
+
+func TestAPIAuthUsesUpdatedToken(t *testing.T) {
+	e := &Engine{cfg: config.Default()}
+	e.cfg.API.Token = "old-token"
+
+	called := false
+	h := e.apiAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	e.cfg.API.Token = "new-token"
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	req.RemoteAddr = "198.51.100.10:12345"
+	req.Header.Set("Authorization", "Bearer new-token")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent || !called {
+		t.Fatalf("new token rejected: status=%d called=%v", rec.Code, called)
+	}
+
+	called = false
+	req = httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	req.RemoteAddr = "198.51.100.10:12345"
+	req.Header.Set("Authorization", "Bearer old-token")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized || called {
+		t.Fatalf("old token unexpectedly accepted: status=%d called=%v", rec.Code, called)
 	}
 }
 

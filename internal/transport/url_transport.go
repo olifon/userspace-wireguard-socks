@@ -7,8 +7,13 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+
+	"github.com/quic-go/quic-go/http3"
+	webtransport "github.com/quic-go/webtransport-go"
 )
 
 // URLTransport is a connection-oriented transport that auto-negotiates the
@@ -19,11 +24,9 @@ import (
 //  3. HTTPS WebSocket (TLS + TCP)            — broadest compatibility
 //
 // For http:// URLs only plain WebSocket (TCP) is tried.
-// In listen mode all three are accepted simultaneously on the same port.
-//
-// The auto-selection is client-side only; for listen mode all three
-// sub-transports share the same port because the QUIC server also serves
-// HTTP/3 WebSocket (RFC 9220) upgrade requests on the same path.
+// In listen mode the URL transport serves HTTPS / HTTP WebSocket and, for
+// HTTPS URLs, both QUIC WebTransport and QUIC WebSocket (RFC 9220) on the
+// same HTTP/3 path and UDP port.
 type URLTransport struct {
 	name        string
 	listenAddrs []string
@@ -149,8 +152,8 @@ func (t *URLTransport) Dial(ctx context.Context, target string) (Session, error)
 // port so any client variant can connect.
 //
 // For http:// URLs only WebSocket is served.
-// For https:// URLs: QUIC (serving both WebTransport and RFC 9220 WebSocket)
-// + TLS TCP (serving HTTPS WebSocket) both bind the same port.
+// For https:// URLs: QUIC WebTransport + QUIC WebSocket + TLS/TCP WebSocket
+// are served together.
 func (t *URLTransport) Listen(ctx context.Context, port int) (Listener, error) {
 	// TCP/TLS WebSocket listener (serves all HTTP-based WS upgrades).
 	wsLn, err := t.wsTransport.Listen(ctx, port)
@@ -162,27 +165,118 @@ func (t *URLTransport) Listen(ctx context.Context, port int) (Listener, error) {
 		return wsLn, nil
 	}
 
-	// QUIC listener for WebTransport.
-	wtLn, err := t.wtTransport.Listen(ctx, port)
+	quicLn, err := t.listenCombinedQUIC(ctx, port)
 	if err != nil {
 		_ = wsLn.Close()
-		return nil, fmt.Errorf("url transport %s: quic-wt listen: %w", t.name, err)
+		return nil, fmt.Errorf("url transport %s: quic listen: %w", t.name, err)
 	}
 
-	// QUIC RFC 9220 listener on the *same* port (shares UDP socket via wtLn
-	// in a real implementation — here we keep them separate for simplicity
-	// and bind to port+1 to avoid conflict).
-	// NOTE: In production these would share a single QUIC server; binding to a
-	// separate port is acceptable for now because RFC 9220 and WebTransport
-	// are negotiated at the HTTP/3 handler level.
-	qwsLn, err := t.qwsTransport.Listen(ctx, 0)
-	if err != nil {
-		_ = wsLn.Close()
-		_ = wtLn.Close()
-		return nil, fmt.Errorf("url transport %s: quic-ws listen: %w", t.name, err)
+	return newURLMultiListener(wsLn, quicLn, nil), nil
+}
+
+func (t *URLTransport) listenCombinedQUIC(_ context.Context, port int) (Listener, error) {
+	if t.certMgr == nil {
+		return nil, fmt.Errorf("url transport %s: certificate manager is required for https", t.name)
+	}
+	addrs := t.listenAddrs
+	if len(addrs) == 0 {
+		addrs = []string{"0.0.0.0"}
+	}
+	acceptCh := make(chan urlCombinedQUICAcceptResult, 64)
+	closeCh := make(chan struct{})
+	var (
+		conns   []net.PacketConn
+		servers []*webtransport.Server
+	)
+	chosen := port
+
+	for _, addr := range addrs {
+		serverTLS, err := buildTLSServerConfig(t.tlsCfg, t.certMgr)
+		if err != nil {
+			for _, s := range servers {
+				_ = s.Close()
+			}
+			for _, c := range conns {
+				_ = c.Close()
+			}
+			return nil, fmt.Errorf("url transport %s: TLS server config: %w", t.name, err)
+		}
+
+		mux := http.NewServeMux()
+		h3 := &http3.Server{
+			TLSConfig: http3.ConfigureTLSConfig(serverTLS),
+			Handler:   mux,
+		}
+		server := &webtransport.Server{H3: h3}
+		webtransport.ConfigureHTTP3Server(h3)
+		mux.HandleFunc(t.path, func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodConnect && r.Proto == "websocket" {
+				w.WriteHeader(http.StatusOK)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				hj, ok := w.(http.Hijacker)
+				if !ok {
+					return
+				}
+				conn, _, err := hj.Hijack()
+				if err != nil {
+					return
+				}
+				ws := &wsConn{conn: conn, remote: r.RemoteAddr, clientSide: false}
+				sess := &urlSession{
+					Session: &quicWSSession{ws: ws, remote: r.RemoteAddr},
+					proto:   "quic-ws",
+				}
+				_ = tryEnqueueAccept(acceptCh, urlCombinedQUICAcceptResult{sess: sess}, closeCh,
+					func() { _ = conn.Close() },
+					func() { _ = conn.Close() },
+				)
+				return
+			}
+			sess, err := server.Upgrade(w, r)
+			if err != nil {
+				return
+			}
+			item := urlCombinedQUICAcceptResult{
+				sess: &urlSession{Session: &quicSession{sess: sess}, proto: "quic-wt"},
+			}
+			if tryEnqueueAccept(acceptCh, item, closeCh,
+				func() { _ = sess.CloseWithError(0, "closed") },
+				func() { _ = sess.CloseWithError(0, "overloaded") },
+			) {
+				<-sess.Context().Done()
+			}
+		})
+
+		pc, err := net.ListenPacket("udp", fmt.Sprintf("%s:%d", addr, chosen))
+		if err != nil {
+			for _, s := range servers {
+				_ = s.Close()
+			}
+			for _, c := range conns {
+				_ = c.Close()
+			}
+			return nil, fmt.Errorf("url transport %s: listen %s:%d: %w", t.name, addr, port, err)
+		}
+		if chosen == 0 {
+			if udpAddr, ok := pc.LocalAddr().(*net.UDPAddr); ok {
+				chosen = udpAddr.Port
+			}
+		}
+		conns = append(conns, pc)
+		servers = append(servers, server)
+		go func(s *webtransport.Server, c net.PacketConn) {
+			_ = s.Serve(c)
+		}(server, pc)
 	}
 
-	return newURLMultiListener(wsLn, wtLn, qwsLn), nil
+	return &urlCombinedQUICListener{
+		acceptCh: acceptCh,
+		closeCh:  closeCh,
+		conns:    conns,
+		servers:  servers,
+	}, nil
 }
 
 // --- urlSession wraps a Session with protocol metadata -------------------
@@ -193,6 +287,58 @@ type urlSession struct {
 }
 
 func (s *urlSession) RemoteAddr() string { return s.Session.RemoteAddr() }
+
+type urlCombinedQUICAcceptResult struct {
+	sess Session
+	err  error
+}
+
+type urlCombinedQUICListener struct {
+	acceptCh  chan urlCombinedQUICAcceptResult
+	closeCh   chan struct{}
+	conns     []net.PacketConn
+	servers   []*webtransport.Server
+	closeOnce sync.Once
+}
+
+func (l *urlCombinedQUICListener) Accept(ctx context.Context) (Session, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-l.closeCh:
+		return nil, net.ErrClosed
+	case res := <-l.acceptCh:
+		if res.err != nil {
+			return nil, res.err
+		}
+		return res.sess, nil
+	}
+}
+
+func (l *urlCombinedQUICListener) Addr() net.Addr {
+	if len(l.conns) == 0 {
+		return nil
+	}
+	return l.conns[0].LocalAddr()
+}
+
+func (l *urlCombinedQUICListener) Close() error {
+	var first error
+	l.closeOnce.Do(func() {
+		close(l.closeCh)
+		for _, s := range l.servers {
+			if err := s.Close(); err != nil && first == nil {
+				first = err
+			}
+		}
+		for _, c := range l.conns {
+			if err := c.Close(); err != nil && first == nil {
+				first = err
+			}
+		}
+	})
+	return first
+}
 
 // --- urlMultiListener fans accepted sessions from all three listeners ----
 
@@ -233,7 +379,9 @@ func (l *urlMultiListener) Accept(ctx context.Context) (Session, error) {
 	}
 	go accept(l.wsLn, "https-ws")
 	go accept(l.wtLn, "quic-wt")
-	go accept(l.qwsLn, "quic-ws")
+	if l.qwsLn != nil {
+		go accept(l.qwsLn, "quic-ws")
+	}
 
 	select {
 	case <-ctx.Done():

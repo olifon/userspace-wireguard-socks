@@ -18,6 +18,31 @@ import (
 	webtransport "github.com/quic-go/webtransport-go"
 )
 
+func tryEnqueueAccept[T any](acceptCh chan T, item T, closeCh <-chan struct{}, onClosed func(), onOverloaded func()) bool {
+	select {
+	case <-closeCh:
+		if onClosed != nil {
+			onClosed()
+		}
+		return false
+	default:
+	}
+	select {
+	case acceptCh <- item:
+		return true
+	case <-closeCh:
+		if onClosed != nil {
+			onClosed()
+		}
+		return false
+	default:
+		if onOverloaded != nil {
+			onOverloaded()
+		}
+		return false
+	}
+}
+
 // QUICTransport carries WireGuard packets over WebTransport datagrams on
 // HTTP/3. This keeps the transport UDP-based while still looking like HTTPS.
 type QUICTransport struct {
@@ -183,11 +208,11 @@ func (t *QUICTransport) Listen(_ context.Context, port int) (Listener, error) {
 			if err != nil {
 				return
 			}
-			select {
-			case acceptCh <- quicAcceptResult{sess: sess}:
+			if tryEnqueueAccept(acceptCh, quicAcceptResult{sess: sess}, closeCh,
+				func() { _ = sess.CloseWithError(0, "closed") },
+				func() { _ = sess.CloseWithError(0, "overloaded") },
+			) {
 				<-sess.Context().Done()
-			case <-closeCh:
-				_ = sess.CloseWithError(0, "")
 			}
 		})
 

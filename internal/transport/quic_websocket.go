@@ -245,11 +245,10 @@ func makeQUICWSHandler(acceptCh chan quicWSAcceptResult, closeCh chan struct{}) 
 		}
 		ws := &wsConn{conn: conn, remote: r.RemoteAddr, clientSide: false}
 		sess := &quicWSSession{ws: ws, remote: r.RemoteAddr}
-		select {
-		case acceptCh <- quicWSAcceptResult{sess: sess}:
-		case <-closeCh:
-			_ = conn.Close()
-		}
+		_ = tryEnqueueAccept(acceptCh, quicWSAcceptResult{sess: sess}, closeCh,
+			func() { _ = conn.Close() },
+			func() { _ = conn.Close() },
+		)
 	}
 }
 

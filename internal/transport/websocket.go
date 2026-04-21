@@ -285,7 +285,7 @@ func (w *wsConn) ReadFrame() ([]byte, error) {
 	// fin := (hdr[0] & 0x80) != 0
 	opcode := hdr[0] & 0x0f
 	masked := (hdr[1] & 0x80) != 0
-	payLen := int(hdr[1] & 0x7f)
+	payLen := uint64(hdr[1] & 0x7f)
 
 	// Extended payload length.
 	switch payLen {
@@ -294,7 +294,7 @@ func (w *wsConn) ReadFrame() ([]byte, error) {
 		if _, err := io.ReadFull(w.conn, ext[:]); err != nil {
 			return nil, err
 		}
-		payLen = int(ext[0])<<8 | int(ext[1])
+		payLen = uint64(ext[0])<<8 | uint64(ext[1])
 	case 127:
 		var ext [8]byte
 		if _, err := io.ReadFull(w.conn, ext[:]); err != nil {
@@ -302,8 +302,11 @@ func (w *wsConn) ReadFrame() ([]byte, error) {
 		}
 		payLen = 0
 		for _, b := range ext {
-			payLen = payLen<<8 | int(b)
+			payLen = payLen<<8 | uint64(b)
 		}
+	}
+	if payLen > maxWireGuardPacket {
+		return nil, fmt.Errorf("websocket frame too large: %d", payLen)
 	}
 
 	// Masking key.
@@ -315,7 +318,7 @@ func (w *wsConn) ReadFrame() ([]byte, error) {
 	}
 
 	// Payload.
-	buf := make([]byte, payLen)
+	buf := make([]byte, int(payLen))
 	if _, err := io.ReadFull(w.conn, buf); err != nil {
 		return nil, err
 	}
