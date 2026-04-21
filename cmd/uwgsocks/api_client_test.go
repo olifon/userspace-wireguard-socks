@@ -116,6 +116,7 @@ func TestAPIClientCommands(t *testing.T) {
 
 	commands := [][]string{
 		{"status"},
+		{"status", "--text"},
 		{"ping", "100.64.0.1", "--count", "1"},
 		{"interface-ips"},
 		{"peers"},

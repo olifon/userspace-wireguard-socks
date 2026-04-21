@@ -74,6 +74,9 @@ amd64 and arm64.
 **Windows:**
 - Host TUN support requires [wintun](https://www.wintun.net/). SOCKS5/HTTP
   proxy and socket API modes work without it.
+- Releases that want host-TUN support should ship the official signed
+  `wintun.dll` beside `uwgsocks.exe`. Installing the same DLL in
+  `C:\Windows\System32` also works.
 - Host-TUN DNS configuration is best-effort through `netsh`.
 
 **macOS:**

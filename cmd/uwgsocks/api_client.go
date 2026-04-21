@@ -138,11 +138,20 @@ func printAPIResponse(body []byte) error {
 
 func apiStatusCommand(args []string) error {
 	fs, opts := apiFlagSet("status")
+	text := fs.Bool("text", false, "print a terminal-friendly peer table instead of raw JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	body, err := opts.request(http.MethodGet, "/v1/status", "", nil)
 	if err != nil {
+		return err
+	}
+	if *text {
+		var st statusView
+		if err := json.Unmarshal(body, &st); err != nil {
+			return err
+		}
+		_, err = fmt.Fprint(os.Stdout, renderStatusText(st))
 		return err
 	}
 	return printAPIResponse(body)

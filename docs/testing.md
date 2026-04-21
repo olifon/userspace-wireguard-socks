@@ -39,6 +39,11 @@ UWG_TEST_REAL_TUN=1 sudo go test ./internal/tun -run 'TestReal.*SmallRoute'
 UWG_TEST_REAL_TUN=1 UWG_TEST_REAL_TUN_DEFAULT=1 docker run --rm --privileged -v "$PWD":/src -w /src golang:1.25 bash -lc '/usr/local/go/bin/go test ./internal/tun -run "TestRealLinuxTUNConfigure(SmallRoute|DefaultRoutes)" -count=1'
 ```
 
+Those tests intentionally separate the local-host small-route path from the
+privileged-container default-route path so developers do not accidentally black
+hole their own workstation traffic while still keeping `0.0.0.0/0` and `::/0`
+coverage in automation.
+
 The main suite covers:
 
 - Two-instance WireGuard TCP/UDP data paths.

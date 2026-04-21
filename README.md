@@ -28,6 +28,11 @@ curl --proxy socks5://127.0.0.1:1080 https://example.com
 # Or transparently route any Linux app — no proxy support required.
 ./uwgsocks --config examples/socksify.yaml
 ./uwgwrapper -- curl https://example.com
+
+# Generate keys or a starter config pair without wireguard-tools.
+./uwgsocks genkey
+./uwgsocks pubkey < privatekey.txt
+./uwgsocks genpair --server-address 10.0.0.1/32 --client-address 10.0.0.2/32 --server-endpoint vpn.example.com:51820
 ```
 
 ## What it covers
@@ -85,9 +90,15 @@ go test ./...
 
 Requires Go. Building `uwgwrapper` additionally requires gcc on Linux. See [docs/compatibility.md](docs/compatibility.md) for supported platforms.
 
+For Windows host-TUN mode, ship the official signed `wintun.dll` next to
+`uwgsocks.exe` in the release zip, or install it into `C:\\Windows\\System32`.
+SOCKS5/HTTP, forwards, relay, and the raw socket API do not need `wintun.dll`;
+only host-TUN mode does.
+
 ## Documentation
 
 - [Configuration reference](docs/configuration.md)
+- [Host TUN how-to](docs/howto/host-tun.md)
 - [Transport modes](docs/transport-modes.md)
 - [Proxy routing order](docs/proxy-routing.md)
 - [Testing and security model](docs/testing.md)

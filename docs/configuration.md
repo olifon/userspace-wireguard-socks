@@ -557,6 +557,21 @@ CLI:
 --tun-down 'echo down'
 ```
 
+Helper commands in the main binary can generate WireGuard material when
+`wireguard-tools` is not installed:
+
+```bash
+uwgsocks genkey
+uwgsocks genpsk
+uwgsocks pubkey < privatekey.txt
+uwgsocks genpair --server-address 10.77.0.1/32 --client-address 10.77.0.2/32 --server-endpoint vpn.example.com:51820
+uwgsocks add-client --server-config server.conf --client-address 10.77.0.3/32 --server-endpoint vpn.example.com:51820
+```
+
+`uwgsocks status --text --api unix:/run/uwgsocks/api.sock` prints a compact
+terminal view similar to `wg show`, while plain `uwgsocks status` still prints
+JSON.
+
 ## ACLs And Relay
 
 ```yaml

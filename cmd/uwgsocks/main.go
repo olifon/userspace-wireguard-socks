@@ -57,6 +57,12 @@ func (b *optionalBool) Set(v string) error {
 func (b *optionalBool) IsBoolFlag() bool { return true }
 
 func main() {
+	if handled, err := runUtilityCommand(os.Args[1:]); handled {
+		if err != nil {
+			fatal(err)
+		}
+		return
+	}
 	if handled, err := runAPICommand(os.Args[1:]); handled {
 		if err != nil {
 			fatal(err)

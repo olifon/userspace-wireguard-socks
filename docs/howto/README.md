@@ -9,6 +9,7 @@ task-oriented documents under `docs/`.
 Start here:
 
 - [Build and Quick Start](build-and-quickstart.md)
+- [Host TUN](host-tun.md)
 - [Wrapper and fdproxy](wrapper-and-fdproxy.md)
 - [Configuration and Routing](configuration-and-routing.md)
 - [API, Library, and Testing](api-library-and-testing.md)
