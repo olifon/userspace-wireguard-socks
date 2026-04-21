@@ -72,11 +72,14 @@ amd64 and arm64.
 - No `uwgtrace`, `uwgfdproxy`, or ptrace-based interception.
 
 **Windows:**
-- TUN device support requires [wintun](https://www.wintun.net/). SOCKS5/HTTP
+- Host TUN support requires [wintun](https://www.wintun.net/). SOCKS5/HTTP
   proxy and socket API modes work without it.
+- Host-TUN DNS configuration is best-effort through `netsh`.
 
 **macOS:**
-- TUN device support is available but not the primary use case.
+- Host TUN support uses the native `utun` interface and can be configured by
+  `uwgsocks` itself or by external tooling.
+- Host-TUN DNS server changes are not currently automated for `utun`.
 - UDP buffer size warnings from quic-go are cosmetic on macOS; QUIC transport
   functions correctly.
 

@@ -8,6 +8,10 @@ import (
 	"net/netip"
 )
 
+type BuildOptions struct {
+	DirectDialerFactory func(cfg Config) (ProxyDialer, error)
+}
+
 // BuildRegistry constructs a MultiTransportBind from a slice of Config
 // entries.  wgPubKey is the WireGuard public key of this instance, embedded
 // in TURN usernames when IncludeWGPublicKey is set.
@@ -22,11 +26,31 @@ func BuildRegistry(
 	onEndpointReset EndpointResetFunc,
 	legacyUDP bool,
 ) (*MultiTransportBind, error) {
+	return BuildRegistryWithOptions(configs, wgPubKey, defaultListenPort, peerLookup, onEndpointReset, legacyUDP, BuildOptions{})
+}
+
+func BuildRegistryWithOptions(
+	configs []Config,
+	wgPubKey [32]byte,
+	defaultListenPort int,
+	peerLookup PeerLookup,
+	onEndpointReset EndpointResetFunc,
+	legacyUDP bool,
+	opts BuildOptions,
+) (*MultiTransportBind, error) {
 	bind := NewMultiTransportBind(peerLookup, onEndpointReset)
 
 	if len(configs) == 0 {
 		if legacyUDP {
-			t := NewUDPTransport("udp", nil, NewDirectDialer(false, netip.Prefix{}))
+			direct, err := directDialerForConfig(Config{}, opts)
+			if err != nil {
+				return nil, err
+			}
+			d, ok := direct.(*DirectDialer)
+			if !ok {
+				d = NewDirectDialer(false, netip.Prefix{})
+			}
+			t := NewUDPTransport("udp", nil, d)
 			bind.AddTransport(t)
 			bind.AddListenTransport(t)
 		}
@@ -62,7 +86,7 @@ func BuildRegistry(
 		}
 
 		// Build proxy dialer.
-		dialer, err := buildDialer(cfg)
+		dialer, err := buildDialer(cfg, opts)
 		if err != nil {
 			return nil, fmt.Errorf("transport %q: dialer: %w", cfg.Name, err)
 		}
@@ -111,16 +135,11 @@ func resolveDefaultTransportName(configs []Config, override string) string {
 }
 
 // buildDialer creates the ProxyDialer for a transport config.
-func buildDialer(cfg Config) (ProxyDialer, error) {
-	var prefix netip.Prefix
-	if cfg.IPv6Translate && cfg.IPv6Prefix != "" {
-		var err error
-		prefix, err = netip.ParsePrefix(cfg.IPv6Prefix)
-		if err != nil {
-			return nil, fmt.Errorf("ipv6_prefix: %w", err)
-		}
+func buildDialer(cfg Config, opts BuildOptions) (ProxyDialer, error) {
+	direct, err := directDialerForConfig(cfg, opts)
+	if err != nil {
+		return nil, err
 	}
-	direct := NewDirectDialer(cfg.IPv6Translate, prefix)
 
 	switch cfg.Proxy.Type {
 	case "", "none":
@@ -137,6 +156,21 @@ func buildDialer(cfg Config) (ProxyDialer, error) {
 		return NewHTTPConnectDialer(pc.Server, "https", pc.Username, pc.Password, pc.TLS)
 	}
 	return direct, nil
+}
+
+func directDialerForConfig(cfg Config, opts BuildOptions) (ProxyDialer, error) {
+	if opts.DirectDialerFactory != nil {
+		return opts.DirectDialerFactory(cfg)
+	}
+	var prefix netip.Prefix
+	if cfg.IPv6Translate && cfg.IPv6Prefix != "" {
+		var err error
+		prefix, err = netip.ParsePrefix(cfg.IPv6Prefix)
+		if err != nil {
+			return nil, fmt.Errorf("ipv6_prefix: %w", err)
+		}
+	}
+	return NewDirectDialer(cfg.IPv6Translate, prefix), nil
 }
 
 // buildBaseTransport creates the Transport for a config entry.

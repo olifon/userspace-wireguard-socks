@@ -33,6 +33,7 @@ import (
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/config"
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/netstackex"
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/transport"
+	hosttun "github.com/reindertpelsma/userspace-wireguard-socks/internal/tun"
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/wgbind"
 	"golang.org/x/net/proxy"
 	"golang.org/x/time/rate"
@@ -57,6 +58,7 @@ type Engine struct {
 	hostTunStack tun.Device
 	hostTunNet   *netstackex.Net
 	hostTunName  string
+	hostTunMgr   hosttun.Manager
 
 	// Runtime API updates mutate peers and ACLs while proxy goroutines are
 	// active, so config-derived hot paths use small dedicated locks instead of
@@ -276,13 +278,14 @@ func (e *Engine) Start() error {
 		if e.cfg.WireGuard.ListenPort != nil {
 			listenPort = *e.cfg.WireGuard.ListenPort
 		}
-		tb, err := transport.BuildRegistry(
+		tb, err := transport.BuildRegistryWithOptions(
 			e.cfg.Transports,
 			wgPubKey,
 			listenPort,
 			e.transportPeerLookup,
 			e.onTransportEndpointReset,
 			false,
+			transport.BuildOptions{DirectDialerFactory: e.transportDirectDialerFactory()},
 		)
 		if err != nil {
 			return fmt.Errorf("transport registry: %w", err)
@@ -293,7 +296,7 @@ func (e *Engine) Start() error {
 		e.updateTURNPermissions()
 		bind = tb
 	} else if e.cfg.TURN.Server != "" {
-		turnTransport, err := newTURNTransport(e.cfg)
+		turnTransport, err := e.newTURNTransport(e.cfg)
 		if err != nil {
 			return err
 		}
@@ -308,14 +311,14 @@ func (e *Engine) Start() error {
 		// avoids a fixed host UDP listener. On Windows and macOS, the standard
 		// bind with port 0 is more interoperable for the live UDP client path.
 		if runtime.GOOS == "linux" || runtime.GOOS == "android" {
-			bind = wgbind.NewOutboundOnlyBind()
+			bind = e.newOutboundOnlyBind()
 		} else {
-			bind = &wgbind.ResolverBind{Inner: conn.NewStdNetBind()}
+			bind = &wgbind.ResolverBind{Inner: conn.NewStdNetBind(), Resolve: e.resolveWireGuardEndpointHost}
 		}
 	} else if len(e.cfg.WireGuard.ListenAddresses) > 0 {
-		bind = &wgbind.ResolverBind{Inner: &wgbind.ListenBind{Addresses: e.cfg.WireGuard.ListenAddresses}}
+		bind = &wgbind.ResolverBind{Inner: &wgbind.ListenBind{Addresses: e.cfg.WireGuard.ListenAddresses}, Resolve: e.resolveWireGuardEndpointHost}
 	} else {
-		bind = &wgbind.ResolverBind{Inner: conn.NewStdNetBind()}
+		bind = &wgbind.ResolverBind{Inner: conn.NewStdNetBind(), Resolve: e.resolveWireGuardEndpointHost}
 	}
 	level := device.LogLevelError
 	if e.cfg.Log.Verbose {
@@ -401,6 +404,89 @@ func newTURNTransport(cfg config.Config) (*transport.TURNTransport, error) {
 	return transport.NewTURNTransport("turn", turnCfg, transport.NewDirectDialer(false, netip.Prefix{}), wgPubKey)
 }
 
+func (e *Engine) newTURNTransport(cfg config.Config) (*transport.TURNTransport, error) {
+	turnCfg := transport.TURNProxyConfig{
+		Server:             cfg.TURN.Server,
+		Protocol:           cfg.TURN.Protocol,
+		Username:           cfg.TURN.Username,
+		Password:           cfg.TURN.Password,
+		Realm:              cfg.TURN.Realm,
+		IncludeWGPublicKey: cfg.TURN.IncludeWGPublicKey,
+		Permissions:        append([]string(nil), cfg.TURN.Permissions...),
+		TLS:                cfg.TURN.TLS,
+	}
+	var wgPubKey [32]byte
+	if cfg.TURN.IncludeWGPublicKey {
+		privateKey, err := wgtypes.ParseKey(cfg.WireGuard.PrivateKey)
+		if err != nil {
+			return nil, fmt.Errorf("turn.include_wg_public_key private key: %w", err)
+		}
+		publicKey := privateKey.PublicKey()
+		copy(wgPubKey[:], publicKey[:])
+	}
+	return transport.NewTURNTransport("turn", turnCfg, e.transportDirectDialer(false, netip.Prefix{}), wgPubKey)
+}
+
+func (e *Engine) transportDirectDialer(ipv6Translate bool, prefix netip.Prefix) transport.ProxyDialer {
+	if e.hostTunMgr != nil {
+		dialer := e.hostTunMgr.BypassDialer(ipv6Translate, prefix)
+		if direct, ok := dialer.(*transport.DirectDialer); ok {
+			if resolver := e.hostTUNBypassResolver(); resolver != nil {
+				direct.LookupNetIP = resolver.LookupNetIP
+			}
+		}
+		return dialer
+	}
+	return transport.NewDirectDialer(ipv6Translate, prefix)
+}
+
+func (e *Engine) transportDirectDialerFactory() func(cfg transport.Config) (transport.ProxyDialer, error) {
+	return func(cfg transport.Config) (transport.ProxyDialer, error) {
+		var prefix netip.Prefix
+		if cfg.IPv6Translate && cfg.IPv6Prefix != "" {
+			var err error
+			prefix, err = netip.ParsePrefix(cfg.IPv6Prefix)
+			if err != nil {
+				return nil, fmt.Errorf("ipv6_prefix: %w", err)
+			}
+		}
+		return e.transportDirectDialer(cfg.IPv6Translate, prefix), nil
+	}
+}
+
+func (e *Engine) newOutboundOnlyBind() conn.Bind {
+	if e.hostTunMgr == nil {
+		return wgbind.NewOutboundOnlyBind()
+	}
+	direct, ok := e.hostTunMgr.BypassDialer(false, netip.Prefix{}).(*transport.DirectDialer)
+	if !ok {
+		return wgbind.NewOutboundOnlyBind()
+	}
+	return wgbind.NewOutboundOnlyBindWithLocalAddrs(direct.LocalIPv4, direct.LocalIPv6)
+}
+
+func (e *Engine) hostTUNBypassResolver() *hosttun.BypassResolver {
+	if e.hostTunMgr == nil {
+		return nil
+	}
+	local4, local6 := e.hostTunMgr.LocalAddrs()
+	servers, err := hosttun.ParseFallbackSystemDNS(e.cfg.TUN.FallbackSystemDNS)
+	if err != nil {
+		e.log.Printf("warning: invalid tun.fallback_system_dns value: %v", err)
+	}
+	if len(servers) == 0 {
+		servers = hosttun.DefaultFallbackSystemDNS()
+	}
+	return &hosttun.BypassResolver{LocalIPv4: local4, LocalIPv6: local6, Servers: servers}
+}
+
+func (e *Engine) resolveWireGuardEndpointHost(ctx context.Context, host string) ([]netip.Addr, error) {
+	if resolver := e.hostTUNBypassResolver(); resolver != nil {
+		return resolver.LookupNetIP(ctx, "ip", host)
+	}
+	return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+}
+
 func (e *Engine) updateTURNPermissions() {
 	if e.transportBind == nil {
 		return
@@ -453,7 +539,10 @@ func (e *Engine) Close() error {
 			}
 		}
 	}
-	if e.hostTun != nil {
+	if e.hostTunMgr != nil {
+		_ = e.hostTunMgr.ClearDNSServers()
+		_ = e.hostTunMgr.Close()
+	} else if e.hostTun != nil {
 		_ = e.hostTun.Close()
 	}
 	if e.hostTunStack != nil {

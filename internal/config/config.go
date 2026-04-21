@@ -247,6 +247,12 @@ type TUN struct {
 	RouteAllowedIPs *bool `yaml:"route_allowed_ips"`
 	// Routes are additional CIDRs routed to the TUN interface.
 	Routes []string `yaml:"routes"`
+	// DNSServers are optional host DNS servers configured on the TUN interface
+	// when the platform backend supports it.
+	DNSServers []string `yaml:"dns_servers"`
+	// FallbackSystemDNS is used only for resolving outer WireGuard transport
+	// hostnames outside the tunnel when host-TUN routes are active.
+	FallbackSystemDNS []string `yaml:"fallback_system_dns"`
 	// Up and Down are optional shell snippets run after interface creation and
 	// before teardown when scripts.allow is true.
 	Up   []string `yaml:"up"`
@@ -571,6 +577,16 @@ func (c *Config) Normalize() error {
 	for _, route := range c.TUN.Routes {
 		if _, err := netip.ParsePrefix(route); err != nil {
 			return fmt.Errorf("tun.routes %q: %w", route, err)
+		}
+	}
+	for _, server := range c.TUN.DNSServers {
+		if _, err := netip.ParseAddr(server); err != nil {
+			return fmt.Errorf("tun.dns_servers %q: %w", server, err)
+		}
+	}
+	for _, server := range c.TUN.FallbackSystemDNS {
+		if _, err := netip.ParseAddr(server); err != nil {
+			return fmt.Errorf("tun.fallback_system_dns %q: %w", server, err)
 		}
 	}
 	if c.Inbound.HostDialBindAddress != "" {

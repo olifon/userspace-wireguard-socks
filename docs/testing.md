@@ -32,6 +32,13 @@ go test ./internal/engine -run '^$' -bench BenchmarkLoopbackSOCKSThroughput -ben
 ./scripts/iperf_loopback.sh
 ```
 
+Real host-TUN smoke tests are opt-in and require privileges:
+
+```bash
+UWG_TEST_REAL_TUN=1 sudo go test ./internal/tun -run 'TestReal.*SmallRoute'
+UWG_TEST_REAL_TUN=1 UWG_TEST_REAL_TUN_DEFAULT=1 docker run --rm --privileged -v "$PWD":/src -w /src golang:1.25 bash -lc '/usr/local/go/bin/go test ./internal/tun -run "TestRealLinuxTUNConfigure(SmallRoute|DefaultRoutes)" -count=1'
+```
+
 The main suite covers:
 
 - Two-instance WireGuard TCP/UDP data paths.

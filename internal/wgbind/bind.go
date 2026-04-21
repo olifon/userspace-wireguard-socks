@@ -6,6 +6,7 @@
 package wgbind
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -17,7 +18,8 @@ import (
 )
 
 type ResolverBind struct {
-	Inner conn.Bind
+	Inner   conn.Bind
+	Resolve func(ctx context.Context, host string) ([]netip.Addr, error)
 }
 
 func (b *ResolverBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
@@ -40,7 +42,7 @@ func (b *ResolverBind) ParseEndpoint(s string) (conn.Endpoint, error) {
 	if _, err := netip.ParseAddrPort(s); err == nil {
 		return b.Inner.ParseEndpoint(s)
 	}
-	ap, err := resolveAddrPort(s)
+	ap, err := resolveAddrPortWithResolver(s, b.Resolve)
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +161,7 @@ func (b *ListenBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 }
 
 func (b *ListenBind) ParseEndpoint(s string) (conn.Endpoint, error) {
-	ap, err := resolveAddrPort(s)
+	ap, err := resolveAddrPortWithResolver(s, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -176,6 +178,8 @@ type OutboundOnlyBind struct {
 	recv   chan datagram
 	closed chan struct{}
 	open   bool
+	local4 netip.Addr
+	local6 netip.Addr
 }
 
 type peerConn struct {
@@ -190,6 +194,10 @@ type datagram struct {
 
 func NewOutboundOnlyBind() *OutboundOnlyBind {
 	return &OutboundOnlyBind{}
+}
+
+func NewOutboundOnlyBindWithLocalAddrs(local4, local6 netip.Addr) *OutboundOnlyBind {
+	return &OutboundOnlyBind{local4: local4, local6: local6}
 }
 
 // Open intentionally refuses non-zero ports. In client mode we never listen on
@@ -281,7 +289,8 @@ func (b *OutboundOnlyBind) peerConn(ap netip.AddrPort) (*peerConn, error) {
 		return pc, nil
 	}
 	ua := net.UDPAddrFromAddrPort(ap)
-	udp, err := net.DialUDP("udp", nil, ua)
+	local := b.localUDPAddr(ap.Addr())
+	udp, err := net.DialUDP(udpNetworkForAddr(ap.Addr()), local, ua)
 	if err != nil {
 		return nil, err
 	}
@@ -320,7 +329,7 @@ func (b *OutboundOnlyBind) readLoop(pc *peerConn) {
 }
 
 func (b *OutboundOnlyBind) ParseEndpoint(s string) (conn.Endpoint, error) {
-	ap, err := resolveAddrPort(s)
+	ap, err := resolveAddrPortWithResolver(s, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -329,6 +338,23 @@ func (b *OutboundOnlyBind) ParseEndpoint(s string) (conn.Endpoint, error) {
 
 func (b *OutboundOnlyBind) BatchSize() int {
 	return 1
+}
+
+func (b *OutboundOnlyBind) localUDPAddr(addr netip.Addr) *net.UDPAddr {
+	if addr.Is4() && b.local4.IsValid() {
+		return net.UDPAddrFromAddrPort(netip.AddrPortFrom(b.local4, 0))
+	}
+	if addr.Is6() && b.local6.IsValid() {
+		return net.UDPAddrFromAddrPort(netip.AddrPortFrom(b.local6, 0))
+	}
+	return nil
+}
+
+func udpNetworkForAddr(addr netip.Addr) string {
+	if addr.Is6() {
+		return "udp6"
+	}
+	return "udp4"
 }
 
 type Endpoint struct {
@@ -371,7 +397,7 @@ func endpointAddrPort(ep conn.Endpoint) (netip.AddrPort, error) {
 	}
 }
 
-func resolveAddrPort(s string) (netip.AddrPort, error) {
+func resolveAddrPortWithResolver(s string, resolve func(ctx context.Context, host string) ([]netip.Addr, error)) (netip.AddrPort, error) {
 	if ap, err := netip.ParseAddrPort(s); err == nil {
 		return ap, nil
 	}
@@ -379,16 +405,30 @@ func resolveAddrPort(s string) (netip.AddrPort, error) {
 	if err != nil {
 		return netip.AddrPort{}, err
 	}
+	pn, err := net.LookupPort("udp", port)
+	if err != nil {
+		return netip.AddrPort{}, err
+	}
+	if resolve != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		ips, err := resolve(ctx, host)
+		if err != nil {
+			return netip.AddrPort{}, err
+		}
+		for _, addr := range ips {
+			if addr.IsValid() {
+				return netip.AddrPortFrom(addr.Unmap(), uint16(pn)), nil
+			}
+		}
+		return netip.AddrPort{}, errors.New("no usable addresses")
+	}
 	ips, err := net.LookupIP(host)
 	if err != nil {
 		return netip.AddrPort{}, err
 	}
 	if len(ips) == 0 {
 		return netip.AddrPort{}, errors.New("no addresses")
-	}
-	pn, err := net.LookupPort("udp", port)
-	if err != nil {
-		return netip.AddrPort{}, err
 	}
 	for _, ip := range ips {
 		addr, ok := netip.AddrFromSlice(ip)

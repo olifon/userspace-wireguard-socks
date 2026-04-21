@@ -13,6 +13,7 @@ import (
 
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/config"
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/netstackex"
+	hosttun "github.com/reindertpelsma/userspace-wireguard-socks/internal/tun"
 	"golang.zx2c4.com/wireguard/tun"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	gtcp "gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
@@ -21,14 +22,7 @@ import (
 
 const tunICMPForwardTimeout = 5 * time.Second
 
-var createHostTUNDevice = systemCreateTUNDevice
-
-type hostTUNKernelConfig struct {
-	Name      string
-	MTU       int
-	Addresses []netip.Prefix
-	Routes    []netip.Prefix
-}
+var createHostTUNManager = hosttun.Create
 
 func (e *Engine) startHostTUN(localAddrs []netip.Addr) error {
 	e.localAddrs = localAddrs
@@ -69,35 +63,44 @@ func (e *Engine) startHostTUN(localAddrs []netip.Addr) error {
 	stackNet.SetUDPForwarder(e.handleTUNUDPForward)
 	stackNet.SetICMPForwarder(e.handleTUNICMPForward)
 
-	hostDev, err := createHostTUNDevice(e.cfg.TUN.Name, mtu)
+	addresses, cfgErr := config.AddressPrefixes(e.cfg.WireGuard.Addresses)
+	if cfgErr != nil {
+		return cfgErr
+	}
+	dnsServers, _ := config.DNSAddrs(e.cfg.TUN.DNSServers)
+	hostMgr, err := createHostTUNManager(hosttun.Options{
+		Name:       e.cfg.TUN.Name,
+		MTU:        mtu,
+		Configure:  e.cfg.TUN.Configure,
+		Addresses:  addresses,
+		Routes:     e.hostTUNRoutePrefixes(),
+		DNSServers: dnsServers,
+	})
 	if err != nil {
 		return fmt.Errorf("create host TUN %q: %w", e.cfg.TUN.Name, err)
 	}
 	defer func() {
 		if err != nil {
-			_ = hostDev.Close()
+			_ = hostMgr.Close()
 		}
 	}()
+	hostDev := hostMgr.Device()
 	name, nameErr := hostDev.Name()
 	if nameErr != nil || name == "" {
 		name = e.cfg.TUN.Name
 	}
-	if e.cfg.TUN.Configure {
-		addresses, cfgErr := config.AddressPrefixes(e.cfg.WireGuard.Addresses)
-		if cfgErr != nil {
-			return cfgErr
-		}
-		kernelCfg := hostTUNKernelConfig{
-			Name:      name,
-			MTU:       mtu,
-			Addresses: addresses,
-			Routes:    e.hostTUNRoutePrefixes(),
-		}
-		if err = configureHostTUNKernel(kernelCfg); err != nil {
-			return fmt.Errorf("configure host TUN %s: %w", name, err)
-		}
+	if err = hosttun.Configure(hostMgr, hosttun.Options{
+		Name:       name,
+		MTU:        mtu,
+		Configure:  e.cfg.TUN.Configure,
+		Addresses:  addresses,
+		Routes:     e.hostTUNRoutePrefixes(),
+		DNSServers: dnsServers,
+	}); err != nil {
+		return fmt.Errorf("configure host TUN %s: %w", name, err)
 	}
 	e.hostTun = hostDev
+	e.hostTunMgr = hostMgr
 	e.hostTunStack = stackDev
 	e.hostTunNet = stackNet
 	e.hostTunName = name

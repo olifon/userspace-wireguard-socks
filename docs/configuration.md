@@ -493,30 +493,49 @@ tun:
   configure: false
   route_allowed_ips: true
   routes: []
+  dns_servers: []
+  fallback_system_dns: []
   up: []
   down: []
 ```
 
-When enabled, `uwgsocks` creates a host `/dev/net/tun` interface and connects it
-to a second userspace netstack. TCP, UDP, and ping-style ICMP/ICMPv6 flows from
+When enabled, `uwgsocks` creates a host TUN interface and connects it to a
+second userspace netstack. TCP, UDP, and ping-style ICMP/ICMPv6 flows from
 that interface are terminated by `uwgsocks` and use the same outbound ACL,
 AllowedIPs, outbound proxy, and `fallback_direct` routing as SOCKS5/HTTP and
 the raw socket API.
 
-`tun.configure` uses Linux netlink to set the MTU, assign the WireGuard
-`Address=` prefixes, bring the link up, and install routes. If
+`tun.configure` applies host interface settings through the local platform:
+Linux uses netlink, macOS uses `ifconfig`/`route`, and Windows uses the native
+TUN adapter plus `netsh` route/address commands. It sets the MTU, assigns the
+WireGuard `Address=` prefixes, brings the interface up where needed, and
+installs routes. If
 `route_allowed_ips` is true, peer `AllowedIPs` are routed to the TUN interface;
 `routes` adds extra CIDRs. Overlapping routes are reduced before installation,
 so a broader route such as `172.16.0.0/12` suppresses a contained route such as
 `172.18.0.0/16`.
 
+`dns_servers` optionally configures host DNS servers on the TUN interface when
+the platform backend supports it. Today that is best-effort on Linux
+(`resolvectl` or `systemd-resolve`) and Windows (`netsh`). macOS `utun` DNS
+configuration is not currently automated by `uwgsocks`.
+
+`fallback_system_dns` is only for the outer WireGuard transport itself. When
+host-TUN routes are active and a peer endpoint is configured as a hostname,
+`uwgsocks` resolves that hostname through these bypass DNS servers instead of
+relying on the system resolver to escape the tunnel. If empty, `uwgsocks`
+falls back to a built-in public resolver list (`1.1.1.1`, `1.0.0.1`,
+`8.8.8.8`, `8.8.4.4`, and their IPv6 equivalents).
+
 `tun.up` and `tun.down` are shell commands and run only when `scripts.allow` or
 `--allow-scripts` is enabled.
 
-If you route `0.0.0.0/0` or `::/0` to the host TUN interface, make sure the
-WireGuard peer endpoint itself remains reachable outside that route, for
-example with an explicit host route in `tun.up` or external network manager
-configuration.
+Before host-TUN routes are installed, `uwgsocks` snapshots the current host
+egress source addresses and reuses them for the outer WireGuard transport's
+direct TCP/UDP dials. That prevents the common single-homed loop where a small
+test route or broad default route would otherwise recurse back into the TUN.
+On multihomed hosts, explicit host routes for peer endpoints are still the
+safer option when you intentionally route very broad prefixes.
 
 CLI:
 

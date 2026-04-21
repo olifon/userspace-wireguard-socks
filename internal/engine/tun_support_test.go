@@ -19,6 +19,8 @@ import (
 
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/config"
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/netstackex"
+	"github.com/reindertpelsma/userspace-wireguard-socks/internal/transport"
+	hosttun "github.com/reindertpelsma/userspace-wireguard-socks/internal/tun"
 	"golang.zx2c4.com/wireguard/tun"
 )
 
@@ -60,14 +62,14 @@ func TestHostTUNOutboundTCPThroughFallbackDirect(t *testing.T) {
 	}()
 
 	hostTun := newFakeTUNDevice("uwgtest0", 1420)
-	oldCreate := createHostTUNDevice
-	createHostTUNDevice = func(name string, mtu int) (tun.Device, error) {
-		if name != "uwgtest0" || mtu != 1420 {
-			t.Fatalf("createHostTUNDevice(%q, %d), want uwgtest0/1420", name, mtu)
+	oldCreate := createHostTUNManager
+	createHostTUNManager = func(opts hosttun.Options) (hosttun.Manager, error) {
+		if opts.Name != "uwgtest0" || opts.MTU != 1420 {
+			t.Fatalf("createHostTUNManager(%q, %d), want uwgtest0/1420", opts.Name, opts.MTU)
 		}
-		return hostTun, nil
+		return newFakeHostTUNManager(hostTun), nil
 	}
-	t.Cleanup(func() { createHostTUNDevice = oldCreate })
+	t.Cleanup(func() { createHostTUNManager = oldCreate })
 
 	cfg := config.Default()
 	cfg.WireGuard.Addresses = []string{"100.64.10.1/32"}
@@ -137,14 +139,14 @@ func TestHostTUNOutboundTCPIPv6ThroughFallbackDirect(t *testing.T) {
 	}()
 
 	hostTun := newFakeTUNDevice("uwgtest6", 1280)
-	oldCreate := createHostTUNDevice
-	createHostTUNDevice = func(name string, mtu int) (tun.Device, error) {
-		if name != "uwgtest6" || mtu != 1280 {
-			t.Fatalf("createHostTUNDevice(%q, %d), want uwgtest6/1280", name, mtu)
+	oldCreate := createHostTUNManager
+	createHostTUNManager = func(opts hosttun.Options) (hosttun.Manager, error) {
+		if opts.Name != "uwgtest6" || opts.MTU != 1280 {
+			t.Fatalf("createHostTUNManager(%q, %d), want uwgtest6/1280", opts.Name, opts.MTU)
 		}
-		return hostTun, nil
+		return newFakeHostTUNManager(hostTun), nil
 	}
-	t.Cleanup(func() { createHostTUNDevice = oldCreate })
+	t.Cleanup(func() { createHostTUNManager = oldCreate })
 
 	cfg := config.Default()
 	cfg.WireGuard.Addresses = []string{"fd00:10::1/128"}
@@ -395,3 +397,32 @@ func (d *fakeTUNDevice) Close() error {
 }
 
 func (d *fakeTUNDevice) BatchSize() int { return 1 }
+
+type fakeHostTUNManager struct {
+	dev tun.Device
+}
+
+func newFakeHostTUNManager(dev tun.Device) *fakeHostTUNManager {
+	return &fakeHostTUNManager{dev: dev}
+}
+
+func (m *fakeHostTUNManager) Device() tun.Device { return m.dev }
+func (m *fakeHostTUNManager) Name() string {
+	name, _ := m.dev.Name()
+	return name
+}
+func (m *fakeHostTUNManager) LocalAddrs() (netip.Addr, netip.Addr) {
+	return netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("::1")
+}
+func (m *fakeHostTUNManager) AddAddress(netip.Prefix) error    { return nil }
+func (m *fakeHostTUNManager) RemoveAddress(netip.Prefix) error { return nil }
+func (m *fakeHostTUNManager) AddRoute(netip.Prefix) error      { return nil }
+func (m *fakeHostTUNManager) RemoveRoute(netip.Prefix) error   { return nil }
+func (m *fakeHostTUNManager) SetDNSServers([]netip.Addr) error { return nil }
+func (m *fakeHostTUNManager) ClearDNSServers() error           { return nil }
+func (m *fakeHostTUNManager) Start() error                     { return nil }
+func (m *fakeHostTUNManager) Stop() error                      { return nil }
+func (m *fakeHostTUNManager) BypassDialer(bool, netip.Prefix) transport.ProxyDialer {
+	return transport.NewDirectDialer(false, netip.Prefix{})
+}
+func (m *fakeHostTUNManager) Close() error { return m.dev.Close() }

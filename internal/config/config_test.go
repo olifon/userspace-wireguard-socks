@@ -333,6 +333,19 @@ func TestNormalizeRejectsInvalidMeshTrust(t *testing.T) {
 	}
 }
 
+func TestNormalizeRejectsInvalidTUNDNSServer(t *testing.T) {
+	cfg := Default()
+	cfg.TUN.DNSServers = []string{"bad-ip"}
+	if err := cfg.Normalize(); err == nil || !strings.Contains(err.Error(), "tun.dns_servers") {
+		t.Fatalf("Normalize err=%v, want tun.dns_servers rejection", err)
+	}
+	cfg = Default()
+	cfg.TUN.FallbackSystemDNS = []string{"also-bad"}
+	if err := cfg.Normalize(); err == nil || !strings.Contains(err.Error(), "tun.fallback_system_dns") {
+		t.Fatalf("Normalize err=%v, want tun.fallback_system_dns rejection", err)
+	}
+}
+
 func TestParseForwardArgProxyProtocolOption(t *testing.T) {
 	f, err := ParseForwardArg("udp://127.0.0.1:5353=100.64.71.10:53,proxy_protocol=v2")
 	if err != nil {
