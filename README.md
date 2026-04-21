@@ -61,20 +61,6 @@ Standard WireGuard UDP is easy to fingerprint and block. `uwgsocks` can carry Wi
 
 A single `#!TCP=required` comment in your wg-quick config is enough to switch a peer to TCP transport — no YAML needed. The same directive parser also supports transport URLs and mesh control hints such as `#!URL=...` and `#!Control=...`.
 
-## vs. Alternatives
-
-| | `uwgsocks` | Kernel WireGuard | Tailscale / Headscale | proxychains |
-|---|---|---|---|---|
-| Root required | No | Yes | No | No |
-| Works in containers | Yes | Requires CAP_NET_ADMIN | Yes | Yes |
-| **Host a server rootlessly** | **Yes** | No | No | — |
-| Runs on macOS / Windows / Android as server | Yes | No | No | — |
-| Survives DPI / port blocks | Yes | No | No | No |
-| Routes apps without proxy support | Yes (uwgwrapper) | Via system routing | Via system routing | Partially (TCP only, no static binaries) |
-| Standard WireGuard peers | Yes | Yes | No (Tailscale protocol) | — |
-| Peer sync over standard WireGuard configs | Yes | No | No | — |
-| Self-hosted, no SaaS dependency | Yes | Yes | Headscale (partial) | — |
-
 ## Binaries
 
 - **`uwgsocks`** — WireGuard engine, SOCKS5/HTTP proxy, port forwards, ACL engine, DNS, relay, and runtime API. Runs on Linux, macOS, and Windows.
