@@ -6,6 +6,7 @@ package socketproto
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -292,7 +293,7 @@ func DialHTTP(ctx context.Context, endpoint, token, path string) (net.Conn, erro
 		path = "/v1/socket"
 	}
 	base := endpoint
-	var network, address, host string
+	var network, address, host, proxyAuth string
 	if strings.HasPrefix(base, "unix:") {
 		network = "unix"
 		address = strings.TrimPrefix(strings.TrimPrefix(base, "unix://"), "unix:")
@@ -311,6 +312,12 @@ func DialHTTP(ctx context.Context, endpoint, token, path string) (net.Conn, erro
 		network = "tcp"
 		address = u.Host
 		host = u.Host
+		if u.User != nil {
+			username := u.User.Username()
+			password, _ := u.User.Password()
+			creds := username + ":" + password
+			proxyAuth = "Basic " + base64.StdEncoding.EncodeToString([]byte(creds))
+		}
 	}
 	var d net.Dialer
 	c, err := d.DialContext(ctx, network, address)
@@ -324,6 +331,9 @@ func DialHTTP(ctx context.Context, endpoint, token, path string) (net.Conn, erro
 	fmt.Fprintf(&req, "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: Upgrade\r\nUpgrade: uwg-socket/1\r\n", path, host)
 	if token != "" {
 		fmt.Fprintf(&req, "Authorization: Bearer %s\r\n", token)
+	}
+	if proxyAuth != "" {
+		fmt.Fprintf(&req, "Proxy-Authorization: %s\r\n", proxyAuth)
 	}
 	req.WriteString("\r\n")
 	if _, err := io.WriteString(c, req.String()); err != nil {

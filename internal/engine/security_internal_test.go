@@ -5,13 +5,16 @@ package engine
 
 import (
 	"io"
+	"log"
 	"net"
 	"net/netip"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/reindertpelsma/userspace-wireguard-socks/internal/config"
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/socketproto"
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 func TestMarkPacketECNRejectsShortIPv4OptionsHeader(t *testing.T) {
@@ -128,5 +131,82 @@ func TestSocketProtocolDNSFrameHonorsInflightLimit(t *testing.T) {
 	}
 	if resp.Rcode != dns.RcodeRefused {
 		t.Fatalf("DNS overflow rcode = %d, want REFUSED", resp.Rcode)
+	}
+}
+
+func TestHTTPProxyClosesIdleIncompleteRequest(t *testing.T) {
+	oldReadHeader := proxyHTTPReadHeaderTimeout
+	oldRead := proxyHTTPReadTimeout
+	oldWrite := proxyHTTPWriteTimeout
+	oldIdle := proxyHTTPIdleTimeout
+	proxyHTTPReadHeaderTimeout = 40 * time.Millisecond
+	proxyHTTPReadTimeout = 40 * time.Millisecond
+	proxyHTTPWriteTimeout = 200 * time.Millisecond
+	proxyHTTPIdleTimeout = 40 * time.Millisecond
+	defer func() {
+		proxyHTTPReadHeaderTimeout = oldReadHeader
+		proxyHTTPReadTimeout = oldRead
+		proxyHTTPWriteTimeout = oldWrite
+		proxyHTTPIdleTimeout = oldIdle
+	}()
+
+	key, err := wgtypes.GeneratePrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Proxy.HTTP = "127.0.0.1:0"
+	cfg.WireGuard.PrivateKey = key.String()
+	cfg.WireGuard.Addresses = []string{"100.64.93.1/32"}
+	if err := cfg.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	eng, err := New(cfg, log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+	if err := eng.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	conn, err := net.DialTimeout("tcp", eng.Addr("http"), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("GET /")); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	buf := make([]byte, 64)
+	if _, err := conn.Read(buf); err == nil {
+		return
+	} else if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		t.Fatal("idle incomplete HTTP request unexpectedly stayed open")
+	}
+}
+
+func TestTunnelDNSTCPClosesIdleClient(t *testing.T) {
+	oldDeadline := tunnelDNSTCPDeadline
+	tunnelDNSTCPDeadline = 40 * time.Millisecond
+	defer func() { tunnelDNSTCPDeadline = oldDeadline }()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go (&Engine{}).serveTunnelDNSTCP(ln)
+
+	conn, err := net.DialTimeout("tcp", ln.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	buf := make([]byte, 16)
+	if _, err := conn.Read(buf); err == nil {
+		t.Fatal("idle DNS TCP connection unexpectedly stayed open")
 	}
 }

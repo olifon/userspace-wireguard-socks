@@ -276,6 +276,79 @@ func TestSocketAPIFallbackDirectTCPUDPAndICMP(t *testing.T) {
 	}
 }
 
+func TestSocketAPIHTTPProxySocketUpgradeRequiresAndAcceptsBasicAuth(t *testing.T) {
+	serverKey, clientKey := mustKey(t), mustKey(t)
+	serverPort := freeUDPPort(t)
+
+	serverCfg := config.Default()
+	serverCfg.WireGuard.PrivateKey = serverKey.String()
+	serverCfg.WireGuard.ListenPort = &serverPort
+	serverCfg.WireGuard.Addresses = []string{"100.64.98.1/32"}
+	serverCfg.WireGuard.Peers = []config.Peer{{
+		PublicKey:  clientKey.PublicKey().String(),
+		AllowedIPs: []string{"100.64.98.2/32"},
+	}}
+	serverEng := mustStart(t, serverCfg)
+
+	clientCfg := config.Default()
+	clientCfg.WireGuard.PrivateKey = clientKey.String()
+	clientCfg.WireGuard.Addresses = []string{"100.64.98.2/32"}
+	clientCfg.Proxy.HTTP = "127.0.0.1:0"
+	clientCfg.Proxy.Username = "alice"
+	clientCfg.Proxy.Password = "secret"
+	clientCfg.WireGuard.Peers = []config.Peer{{
+		PublicKey:           serverKey.PublicKey().String(),
+		Endpoint:            fmt.Sprintf("127.0.0.1:%d", serverPort),
+		AllowedIPs:          []string{"100.64.98.1/32"},
+		PersistentKeepalive: 1,
+	}}
+	clientEng := mustStart(t, clientCfg)
+
+	tcpLn, err := serverEng.ListenTCP(netip.MustParseAddrPort("100.64.98.1:18080"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tcpLn.Close()
+	go serveEchoListener(tcpLn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := socketproto.DialHTTP(ctx, "http://"+clientEng.Addr("http"), "", "/uwg/socket"); err == nil {
+		t.Fatal("unauthenticated /uwg/socket upgrade unexpectedly succeeded")
+	}
+
+	conn, err := socketproto.DialHTTP(ctx, "http://alice:secret@"+clientEng.Addr("http"), "", "/uwg/socket")
+	if err != nil {
+		t.Fatalf("authenticated /uwg/socket upgrade failed: %v", err)
+	}
+	defer conn.Close()
+
+	id := socketproto.ClientIDBase + 812
+	payload, err := socketproto.EncodeConnect(socketproto.Connect{
+		IPVersion: socketproto.AddrVersion(netip.MustParseAddr("100.64.98.1")),
+		Protocol:  socketproto.ProtoTCP,
+		DestIP:    netip.MustParseAddr("100.64.98.1"),
+		DestPort:  18080,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := socketproto.WriteFrame(conn, socketproto.Frame{ID: id, Action: socketproto.ActionConnect, Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	frame := readSocketFrame(t, conn)
+	if frame.Action != socketproto.ActionAccept {
+		t.Fatalf("authenticated /uwg/socket connect failed: action %d payload %q", frame.Action, frame.Payload)
+	}
+	if err := socketproto.WriteFrame(conn, socketproto.Frame{ID: id, Action: socketproto.ActionData, Payload: []byte("proxy socket auth")}); err != nil {
+		t.Fatal(err)
+	}
+	frame = readSocketFrame(t, conn)
+	if frame.Action != socketproto.ActionData || string(frame.Payload) != "proxy socket auth" {
+		t.Fatalf("authenticated /uwg/socket echo mismatch: action %d payload %q", frame.Action, frame.Payload)
+	}
+}
+
 func TestSocketAPIUDPBindWithoutBindPrivilegeIsEstablishedOnly(t *testing.T) {
 	serverKey, clientKey := mustKey(t), mustKey(t)
 	serverPort := freeUDPPort(t)

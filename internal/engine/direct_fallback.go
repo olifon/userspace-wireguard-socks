@@ -11,7 +11,6 @@ import (
 	"net/netip"
 	"strings"
 
-	xicmp "golang.org/x/net/icmp"
 )
 
 func (e *Engine) dialSocketOutbound(ctx context.Context, network string, aclSrc, bindSrc, dst netip.AddrPort) (net.Conn, error) {
@@ -93,25 +92,6 @@ func (e *Engine) dialDirectHost(ctx context.Context, network string, bindSrc, ds
 		d.LocalAddr = la
 	}
 	return d.DialContext(ctx, network, dst.String())
-}
-
-func (e *Engine) dialHostPing(bindIP, dst netip.Addr) (net.Conn, error) {
-	network := "udp4"
-	if dst.Is6() {
-		network = "udp6"
-	}
-	laddr := ""
-	if bind := e.hostDirectBindIP(bindIP, dst); bind.IsValid() {
-		laddr = bind.String()
-	}
-	pc, err := xicmp.ListenPacket(network, laddr)
-	if err != nil {
-		return nil, err
-	}
-	return &connectedPacketConn{
-		PacketConn: pc,
-		remote:     &net.IPAddr{IP: net.IP(dst.AsSlice())},
-	}, nil
 }
 
 func (e *Engine) hostDirectLocalAddr(network string, bindSrc, dst netip.AddrPort) net.Addr {

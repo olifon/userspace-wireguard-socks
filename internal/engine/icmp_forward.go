@@ -32,6 +32,9 @@ func (e *Engine) handleICMPForward(id stack.TransportEndpointID, pkt *stack.Pack
 	if !ok {
 		return false
 	}
+	if !e.icmpForwardLimiter.Allow() {
+		return true
+	}
 	dialDst := dst
 	if rewritten, ok, err := e.inboundHostForwardTarget(dstAP); err != nil {
 		e.log.Printf("icmp forward target %s failed: %v", dst, err)

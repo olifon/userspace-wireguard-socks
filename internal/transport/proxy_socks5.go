@@ -103,9 +103,9 @@ func socks5UDPAssociate(ctrl net.Conn, hint string) (string, error) {
 	// Build UDP ASSOCIATE request: VER=5, CMD=3, RSV=0, ATYP=1, ADDR=0.0.0.0, PORT=0
 	req := []byte{
 		5, 3, 0, // VER CMD RSV
-		1,            // ATYP: IPv4
-		0, 0, 0, 0,   // DST.ADDR 0.0.0.0 (hint from caller ignored for now)
-		0, 0,         // DST.PORT 0
+		1,          // ATYP: IPv4
+		0, 0, 0, 0, // DST.ADDR 0.0.0.0 (hint from caller ignored for now)
+		0, 0, // DST.PORT 0
 	}
 	_ = hint // TODO: parse hint and put IP/port in request for strict servers
 	if _, err := ctrl.Write(req); err != nil {
@@ -202,18 +202,24 @@ func socks5UDPHeaderLen(b []byte) (int, error) {
 		return 0, fmt.Errorf("socks5 udp: too short")
 	}
 	// b[0..1] = RSV, b[2] = FRAG, b[3] = ATYP
+	var need int
 	switch b[3] {
 	case 1: // IPv4
-		return 4 + 4 + 2, nil
+		need = 4 + 4 + 2
 	case 4: // IPv6
-		return 4 + 16 + 2, nil
+		need = 4 + 16 + 2
 	case 3: // domain
 		if len(b) < 5 {
 			return 0, fmt.Errorf("socks5 udp: too short for domain")
 		}
-		return 4 + 1 + int(b[4]) + 2, nil
+		need = 4 + 1 + int(b[4]) + 2
+	default:
+		return 0, fmt.Errorf("socks5 udp: unknown ATYP %d", b[3])
 	}
-	return 0, fmt.Errorf("socks5 udp: unknown ATYP %d", b[3])
+	if len(b) < need {
+		return 0, fmt.Errorf("socks5 udp: truncated header")
+	}
+	return need, nil
 }
 
 func buildSocks5UDPHeader(addr *net.UDPAddr) []byte {

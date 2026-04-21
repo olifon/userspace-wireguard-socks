@@ -34,6 +34,7 @@ import (
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/transport"
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/wgbind"
 	"golang.org/x/net/proxy"
+	"golang.org/x/time/rate"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
@@ -97,11 +98,12 @@ type Engine struct {
 	socketNext      uint64
 	closed          chan struct{}
 
-	fallbackDialer proxy.Dialer
-	localAddrs     []netip.Addr
-	localPrefixes  []netip.Prefix
-	dnsSem         chan struct{}
-	transportBind  *transport.MultiTransportBind
+	fallbackDialer     proxy.Dialer
+	localAddrs         []netip.Addr
+	localPrefixes      []netip.Prefix
+	dnsSem             chan struct{}
+	transportBind      *transport.MultiTransportBind
+	icmpForwardLimiter *rate.Limiter
 }
 
 type trackedConn struct {
@@ -116,6 +118,14 @@ type forwardRuntime struct {
 	reverse bool
 	forward config.Forward
 }
+
+var (
+	proxyHTTPReadHeaderTimeout = 5 * time.Second
+	proxyHTTPReadTimeout       = 15 * time.Second
+	proxyHTTPWriteTimeout      = 30 * time.Second
+	proxyHTTPIdleTimeout       = 30 * time.Second
+	tunnelDNSTCPDeadline       = 10 * time.Second
+)
 
 func New(cfg config.Config, logger *log.Logger) (*Engine, error) {
 	if logger == nil {
@@ -155,6 +165,7 @@ func New(cfg config.Config, logger *log.Logger) (*Engine, error) {
 		closed:             make(chan struct{}),
 		fallbackDialer:     fallback,
 		localPrefixes:      localPrefixes,
+		icmpForwardLimiter: rate.NewLimiter(255, 255),
 	}
 	if cfg.DNSServer.MaxInflight > 0 {
 		e.dnsSem = make(chan struct{}, cfg.DNSServer.MaxInflight)
@@ -709,7 +720,7 @@ func (e *Engine) startHTTP(name, addr string) error {
 		return err
 	}
 	e.addListener(name, ln)
-	server := &http.Server{Handler: e.httpProxyHandler()}
+	server := e.proxyHTTPServer(e.httpProxyHandler())
 	go func() {
 		if err := server.Serve(ln); err != nil && !isClosedErr(err) {
 			e.log.Printf("%s proxy stopped: %v", name, err)
@@ -730,6 +741,7 @@ func (e *Engine) startMixed(name, addr string) error {
 }
 
 func (e *Engine) serveMixed(ln net.Listener, handler http.Handler) {
+	server := e.proxyHTTPServer(handler)
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -750,8 +762,19 @@ func (e *Engine) serveMixed(ln net.Listener, handler http.Handler) {
 				e.serveSOCKSConn(bc)
 				return
 			}
-			_ = http.Serve(&oneConnListener{conn: bc}, handler)
+			_ = server.Serve(&oneConnListener{conn: bc})
 		}()
+	}
+}
+
+func (e *Engine) proxyHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: proxyHTTPReadHeaderTimeout,
+		ReadTimeout:       proxyHTTPReadTimeout,
+		WriteTimeout:      proxyHTTPWriteTimeout,
+		IdleTimeout:       proxyHTTPIdleTimeout,
+		MaxHeaderBytes:    1 << 20,
 	}
 }
 
@@ -1916,6 +1939,7 @@ func (e *Engine) serveTunnelDNSTCP(ln net.Listener) {
 			defer c.Close()
 			dc := &dns.Conn{Conn: c}
 			for {
+				_ = c.SetDeadline(time.Now().Add(tunnelDNSTCPDeadline))
 				req, err := dc.ReadMsg()
 				if err != nil {
 					return
