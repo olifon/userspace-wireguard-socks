@@ -2,17 +2,17 @@
 
 WireGuard networking without root, without kernel modules, and without touching the host network stack.
 
-`uwgsocks` embeds WireGuard and a userspace TCP/IP stack into a single binary. It runs anywhere: containers, CI pipelines, Android Termux, and locked-down hosts where kernel WireGuard or `/dev/net/tun` are unavailable.
+`uwgsocks` is a rootless WireGuard data plane: userspace WireGuard, userspace TCP/IP, pluggable outer transports, proxy entrypoints, relay logic, and a raw socket API in a single binary. It runs anywhere: containers, CI pipelines, Android Termux, Windows, macOS, and locked-down hosts where kernel WireGuard or `/dev/net/tun` are unavailable.
 
 ## Why this exists
 
-Standard WireGuard requires root and a kernel TUN interface. That rules it out for containers, unprivileged CI jobs, and any system where you cannot change the routing table. It also uses plain UDP, which is easily detected and blocked by firewalls and DPI.
+Standard WireGuard requires root and a kernel TUN interface. That rules it out for containers, unprivileged CI jobs, and any system where you cannot change the routing table. It also uses plain UDP, which is easy to block or fingerprint in restrictive networks.
 
-`uwgsocks` removes both constraints — and uniquely, it works as a **server** too. You can host a WireGuard exit node or SD-WAN hub on any machine, under any account, with no installation: a Mac mini, a Termux session, a Windows desktop, a container, or an IoT device. Two binaries, no root, no kernel module.
+`uwgsocks` removes both constraints — and uniquely, it works as a **server** too. You can host a WireGuard exit node, relay hub, or lightweight mesh coordinator on any machine, under any account, with no installation: a Mac mini, a Termux session, a Windows desktop, a container, or an IoT device.
 
 ## Looking for a VPN server with a web UI?
 
-See [simple-wireguard-server](https://github.com/reindertpelsma/simple-wireguard-server) — a zero-install WireGuard server manager built on top of `uwgsocks`. It adds a dashboard, user management, OIDC login, and shareable client configs, and runs under any unprivileged account.
+See [simple-wireguard-server](https://github.com/reindertpelsma/simple-wireguard-server) — a zero-install WireGuard control plane built on top of `uwgsocks`. It adds a dashboard, user management, OIDC login, protected service publishing, transport-aware client configs, and optional peer syncing / P2P discovery.
 
 ## Quick Start
 
@@ -30,6 +30,15 @@ curl --proxy socks5://127.0.0.1:1080 https://example.com
 ./uwgwrapper -- curl https://example.com
 ```
 
+## What it covers
+
+- Rootless WireGuard client and server mode
+- SOCKS5, HTTP proxy, local forwards, reverse forwards, and relay forwarding
+- Linux transparent app wrapping via `uwgwrapper` and fdproxy
+- Raw socket API for TCP, UDP, ICMP ping, listener sockets, and DNS frames
+- Outer transports for difficult networks: UDP, TCP, TLS, HTTP(S), QUIC, DTLS, and TURN
+- Optional mesh control for peer syncing and direct peer discovery on top of standard WireGuard keys
+
 ## How apps enter the tunnel
 
 | Method | When to use |
@@ -41,11 +50,11 @@ curl --proxy socks5://127.0.0.1:1080 https://example.com
 
 ## Surviving restrictive firewalls
 
-Standard WireGuard UDP is easily fingerprinted and blocked. `uwgsocks` can carry WireGuard over:
+Standard WireGuard UDP is easy to fingerprint and block. `uwgsocks` can carry WireGuard over:
 
 `udp` · `tcp` · `tls` · `https` (WebSocket) · `quic` (WebTransport) · `dtls` · `turn`
 
-A single `#!TCP=required` comment in your wg-quick config is enough to switch a peer to TCP transport — no YAML needed.
+A single `#!TCP=required` comment in your wg-quick config is enough to switch a peer to TCP transport — no YAML needed. The same directive parser also supports transport URLs and mesh control hints such as `#!URL=...` and `#!Control=...`.
 
 ## vs. Alternatives
 
@@ -58,6 +67,7 @@ A single `#!TCP=required` comment in your wg-quick config is enough to switch a 
 | Survives DPI / port blocks | Yes | No | No | No |
 | Routes apps without proxy support | Yes (uwgwrapper) | Via system routing | Via system routing | Partially (TCP only, no static binaries) |
 | Standard WireGuard peers | Yes | Yes | No (Tailscale protocol) | — |
+| Peer sync over standard WireGuard configs | Yes | No | No | — |
 | Self-hosted, no SaaS dependency | Yes | Yes | Headscale (partial) | — |
 
 ## Binaries
@@ -80,8 +90,8 @@ Requires Go. Building `uwgwrapper` additionally requires gcc on Linux. See [docs
 - [Configuration reference](docs/configuration.md)
 - [Transport modes](docs/transport-modes.md)
 - [Proxy routing order](docs/proxy-routing.md)
+- [Testing and security model](docs/testing.md)
 - [Raw socket API](docs/socket-protocol.md)
-- [Testing](docs/testing.md)
 - [TURN relay](turn/README.md)
 - [How-to guides](docs/howto/README.md)
 

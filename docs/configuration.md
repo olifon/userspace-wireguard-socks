@@ -42,6 +42,14 @@ If `listen_port` is omitted, the process acts as an outbound client and lets the
 `transports:` list. Leave it empty to use the first transport, or the legacy
 UDP / TURN path when `transports` is not configured.
 
+Per-peer mesh fields extend the normal WireGuard peer model without replacing it:
+
+- `control_url`: tunnel-side HTTP URL of another peer's mesh control endpoint.
+- `mesh_enabled`: opt this peer into mesh discovery / syncing.
+- `mesh_disable_acls`: opt out of client-side dynamic ACL enforcement.
+- `mesh_accept_acls`: advertise that this peer enforces the distributed ACL subset locally.
+- `mesh_trust`: `untrusted`, `trusted_always`, or `trusted_if_dynamic_acls` for relay fallback policy when direct and relayed paths mix.
+
 Relevant CLI flags:
 
 ```bash
@@ -302,6 +310,34 @@ proxy:
       ca_file: ""
       server_sni: proxy.example.com
 ```
+
+## Mesh Control
+
+```yaml
+mesh_control:
+  listen: 100.64.0.1:8787
+  challenge_rotate_seconds: 120
+  active_peer_window_seconds: 120
+  advertise_self: false
+```
+
+`mesh_control.listen` starts a small tunnel-only HTTP control endpoint inside the WireGuard netstack. It is intended for peer syncing and optional direct-path discovery between `uwgsocks` peers while keeping standard WireGuard public keys and `AllowedIPs`.
+
+Current mesh control endpoints are used for:
+
+- peer discovery and sync (`/v1/peers`)
+- distributed ACL export (`/v1/acls`)
+- challenge / authenticated control sessions (`/v1/challenge`)
+
+Peer advertisements always include public key, `AllowedIPs`, and pairwise PSK material for sync-capable peers. The `endpoint` field is advertised only when the peer is currently reachable over a UDP-capable outer transport such as direct UDP or TURN UDP. HTTP/TLS/QUIC-only peers are still syncable, but they are not advertised as direct-P2P candidates.
+
+wg-quick style configs can opt a peer into this with:
+
+```ini
+#!Control=http://100.64.0.1:8787
+```
+
+That directive is valid in a `[Peer]` section and maps to `control_url` plus `mesh_enabled: true`.
 
 ## Forwards
 
