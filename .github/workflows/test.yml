@@ -41,3 +41,37 @@ jobs:
       - name: Run tests
         shell: bash
         run: go test ./...
+
+      - name: Real Linux host-TUN smoke test
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --privileged \
+            -e UWG_TEST_REAL_TUN=1 \
+            -v "$PWD":/src -w /src golang:1.25 \
+            bash -lc 'export PATH=/usr/local/go/bin:$PATH GOFLAGS=-buildvcs=false && apt-get update >/dev/null && apt-get install -y gcc libc6-dev >/dev/null && /bin/bash ./compile.sh >/dev/null && go test ./internal/tun -run TestRealLinuxTUNConfigureSmallRoute -count=1'
+
+      - name: Real macOS host-TUN smoke test
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo env UWG_TEST_REAL_TUN=1 go test ./internal/tun -run TestRealUTUNConfigureSmallRoute -count=1
+
+      - name: Install Wintun
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'wintun.zip'
+          $dir = Join-Path $env:RUNNER_TEMP 'wintun'
+          Invoke-WebRequest -Uri 'https://www.wintun.net/builds/wintun-0.14.1.zip' -OutFile $zip
+          Expand-Archive -LiteralPath $zip -DestinationPath $dir -Force
+          Copy-Item (Join-Path $dir 'wintun\bin\amd64\wintun.dll') 'C:\Windows\System32\wintun.dll' -Force
+
+      - name: Real Windows host-TUN smoke test
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $env:UWG_TEST_REAL_TUN = '1'
+          go test ./internal/tun -run TestRealWindowsTUNConfigureSmallRoute -count=1
