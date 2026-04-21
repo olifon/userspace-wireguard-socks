@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/netip"
 	"strings"
-
 )
 
 func (e *Engine) dialSocketOutbound(ctx context.Context, network string, aclSrc, bindSrc, dst netip.AddrPort) (net.Conn, error) {

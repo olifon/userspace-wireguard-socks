@@ -25,8 +25,9 @@ import (
 // the QUIC side even when the origin serves plain HTTPS WebSocket.
 //
 // Protocol:
-//   Client → extended CONNECT :protocol=websocket over HTTP/3 stream
-//   Both sides then exchange standard RFC 6455 binary frames on that stream.
+//
+//	Client → extended CONNECT :protocol=websocket over HTTP/3 stream
+//	Both sides then exchange standard RFC 6455 binary frames on that stream.
 type QUICWebSocketTransport struct {
 	name        string
 	dialer      ProxyDialer
@@ -263,13 +264,13 @@ type quicWSConn struct {
 
 var _ net.Conn = (*quicWSConn)(nil)
 
-func (c *quicWSConn) Read(b []byte) (int, error)        { return c.str.Read(b) }
-func (c *quicWSConn) Write(b []byte) (int, error)       { return c.str.Write(b) }
-func (c *quicWSConn) Close() error                      { return c.str.Close() }
-func (c *quicWSConn) LocalAddr() net.Addr               { return quicStreamAddr("local") }
-func (c *quicWSConn) RemoteAddr() net.Addr              { return quicStreamAddr("remote") }
-func (c *quicWSConn) SetDeadline(t time.Time) error     { return c.str.SetDeadline(t) }
-func (c *quicWSConn) SetReadDeadline(t time.Time) error { return c.str.SetReadDeadline(t) }
+func (c *quicWSConn) Read(b []byte) (int, error)         { return c.str.Read(b) }
+func (c *quicWSConn) Write(b []byte) (int, error)        { return c.str.Write(b) }
+func (c *quicWSConn) Close() error                       { return c.str.Close() }
+func (c *quicWSConn) LocalAddr() net.Addr                { return quicStreamAddr("local") }
+func (c *quicWSConn) RemoteAddr() net.Addr               { return quicStreamAddr("remote") }
+func (c *quicWSConn) SetDeadline(t time.Time) error      { return c.str.SetDeadline(t) }
+func (c *quicWSConn) SetReadDeadline(t time.Time) error  { return c.str.SetReadDeadline(t) }
 func (c *quicWSConn) SetWriteDeadline(t time.Time) error { return c.str.SetWriteDeadline(t) }
 
 type quicStreamAddr string
@@ -281,7 +282,7 @@ func (a quicStreamAddr) String() string  { return string(a) }
 
 type quicWSSession struct {
 	ws     *wsConn
-	qconn  *quic.Conn  // nil on server side
+	qconn  *quic.Conn     // nil on server side
 	pc     net.PacketConn // nil on server side
 	remote string
 	once   sync.Once
