@@ -303,6 +303,62 @@ func TestRelayStatelessFallbackAllowsForwardDirectionWhenBothPeersAcceptDynamicA
 	}
 }
 
+func TestRelayStatelessFallbackAllowsTrustedPeers(t *testing.T) {
+	e := testRelayEngineWithPeers(t, acl.List{
+		Default: acl.Deny,
+		Rules: []acl.Rule{{
+			Action:      acl.Allow,
+			Source:      "100.64.2.2/32",
+			Destination: "100.64.2.3/32",
+			DestPort:    "443",
+			Protocol:    "tcp",
+		}},
+	}, []config.Peer{
+		{PublicKey: "peer-a", AllowedIPs: []string{"100.64.2.2/32"}, MeshTrust: config.MeshTrustTrustedAlways},
+		{PublicKey: "peer-b", AllowedIPs: []string{"100.64.2.3/32"}},
+	})
+
+	if !e.allowRelayPacket(testIPv4TCPPacketFlags("100.64.2.3", "100.64.2.2", 443, 40000, tcpFlagACK)) {
+		t.Fatal("trusted_always peer did not enable stateless relay fallback")
+	}
+}
+
+func TestRelayStatelessFallbackTrustedIfDynamicACLsRequiresCapablePeer(t *testing.T) {
+	e := testRelayEngineWithPeers(t, acl.List{
+		Default: acl.Deny,
+		Rules: []acl.Rule{{
+			Action:      acl.Allow,
+			Source:      "100.64.2.2/32",
+			Destination: "100.64.2.3/32",
+			DestPort:    "443",
+			Protocol:    "tcp",
+		}},
+	}, []config.Peer{
+		{PublicKey: "peer-a", AllowedIPs: []string{"100.64.2.2/32"}, MeshTrust: config.MeshTrustTrustedIfDynamicACLs},
+		{PublicKey: "peer-b", AllowedIPs: []string{"100.64.2.3/32"}},
+	})
+	if e.allowRelayPacket(testIPv4TCPPacketFlags("100.64.2.3", "100.64.2.2", 443, 40000, tcpFlagACK)) {
+		t.Fatal("trusted_if_dynamic_acls allowed fallback without an ACL-capable peer on the other side")
+	}
+
+	e = testRelayEngineWithPeers(t, acl.List{
+		Default: acl.Deny,
+		Rules: []acl.Rule{{
+			Action:      acl.Allow,
+			Source:      "100.64.2.2/32",
+			Destination: "100.64.2.3/32",
+			DestPort:    "443",
+			Protocol:    "tcp",
+		}},
+	}, []config.Peer{
+		{PublicKey: "peer-a", AllowedIPs: []string{"100.64.2.2/32"}, MeshTrust: config.MeshTrustTrustedIfDynamicACLs},
+		{PublicKey: "peer-b", AllowedIPs: []string{"100.64.2.3/32"}, MeshAcceptACLs: true},
+	})
+	if !e.allowRelayPacket(testIPv4TCPPacketFlags("100.64.2.3", "100.64.2.2", 443, 40000, tcpFlagACK)) {
+		t.Fatal("trusted_if_dynamic_acls did not allow fallback with an ACL-capable peer on the other side")
+	}
+}
+
 func TestMeshInboundACLAppliesToStaticParentAndDynamicChildSources(t *testing.T) {
 	e := testRelayEngineWithPeers(t, acl.List{Default: acl.Allow}, []config.Peer{
 		{PublicKey: "parent", AllowedIPs: []string{"100.64.50.1/32"}, MeshAcceptACLs: true},
@@ -319,7 +375,7 @@ func TestMeshInboundACLAppliesToStaticParentAndDynamicChildSources(t *testing.T)
 	if err := e.applyMeshACLsWithDefault("parent", acl.Deny, []acl.Rule{
 		{Action: acl.Allow, Source: "100.64.50.1/32", Destination: "100.64.50.9/32", DestPort: "80", Protocol: "tcp"},
 		{Action: acl.Allow, Source: "100.64.50.2/32", Destination: "100.64.50.9/32", DestPort: "80", Protocol: "tcp"},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -337,6 +393,25 @@ func TestMeshInboundACLAppliesToStaticParentAndDynamicChildSources(t *testing.T)
 	}
 	if !e.allowTunnelPacket(testIPv4TCPPacketFlags("198.51.100.9", "100.64.50.9", 40000, 81, tcpFlagSYN)) {
 		t.Fatal("mesh inbound ACL incorrectly applied to unrelated source")
+	}
+}
+
+func TestMeshTrustedPeerOutboundACLIsEnforced(t *testing.T) {
+	e := testRelayEngineWithPeers(t, acl.List{Default: acl.Allow}, []config.Peer{
+		{PublicKey: "peer-a", AllowedIPs: []string{"100.64.2.2/32"}, MeshTrust: config.MeshTrustTrustedAlways},
+	})
+	e.localAddrs = []netip.Addr{netip.MustParseAddr("100.64.0.1")}
+	if err := e.applyMeshACLsWithDefault("peer-a", acl.Deny, nil, []acl.Rule{
+		{Action: acl.Allow, Source: "100.64.0.1/32", Destination: "100.64.2.2/32", DestPort: "80", Protocol: "tcp"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if !e.allowEgressPacket(testIPv4TCPPacketFlags("100.64.0.1", "100.64.2.2", 40000, 80, tcpFlagSYN)) {
+		t.Fatal("trusted peer outbound ACL denied matching local packet")
+	}
+	if e.allowEgressPacket(testIPv4TCPPacketFlags("100.64.0.1", "100.64.2.2", 40000, 81, tcpFlagSYN)) {
+		t.Fatal("trusted peer outbound ACL allowed non-matching local packet")
 	}
 }
 

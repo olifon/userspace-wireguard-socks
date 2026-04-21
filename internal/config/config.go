@@ -127,6 +127,7 @@ type Peer struct {
 	MeshAdvertise       *bool         `yaml:"mesh_advertise,omitempty"`
 	MeshDisableACLs     bool          `yaml:"mesh_disable_acls,omitempty"`
 	MeshAcceptACLs      bool          `yaml:"mesh_accept_acls,omitempty"`
+	MeshTrust           MeshTrust     `yaml:"mesh_trust,omitempty"`
 	// Transport is the name of a transport from the top-level transports list.
 	// Empty means use the default transport (first entry, or legacy UDP).
 	Transport string `yaml:"transport,omitempty"`
@@ -139,6 +140,14 @@ type Peer struct {
 	// ConnectURL is set by #!URL=: full URL for auto-negotiation transport.
 	ConnectURL string `yaml:"connect_url,omitempty"`
 }
+
+type MeshTrust string
+
+const (
+	MeshTrustUntrusted            MeshTrust = "untrusted"
+	MeshTrustTrustedAlways        MeshTrust = "trusted_always"
+	MeshTrustTrustedIfDynamicACLs MeshTrust = "trusted_if_dynamic_acls"
+)
 
 type Proxy struct {
 	SOCKS5                    string          `yaml:"socks5"`
@@ -682,20 +691,26 @@ func (c *Config) Normalize() error {
 		return fmt.Errorf("mesh_control.subscribe_max_lifetime_seconds must be >= 0")
 	}
 	for i := range c.WireGuard.Peers {
-		if c.WireGuard.Peers[i].ControlURL == "" {
-			continue
+		switch c.WireGuard.Peers[i].MeshTrust {
+		case "":
+			c.WireGuard.Peers[i].MeshTrust = MeshTrustUntrusted
+		case MeshTrustUntrusted, MeshTrustTrustedAlways, MeshTrustTrustedIfDynamicACLs:
+		default:
+			return fmt.Errorf("wireguard.peers[%d].mesh_trust must be one of %q, %q or %q", i, MeshTrustUntrusted, MeshTrustTrustedAlways, MeshTrustTrustedIfDynamicACLs)
 		}
-		u, err := url.Parse(c.WireGuard.Peers[i].ControlURL)
-		if err != nil {
-			return fmt.Errorf("wireguard.peers[%d].control_url: %w", i, err)
+		if c.WireGuard.Peers[i].ControlURL != "" {
+			u, err := url.Parse(c.WireGuard.Peers[i].ControlURL)
+			if err != nil {
+				return fmt.Errorf("wireguard.peers[%d].control_url: %w", i, err)
+			}
+			if u.Scheme != "http" && u.Scheme != "https" {
+				return fmt.Errorf("wireguard.peers[%d].control_url must use http or https", i)
+			}
+			if u.Host == "" {
+				return fmt.Errorf("wireguard.peers[%d].control_url host is required", i)
+			}
 		}
-		if u.Scheme != "http" && u.Scheme != "https" {
-			return fmt.Errorf("wireguard.peers[%d].control_url must use http or https", i)
-		}
-		if u.Host == "" {
-			return fmt.Errorf("wireguard.peers[%d].control_url host is required", i)
-		}
-		if c.WireGuard.Peers[i].MeshEnabled && !c.WireGuard.Peers[i].MeshDisableACLs {
+		if c.WireGuard.Peers[i].ControlURL != "" && c.WireGuard.Peers[i].MeshEnabled && !c.WireGuard.Peers[i].MeshDisableACLs {
 			c.WireGuard.Peers[i].MeshAcceptACLs = true
 		}
 		if c.WireGuard.Peers[i].MeshDisableACLs {

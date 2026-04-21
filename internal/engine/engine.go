@@ -76,7 +76,8 @@ type Engine struct {
 	relayLastSweep time.Time
 
 	meshACLMu        sync.Mutex
-	meshACLs         map[string]acl.List
+	meshACLsIn       map[string]acl.List
+	meshACLsOut      map[string]acl.List
 	meshACLFlows     map[string]map[relayFlowKey]*relayFlow
 	meshACLLastSweep map[string]time.Time
 
@@ -167,7 +168,8 @@ func New(cfg config.Config, logger *log.Logger) (*Engine, error) {
 		outACL:             acl.List{Default: cfg.ACL.OutboundDefault, Rules: cfg.ACL.Outbound},
 		relACL:             acl.List{Default: cfg.ACL.RelayDefault, Rules: cfg.ACL.Relay},
 		relayFlows:         make(map[relayFlowKey]*relayFlow),
-		meshACLs:           make(map[string]acl.List),
+		meshACLsIn:         make(map[string]acl.List),
+		meshACLsOut:        make(map[string]acl.List),
 		meshACLFlows:       make(map[string]map[relayFlowKey]*relayFlow),
 		meshACLLastSweep:   make(map[string]time.Time),
 		addrs:              make(map[string]string),
@@ -2176,6 +2178,9 @@ func (e *Engine) allowEgressPacket(packet []byte) bool {
 		return false
 	}
 	if meta, ok := parseRelayPacket(packet); ok {
+		if !e.meshAllowLocalACL(meta) {
+			return false
+		}
 		e.meshTrackLocalACL(meta)
 	}
 	if *e.cfg.Relay.Enabled {

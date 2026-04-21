@@ -49,11 +49,14 @@ type meshDiscoveredPeer struct {
 	Endpoint   string   `json:"endpoint,omitempty"`
 	AllowedIPs []string `json:"allowed_ips,omitempty"`
 	PSK        string   `json:"psk,omitempty"`
+	MeshAccept bool     `json:"mesh_accept_acls,omitempty"`
+	MeshTrust  string   `json:"mesh_trust,omitempty"`
 }
 
 type meshACLResponse struct {
-	Default acl.Action `json:"default"`
-	Relay   []acl.Rule `json:"relay"`
+	Default  acl.Action `json:"default"`
+	Inbound  []acl.Rule `json:"inbound,omitempty"`
+	Outbound []acl.Rule `json:"outbound,omitempty"`
 }
 
 type meshAuthResult struct {
@@ -400,7 +403,7 @@ func (e *Engine) meshPeersForRequester(requester string) ([]meshDiscoveredPeer, 
 		if peer.PublicKey == requester {
 			continue
 		}
-		if !peer.MeshAcceptACLs {
+		if !peer.MeshAcceptACLs && peer.MeshTrust == config.MeshTrustUntrusted {
 			continue
 		}
 		if !advertiseSelf && peer.PublicKey == e.meshServerPublicKey() {
@@ -427,6 +430,8 @@ func (e *Engine) meshPeersForRequester(requester string) ([]meshDiscoveredPeer, 
 			Endpoint:   st.Endpoint,
 			AllowedIPs: allowed,
 			PSK:        base64.StdEncoding.EncodeToString(psk),
+			MeshAccept: peer.MeshAcceptACLs,
+			MeshTrust:  string(peer.MeshTrust),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].PublicKey < out[j].PublicKey })
@@ -446,14 +451,17 @@ func (e *Engine) meshACLsForRequester(requester string) (meshACLResponse, error)
 	rules := append([]acl.Rule(nil), e.relACL.Rules...)
 	def := e.relACL.Default
 	e.aclMu.RUnlock()
-	out := make([]acl.Rule, 0, len(rules))
+	inbound := make([]acl.Rule, 0, len(rules))
+	outbound := make([]acl.Rule, 0, len(rules))
 	for _, rule := range rules {
-		projected, ok := meshProjectRelayRule(rule, requesterPrefixes)
-		if ok {
-			out = append(out, projected)
+		if projected, ok := meshProjectRelayRuleForDestination(rule, requesterPrefixes); ok {
+			inbound = append(inbound, projected)
+		}
+		if projected, ok := meshProjectRelayRuleForSource(rule, requesterPrefixes); ok {
+			outbound = append(outbound, projected)
 		}
 	}
-	return meshACLResponse{Default: def, Relay: out}, nil
+	return meshACLResponse{Default: def, Inbound: inbound, Outbound: outbound}, nil
 }
 
 func (e *Engine) meshServerPublicKey() string {
@@ -543,7 +551,7 @@ func (e *Engine) runMeshPolling() {
 					var aclResp meshACLResponse
 					aclResp, err = client.fetchACLs(ctx, remote)
 					if err == nil {
-						err = e.applyMeshACLsWithDefault(parent.PublicKey, aclResp.Default, aclResp.Relay)
+						err = e.applyMeshACLsWithDefault(parent.PublicKey, aclResp.Default, aclResp.Inbound, aclResp.Outbound)
 					}
 				}
 			} else {
@@ -607,13 +615,22 @@ func (e *Engine) applyMeshDiscoveredPeers(parent config.Peer, discovered []meshD
 		if exists && dp.Active && dp.Peer.Endpoint != "" {
 			endpoint = dp.Peer.Endpoint
 		}
+		trust := config.MeshTrust(disc.MeshTrust)
+		switch trust {
+		case "", config.MeshTrustUntrusted:
+			trust = config.MeshTrustUntrusted
+		case config.MeshTrustTrustedAlways, config.MeshTrustTrustedIfDynamicACLs:
+		default:
+			trust = config.MeshTrustUntrusted
+		}
 		peer := config.Peer{
 			PublicKey:           disc.PublicKey,
 			PresharedKey:        disc.PSK,
 			Endpoint:            endpoint,
 			AllowedIPs:          allowed,
 			PersistentKeepalive: meshDynamicKeepalive(parent),
-			MeshAcceptACLs:      true,
+			MeshAcceptACLs:      disc.MeshAccept,
+			MeshTrust:           trust,
 		}
 		if !exists {
 			dp = &dynamicPeer{ParentPublicKey: parent.PublicKey}
@@ -675,7 +692,7 @@ func meshTrimAllowedIPs(raw []string, parents []netip.Prefix) []string {
 	return slices.Compact(out)
 }
 
-func meshProjectRelayRule(rule acl.Rule, allowed []netip.Prefix) (acl.Rule, bool) {
+func meshProjectRelayRuleForDestination(rule acl.Rule, allowed []netip.Prefix) (acl.Rule, bool) {
 	projected := rule
 	projectedDsts := meshProjectDestinations(rule.Destination, rule.Destinations, allowed)
 	if len(projectedDsts) == 0 {
@@ -683,6 +700,20 @@ func meshProjectRelayRule(rule acl.Rule, allowed []netip.Prefix) (acl.Rule, bool
 	}
 	projected.Destination = ""
 	projected.Destinations = projectedDsts
+	if err := projected.Normalize(); err != nil {
+		return acl.Rule{}, false
+	}
+	return projected, true
+}
+
+func meshProjectRelayRuleForSource(rule acl.Rule, allowed []netip.Prefix) (acl.Rule, bool) {
+	projected := rule
+	projectedSrcs := meshProjectDestinations(rule.Source, rule.Sources, allowed)
+	if len(projectedSrcs) == 0 {
+		return acl.Rule{}, false
+	}
+	projected.Source = ""
+	projected.Sources = projectedSrcs
 	if err := projected.Normalize(); err != nil {
 		return acl.Rule{}, false
 	}
@@ -949,17 +980,24 @@ func (e *Engine) reconcileDynamicPeersWithStatic() {
 }
 
 func (e *Engine) applyMeshACLs(parentPublicKey string, rules []acl.Rule) error {
-	return e.applyMeshACLsWithDefault(parentPublicKey, acl.Deny, rules)
+	return e.applyMeshACLsWithDefault(parentPublicKey, acl.Deny, rules, nil)
 }
 
-func (e *Engine) applyMeshACLsWithDefault(parentPublicKey string, def acl.Action, rules []acl.Rule) error {
-	list := acl.List{Default: def, Rules: append([]acl.Rule(nil), rules...)}
-	if err := list.Normalize(); err != nil {
+func (e *Engine) applyMeshACLsWithDefault(parentPublicKey string, def acl.Action, inboundRules, outboundRules []acl.Rule) error {
+	inList := acl.List{Default: def, Rules: append([]acl.Rule(nil), inboundRules...)}
+	if err := inList.Normalize(); err != nil {
+		return err
+	}
+	outList := acl.List{Default: def, Rules: append([]acl.Rule(nil), outboundRules...)}
+	if err := outList.Normalize(); err != nil {
 		return err
 	}
 	e.meshACLMu.Lock()
-	if e.meshACLs == nil {
-		e.meshACLs = make(map[string]acl.List)
+	if e.meshACLsIn == nil {
+		e.meshACLsIn = make(map[string]acl.List)
+	}
+	if e.meshACLsOut == nil {
+		e.meshACLsOut = make(map[string]acl.List)
 	}
 	if e.meshACLFlows == nil {
 		e.meshACLFlows = make(map[string]map[relayFlowKey]*relayFlow)
@@ -967,7 +1005,8 @@ func (e *Engine) applyMeshACLsWithDefault(parentPublicKey string, def acl.Action
 	if e.meshACLLastSweep == nil {
 		e.meshACLLastSweep = make(map[string]time.Time)
 	}
-	e.meshACLs[parentPublicKey] = list
+	e.meshACLsIn[parentPublicKey] = inList
+	e.meshACLsOut[parentPublicKey] = outList
 	if _, ok := e.meshACLFlows[parentPublicKey]; !ok {
 		e.meshACLFlows[parentPublicKey] = make(map[relayFlowKey]*relayFlow)
 	}
@@ -976,28 +1015,45 @@ func (e *Engine) applyMeshACLsWithDefault(parentPublicKey string, def acl.Action
 }
 
 func (e *Engine) meshInboundACLAllowed(meta relayPacketMeta) bool {
-	parent, rules, ok := e.meshACLParentForPeerIP(meta.src.Addr())
+	parent, rules, _, _, ok := e.meshACLListsForPeerIP(meta.src.Addr())
 	if !ok {
 		return true
 	}
 	return e.allowMeshACLTracked(parent, rules, meta, time.Now())
 }
 
+func (e *Engine) meshAllowLocalACL(meta relayPacketMeta) bool {
+	if !e.localAddrContains(meta.src.Addr()) {
+		return true
+	}
+	parent, _, rules, peer, ok := e.meshACLListsForPeerIP(meta.dst.Addr())
+	if !ok {
+		return true
+	}
+	switch peer.MeshTrust {
+	case config.MeshTrustTrustedAlways, config.MeshTrustTrustedIfDynamicACLs:
+		return e.allowMeshACLTracked(parent, rules, meta, time.Now())
+	default:
+		return true
+	}
+}
+
 func (e *Engine) meshTrackLocalACL(meta relayPacketMeta) {
 	if !e.localAddrContains(meta.src.Addr()) {
 		return
 	}
-	parent, rules, ok := e.meshACLParentForPeerIP(meta.dst.Addr())
+	parent, _, rules, _, ok := e.meshACLListsForPeerIP(meta.dst.Addr())
 	if !ok {
 		return
 	}
 	e.trackMeshACLOutbound(parent, rules, meta, time.Now())
 }
 
-func (e *Engine) meshACLParentForPeerIP(ip netip.Addr) (string, acl.List, bool) {
+func (e *Engine) meshACLListsForPeerIP(ip netip.Addr) (string, acl.List, acl.List, config.Peer, bool) {
 	ip = ip.Unmap()
 	bestParent := ""
 	bestBits := -1
+	bestPeer := config.Peer{}
 	e.dynamicMu.RLock()
 	for _, dp := range e.dynamicPeers {
 		if dp == nil {
@@ -1012,6 +1068,7 @@ func (e *Engine) meshACLParentForPeerIP(ip netip.Addr) (string, acl.List, bool) 
 			if prefix.Contains(ip) && prefix.Bits() > bestBits {
 				bestBits = prefix.Bits()
 				bestParent = dp.ParentPublicKey
+				bestPeer = dp.Peer
 			}
 		}
 	}
@@ -1019,7 +1076,7 @@ func (e *Engine) meshACLParentForPeerIP(ip netip.Addr) (string, acl.List, bool) 
 	if bestParent == "" {
 		e.cfgMu.RLock()
 		for _, peer := range e.cfg.WireGuard.Peers {
-			if !peer.MeshAcceptACLs {
+			if !peer.MeshAcceptACLs && peer.MeshTrust == config.MeshTrustUntrusted {
 				continue
 			}
 			for _, raw := range peer.AllowedIPs {
@@ -1031,18 +1088,23 @@ func (e *Engine) meshACLParentForPeerIP(ip netip.Addr) (string, acl.List, bool) 
 				if prefix.Contains(ip) && prefix.Bits() > bestBits {
 					bestBits = prefix.Bits()
 					bestParent = peer.PublicKey
+					bestPeer = peer
 				}
 			}
 		}
 		e.cfgMu.RUnlock()
 	}
 	if bestParent == "" {
-		return "", acl.List{}, false
+		return "", acl.List{}, acl.List{}, config.Peer{}, false
 	}
 	e.meshACLMu.Lock()
 	defer e.meshACLMu.Unlock()
-	list, ok := e.meshACLs[bestParent]
-	return bestParent, list, ok
+	inList, ok := e.meshACLsIn[bestParent]
+	if !ok {
+		return "", acl.List{}, acl.List{}, config.Peer{}, false
+	}
+	outList := e.meshACLsOut[bestParent]
+	return bestParent, inList, outList, bestPeer, true
 }
 
 func (e *Engine) allowMeshACLTracked(parent string, rules acl.List, meta relayPacketMeta, now time.Time) bool {
@@ -1542,11 +1604,16 @@ func (c *meshControlClient) fetchACLs(ctx context.Context, remote netip.AddrPort
 	if err := json.Unmarshal(plain, &out); err != nil {
 		return meshACLResponse{}, err
 	}
-	list := acl.List{Default: out.Default, Rules: out.Relay}
-	if err := list.Normalize(); err != nil {
+	inList := acl.List{Default: out.Default, Rules: out.Inbound}
+	if err := inList.Normalize(); err != nil {
 		return meshACLResponse{}, err
 	}
-	out.Default = list.Default
-	out.Relay = list.Rules
+	outList := acl.List{Default: out.Default, Rules: out.Outbound}
+	if err := outList.Normalize(); err != nil {
+		return meshACLResponse{}, err
+	}
+	out.Default = inList.Default
+	out.Inbound = inList.Rules
+	out.Outbound = outList.Rules
 	return out, nil
 }

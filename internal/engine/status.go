@@ -61,6 +61,7 @@ type PeerStatus struct {
 	ParentPublicKey            string   `json:"parent_public_key,omitempty"`
 	MeshActive                 bool     `json:"mesh_active,omitempty"`
 	MeshAcceptACLs             bool     `json:"mesh_accept_acls,omitempty"`
+	MeshTrust                  string   `json:"mesh_trust,omitempty"`
 }
 
 // Status returns a live snapshot of configured peers, transfer counters,
@@ -280,10 +281,12 @@ func (e *Engine) annotateDynamicPeerStatus(st *Status) {
 			st.Peers[i].ParentPublicKey = dp.ParentPublicKey
 			st.Peers[i].MeshActive = dp.Active
 			st.Peers[i].MeshAcceptACLs = dp.Peer.MeshAcceptACLs
+			st.Peers[i].MeshTrust = string(dp.Peer.MeshTrust)
 			continue
 		}
 		if peer, _, ok := e.meshPeerConfig(st.Peers[i].PublicKey); ok {
 			st.Peers[i].MeshAcceptACLs = peer.MeshAcceptACLs
+			st.Peers[i].MeshTrust = string(peer.MeshTrust)
 		}
 	}
 	st.DynamicPeers = st.DynamicPeers[:0]

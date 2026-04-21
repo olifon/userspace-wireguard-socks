@@ -45,6 +45,7 @@ func TestMeshControlPeersRequiresAuthAndReturnsEncryptedPeers(t *testing.T) {
 			AllowedIPs:     []string{"100.64.94.3/32"},
 			MeshEnabled:    true,
 			MeshAcceptACLs: true,
+			MeshTrust:      config.MeshTrustTrustedAlways,
 		},
 	}
 	server := mustStartMeshEngine(t, serverCfg)
@@ -107,7 +108,7 @@ func TestMeshControlPeersRequiresAuthAndReturnsEncryptedPeers(t *testing.T) {
 	if len(peers) != 1 {
 		t.Fatalf("mesh peers len=%d want 1: %+v", len(peers), peers)
 	}
-	if peers[0].PublicKey != client2Key.PublicKey().String() || peers[0].Endpoint == "" || len(peers[0].AllowedIPs) != 1 || peers[0].AllowedIPs[0] != "100.64.94.3/32" || peers[0].PSK == "" {
+	if peers[0].PublicKey != client2Key.PublicKey().String() || peers[0].Endpoint == "" || len(peers[0].AllowedIPs) != 1 || peers[0].AllowedIPs[0] != "100.64.94.3/32" || peers[0].PSK == "" || peers[0].MeshTrust != string(config.MeshTrustTrustedAlways) {
 		t.Fatalf("unexpected mesh peer: %+v", peers[0])
 	}
 }
@@ -462,6 +463,13 @@ func TestMeshACLsForRequesterProjectsDestinationsToRequesterSpace(t *testing.T) 
 			DestPort: "53",
 			Protocol: "udp",
 		},
+		{
+			Action:      acl.Allow,
+			Source:      "100.64.98.0/24",
+			Destination: "100.64.70.7/32",
+			DestPort:    "443",
+			Protocol:    "tcp",
+		},
 	}
 	serverCfg.WireGuard.Peers = []config.Peer{{
 		PublicKey:      clientKey.PublicKey().String(),
@@ -478,14 +486,20 @@ func TestMeshACLsForRequesterProjectsDestinationsToRequesterSpace(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(resp.Relay) != 2 {
-		t.Fatalf("relay ACL count=%d want 2: %+v", len(resp.Relay), resp.Relay)
+	if len(resp.Inbound) != 2 {
+		t.Fatalf("inbound ACL count=%d want 2: %+v", len(resp.Inbound), resp.Inbound)
 	}
-	if got := resp.Relay[0].Destinations; len(got) != 1 || got[0] != "100.64.98.2/32" {
+	if got := resp.Inbound[0].Destinations; len(got) != 1 || got[0] != "100.64.98.2/32" {
 		t.Fatalf("first projected destinations=%v want [100.64.98.2/32]", got)
 	}
-	if got := resp.Relay[1].Destinations; len(got) != 2 || got[0] != "100.64.98.128/25" || got[1] != "100.64.98.2/32" {
+	if got := resp.Inbound[1].Destinations; len(got) != 2 || got[0] != "100.64.98.128/25" || got[1] != "100.64.98.2/32" {
 		t.Fatalf("wildcard projected destinations=%v want requester allowed prefixes", got)
+	}
+	if len(resp.Outbound) != 1 {
+		t.Fatalf("outbound ACL count=%d want 1: %+v", len(resp.Outbound), resp.Outbound)
+	}
+	if got := resp.Outbound[0].Sources; len(got) != 2 || got[0] != "100.64.98.128/25" || got[1] != "100.64.98.2/32" {
+		t.Fatalf("projected outbound sources=%v want requester allowed prefixes", got)
 	}
 }
 

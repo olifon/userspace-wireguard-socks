@@ -37,6 +37,7 @@ type apiPeer struct {
 	PersistentKeepalive int                  `json:"persistent_keepalive,omitempty"`
 	TrafficShaper       config.TrafficShaper `json:"traffic_shaper,omitempty"`
 	MeshAcceptACLs      bool                 `json:"mesh_accept_acls,omitempty"`
+	MeshTrust           config.MeshTrust     `json:"mesh_trust,omitempty"`
 }
 
 type apiACL struct {
@@ -845,6 +846,7 @@ func peerToAPI(p config.Peer) apiPeer {
 		PersistentKeepalive: p.PersistentKeepalive,
 		TrafficShaper:       p.TrafficShaper,
 		MeshAcceptACLs:      p.MeshAcceptACLs,
+		MeshTrust:           p.MeshTrust,
 	}
 }
 
@@ -857,6 +859,7 @@ func peerFromAPI(p apiPeer) config.Peer {
 		PersistentKeepalive: p.PersistentKeepalive,
 		TrafficShaper:       p.TrafficShaper,
 		MeshAcceptACLs:      p.MeshAcceptACLs,
+		MeshTrust:           p.MeshTrust,
 	}
 }
 

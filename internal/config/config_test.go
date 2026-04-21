@@ -319,6 +319,20 @@ func TestNormalizeEnablesMeshACLsByDefaultForControlPeers(t *testing.T) {
 	}
 }
 
+func TestNormalizeRejectsInvalidMeshTrust(t *testing.T) {
+	cfg := Default()
+	cfg.WireGuard.PrivateKey = mustConfigKey(t).String()
+	cfg.WireGuard.Addresses = []string{"100.64.73.1/32"}
+	cfg.WireGuard.Peers = []Peer{{
+		PublicKey:  mustConfigKey(t).PublicKey().String(),
+		AllowedIPs: []string{"100.64.73.2/32"},
+		MeshTrust:  MeshTrust("bad"),
+	}}
+	if err := cfg.Normalize(); err == nil || !strings.Contains(err.Error(), "mesh_trust") {
+		t.Fatalf("Normalize err=%v, want mesh_trust rejection", err)
+	}
+}
+
 func TestParseForwardArgProxyProtocolOption(t *testing.T) {
 	f, err := ParseForwardArg("udp://127.0.0.1:5353=100.64.71.10:53,proxy_protocol=v2")
 	if err != nil {

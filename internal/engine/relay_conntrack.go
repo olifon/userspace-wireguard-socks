@@ -120,15 +120,30 @@ func (e *Engine) allowRelayStatelessFallback(meta relayPacketMeta) bool {
 }
 
 func (e *Engine) meshRelayACLFallbackAllowed(srcIP, dstIP netip.Addr) bool {
-	srcKey, srcPeer, ok := e.meshRelayACLPeerForIP(srcIP)
-	if !ok || !srcPeer.MeshAcceptACLs {
+	srcGroup, srcPeer, ok := e.meshRelayACLPeerForIP(srcIP)
+	if !ok {
 		return false
 	}
-	dstKey, dstPeer, ok := e.meshRelayACLPeerForIP(dstIP)
-	if !ok || !dstPeer.MeshAcceptACLs {
+	dstGroup, dstPeer, ok := e.meshRelayACLPeerForIP(dstIP)
+	if !ok {
 		return false
 	}
-	return srcKey != "" && dstKey != "" && srcKey != dstKey
+	if srcGroup == "" || dstGroup == "" || srcGroup == dstGroup {
+		return false
+	}
+	if srcPeer.MeshAcceptACLs && dstPeer.MeshAcceptACLs {
+		return true
+	}
+	if srcPeer.MeshTrust == config.MeshTrustTrustedAlways || dstPeer.MeshTrust == config.MeshTrustTrustedAlways {
+		return true
+	}
+	if srcPeer.MeshTrust == config.MeshTrustTrustedIfDynamicACLs && dstPeer.MeshAcceptACLs {
+		return true
+	}
+	if dstPeer.MeshTrust == config.MeshTrustTrustedIfDynamicACLs && srcPeer.MeshAcceptACLs {
+		return true
+	}
+	return false
 }
 
 func (e *Engine) meshRelayACLPeerForIP(ip netip.Addr) (string, config.Peer, bool) {
@@ -137,9 +152,7 @@ func (e *Engine) meshRelayACLPeerForIP(ip netip.Addr) (string, config.Peer, bool
 		return "", config.Peer{}, false
 	}
 	if dp := e.dynamicPeer(key); dp != nil {
-		if parent, _, ok := e.meshPeerConfig(dp.ParentPublicKey); ok {
-			return dp.ParentPublicKey, parent, true
-		}
+		return dp.ParentPublicKey, dp.Peer, true
 	}
 	peer, _, ok := e.meshPeerConfig(key)
 	return key, peer, ok
