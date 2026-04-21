@@ -200,6 +200,7 @@ jobs:
                    gcc -shared -fPIC -O2 -Wall -Wextra \
                      -o cmd/uwgwrapper/assets/uwgpreload.so preload/uwgpreload.c -ldl -pthread && \
                    go test ./tests/preload/... ./internal/uwgtrace/... ./internal/fdproxy/..."
+          sudo chown -R "$(id -u):$(id -g)" cmd/uwgwrapper/assets
 
       - name: Build uwgwrapper preload asset
         run: |
