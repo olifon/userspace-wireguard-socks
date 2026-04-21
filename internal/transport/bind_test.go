@@ -4,6 +4,7 @@
 package transport_test
 
 import (
+	"bufio"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -508,6 +509,115 @@ func TestWebSocketTransportTLSSNIOverride(t *testing.T) {
 	}
 	if seenHost != "inner.example" {
 		t.Fatalf("unexpected Host header %q", seenHost)
+	}
+}
+
+func TestHTTPSTransportAdvertisesHTTP3OnResponses(t *testing.T) {
+	certFile, keyFile := writeSelfSignedCert(t, "ws.test")
+	certMgr, err := transport.NewCertManager(transport.TLSConfig{
+		CertFile: certFile,
+		KeyFile:  keyFile,
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer certMgr.Close()
+
+	tr := transport.NewWebSocketTransport(
+		"wss-h3-test",
+		"https",
+		loopbackDialer{},
+		[]string{"127.0.0.1"},
+		certMgr,
+		transport.TLSConfig{},
+		transport.WithWebSocketPath("/wireguard"),
+		transport.WithWebSocketAdvertiseHTTP3(true),
+	)
+
+	ctx := context.Background()
+	ln, err := tr.Listen(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+		Timeout: 5 * time.Second,
+	}
+	resp, err := client.Get("https://" + ln.Addr().String() + "/wireguard")
+	if err != nil {
+		t.Fatalf("https get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	wantAltSvc := fmt.Sprintf(`h3=":%d"; ma=86400`, ln.Addr().(*net.TCPAddr).Port)
+	if got := resp.Header.Get("Alt-Svc"); got != wantAltSvc {
+		t.Fatalf("unexpected Alt-Svc header %q, want %q", got, wantAltSvc)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unexpected status %d", resp.StatusCode)
+	}
+}
+
+func TestHTTPSTransportAdvertisesHTTP3OnWebSocketUpgrade(t *testing.T) {
+	certFile, keyFile := writeSelfSignedCert(t, "ws.test")
+	certMgr, err := transport.NewCertManager(transport.TLSConfig{
+		CertFile: certFile,
+		KeyFile:  keyFile,
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer certMgr.Close()
+
+	tr := transport.NewWebSocketTransport(
+		"wss-h3-upgrade-test",
+		"https",
+		loopbackDialer{},
+		[]string{"127.0.0.1"},
+		certMgr,
+		transport.TLSConfig{},
+		transport.WithWebSocketPath("/wireguard"),
+		transport.WithWebSocketAdvertiseHTTP3(true),
+	)
+
+	ctx := context.Background()
+	ln, err := tr.Listen(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	conn, err := tls.Dial("tcp", ln.Addr().String(), &tls.Config{
+		InsecureSkipVerify: true,
+		ServerName:         "ws.test",
+	})
+	if err != nil {
+		t.Fatalf("tls dial: %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	const key = "dGhlIHNhbXBsZSBub25jZQ=="
+	if _, err := fmt.Fprintf(conn, "GET /wireguard HTTP/1.1\r\nHost: ws.test\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: %s\r\n\r\n", key); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodGet})
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+
+	wantAltSvc := fmt.Sprintf(`h3=":%d"; ma=86400`, ln.Addr().(*net.TCPAddr).Port)
+	if got := resp.Header.Get("Alt-Svc"); got != wantAltSvc {
+		t.Fatalf("unexpected Alt-Svc header %q, want %q", got, wantAltSvc)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("unexpected status %d", resp.StatusCode)
 	}
 }
 

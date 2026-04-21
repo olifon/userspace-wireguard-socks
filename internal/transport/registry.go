@@ -189,6 +189,9 @@ func buildBaseTransport(cfg Config, dialer ProxyDialer, wgPubKey [32]byte) (Tran
 	if cfg.WebSocket.HostHeader != "" {
 		wsOpts = append(wsOpts, WithWebSocketHostHeader(cfg.WebSocket.HostHeader))
 	}
+	if cfg.WebSocket.AdvertiseHTTP3 {
+		wsOpts = append(wsOpts, WithWebSocketAdvertiseHTTP3(true))
+	}
 	if cfg.WebSocket.SNIHostname != "" && !cfg.TLS.ServerSNI.IsSet() {
 		wsOpts = append(wsOpts, WithWebSocketSNIHostname(cfg.WebSocket.SNIHostname))
 	}
@@ -254,7 +257,7 @@ func buildBaseTransport(cfg Config, dialer ProxyDialer, wgPubKey [32]byte) (Tran
 		if err != nil {
 			return nil, err
 		}
-		return NewURLTransport(cfg.Name, cfg.URL, dialer, listenAddrs, certMgr, cfg.TLS, cfg.WebSocket.ConnectHost, cfg.WebSocket.HostHeader)
+		return NewURLTransport(cfg.Name, cfg.URL, dialer, listenAddrs, certMgr, cfg.TLS, cfg.WebSocket.ConnectHost, cfg.WebSocket.HostHeader, cfg.WebSocket.AdvertiseHTTP3)
 	}
 	return nil, fmt.Errorf("unsupported base protocol %q", cfg.Base)
 }

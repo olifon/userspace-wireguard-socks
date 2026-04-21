@@ -92,6 +92,10 @@ type WebSocketConfig struct {
 	// encrypted and the CDN routes on the inner host. Empty means use the
 	// target host.
 	HostHeader string `yaml:"host_header,omitempty" json:"host_header,omitempty"`
+	// AdvertiseHTTP3 adds Alt-Svc: h3 on HTTPS listener responses so clients
+	// can discover a matching HTTP/3 endpoint on the same port. This does not
+	// enable QUIC by itself; configure a real QUIC listener separately.
+	AdvertiseHTTP3 bool `yaml:"advertise_http3,omitempty" json:"advertise_http3,omitempty"`
 	// SNIHostname is deprecated. Use tls.server_sni instead.
 	SNIHostname string `yaml:"sni_hostname,omitempty" json:"sni_hostname,omitempty"`
 }

@@ -56,6 +56,7 @@ func NewURLTransport(
 	certMgr *CertManager,
 	tlsCfg TLSConfig,
 	connectHost, hostHeader string,
+	advertiseHTTP3 bool,
 ) (*URLTransport, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -90,6 +91,9 @@ func NewURLTransport(
 		WithWebSocketPath(path),
 		WithWebSocketHostHeader(hostHeader),
 		WithWebSocketConnectHost(connectHost),
+	}
+	if advertiseHTTP3 {
+		wsOpts = append(wsOpts, WithWebSocketAdvertiseHTTP3(true))
 	}
 	t.wsTransport = NewWebSocketTransport(name+"-ws", wsScheme, dialer, listenAddrs, certMgr, tlsCfg, wsOpts...)
 

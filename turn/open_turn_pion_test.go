@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -12,6 +13,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -417,6 +419,59 @@ func TestBuildPionServerTLSAndDTLSRejectMissingClientCert(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestHTTPSListenerAdvertisesHTTP3(t *testing.T) {
+	ca := newTurnTestCA(t)
+	serverCert, serverKey := ca.issueLeaf(t, "turn-h3", []net.IP{net.ParseIP("127.0.0.1")}, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth})
+
+	server := newTestTURNServer(t, Config{
+		Realm: "example.org",
+		Listeners: []TURNListenerConfig{{
+			Type:           "https",
+			Listen:         "127.0.0.1:0",
+			Path:           "/turn",
+			AdvertiseHTTP3: true,
+			CertFile:       serverCert,
+			KeyFile:        serverKey,
+		}},
+		Users: []UserConfig{{
+			Username: "alice",
+			Password: "alice-pass",
+		}},
+	})
+
+	addr := server.listenerAddrByType("https")
+	if addr == nil {
+		t.Fatal("https listener not found")
+	}
+	conn, err := tls.Dial("tcp", addr.String(), &tls.Config{
+		InsecureSkipVerify: true,
+		ServerName:         "turn-h3",
+	})
+	if err != nil {
+		t.Fatalf("tls dial: %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	const key = "dGhlIHNhbXBsZSBub25jZQ=="
+	if _, err := fmt.Fprintf(conn, "GET /turn HTTP/1.1\r\nHost: turn-h3\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Protocol: turn\r\n\r\n", key); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodGet})
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+
+	wantAltSvc := fmt.Sprintf(`h3=":%d"; ma=86400`, addr.(*net.TCPAddr).Port)
+	if got := resp.Header.Get("Alt-Svc"); got != wantAltSvc {
+		t.Fatalf("unexpected Alt-Svc header %q, want %q", got, wantAltSvc)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("unexpected status %d", resp.StatusCode)
+	}
 }
 
 func TestAllowPeerRespectsSourceNetworks(t *testing.T) {

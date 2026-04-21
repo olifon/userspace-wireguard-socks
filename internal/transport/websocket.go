@@ -54,6 +54,8 @@ type WebSocketTransport struct {
 	hostHeader string
 	// upgradeMode selects the client-side HTTP upgrade protocol.
 	upgradeMode HTTPUpgradeMode
+	// advertiseHTTP3 adds Alt-Svc: h3 on HTTPS listener responses.
+	advertiseHTTP3 bool
 }
 
 type WebSocketOption func(*WebSocketTransport)
@@ -93,6 +95,12 @@ func WithWebSocketUpgradeMode(mode HTTPUpgradeMode) WebSocketOption {
 		default:
 			t.upgradeMode = HTTPUpgradeModeWebSocket
 		}
+	}
+}
+
+func WithWebSocketAdvertiseHTTP3(advertise bool) WebSocketOption {
+	return func(t *WebSocketTransport) {
+		t.advertiseHTTP3 = advertise
 	}
 }
 
@@ -192,10 +200,6 @@ func (t *WebSocketTransport) Listen(_ context.Context, port int) (Listener, erro
 		addrs = []string{"0.0.0.0"}
 	}
 
-	acceptCh := make(chan httpUpgradeAcceptResult, 64)
-	mux := http.NewServeMux()
-	mux.HandleFunc(t.path, makeHTTPUpgradeHandler(acceptCh))
-
 	var listeners []net.Listener
 	chosen := port
 	for _, addr := range addrs {
@@ -224,6 +228,15 @@ func (t *WebSocketTransport) Listen(_ context.Context, port int) (Listener, erro
 			chosen = ln.Addr().(*net.TCPAddr).Port
 		}
 		listeners = append(listeners, ln)
+	}
+	acceptCh := make(chan httpUpgradeAcceptResult, 64)
+	mux := http.NewServeMux()
+	altSvc := ""
+	if t.useTLS && t.advertiseHTTP3 && chosen > 0 {
+		altSvc = formatHTTP3AltSvc(chosen)
+	}
+	mux.HandleFunc(t.path, makeHTTPUpgradeHandler(acceptCh, altSvc))
+	for _, ln := range listeners {
 		srv := &http.Server{
 			Handler:           mux,
 			ReadHeaderTimeout: 10 * time.Second,
@@ -482,8 +495,11 @@ func upgradeProxyGuardClient(ctx context.Context, conn net.Conn, target, scheme,
 // makeHTTPUpgradeHandler returns an http.HandlerFunc that upgrades inbound
 // HTTP requests to either WebSocket or ProxyGuard UoTLV/1 and feeds the
 // resulting sessions into acceptCh.
-func makeHTTPUpgradeHandler(acceptCh chan httpUpgradeAcceptResult) http.HandlerFunc {
+func makeHTTPUpgradeHandler(acceptCh chan httpUpgradeAcceptResult, altSvc string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if altSvc != "" {
+			w.Header().Set("Alt-Svc", altSvc)
+		}
 		if r.Method != http.MethodGet {
 			http.Error(w, "GET required", http.StatusMethodNotAllowed)
 			return
@@ -506,11 +522,11 @@ func makeHTTPUpgradeHandler(acceptCh chan httpUpgradeAcceptResult) http.HandlerF
 		case strings.EqualFold(upgrade, "websocket"):
 			key := strings.TrimSpace(r.Header.Get("Sec-WebSocket-Key"))
 			if key == "" {
-				_, _ = io.WriteString(conn, "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nmissing Sec-WebSocket-Key")
+				_, _ = io.WriteString(conn, httpResponseWithHeaders(http.StatusBadRequest, altSvc, "Content-Type: text/plain\r\nConnection: close\r\n", "missing Sec-WebSocket-Key"))
 				_ = conn.Close()
 				return
 			}
-			_, _ = fmt.Fprintf(conn, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", websocketAcceptKey(key))
+			_, _ = fmt.Fprintf(conn, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n%s\r\n", websocketAcceptKey(key), altSvcHeaderLine(altSvc))
 			ws := &wsConn{conn: conn, remote: conn.RemoteAddr().String(), clientSide: false}
 			select {
 			case acceptCh <- httpUpgradeAcceptResult{sess: &wsSession{conn: ws, remote: ws.remote}}:
@@ -518,7 +534,7 @@ func makeHTTPUpgradeHandler(acceptCh chan httpUpgradeAcceptResult) http.HandlerF
 				_ = conn.Close()
 			}
 		case strings.EqualFold(upgrade, "UoTLV/1"):
-			_, _ = io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: UoTLV/1\r\n\r\n")
+			_, _ = io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: UoTLV/1\r\n"+altSvcHeaderLine(altSvc)+"\r\n")
 			sess := newStreamSession(conn, conn.RemoteAddr().String(), tcpIdleTimeout)
 			select {
 			case acceptCh <- httpUpgradeAcceptResult{sess: sess}:
@@ -526,10 +542,25 @@ func makeHTTPUpgradeHandler(acceptCh chan httpUpgradeAcceptResult) http.HandlerF
 				_ = conn.Close()
 			}
 		default:
-			_, _ = io.WriteString(conn, "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nwebsocket or UoTLV/1 upgrade required on this path")
+			_, _ = io.WriteString(conn, httpResponseWithHeaders(http.StatusBadRequest, altSvc, "Content-Type: text/plain\r\nConnection: close\r\n", "websocket or UoTLV/1 upgrade required on this path"))
 			_ = conn.Close()
 		}
 	}
+}
+
+func formatHTTP3AltSvc(port int) string {
+	return fmt.Sprintf(`h3=":%d"; ma=86400`, port)
+}
+
+func altSvcHeaderLine(altSvc string) string {
+	if altSvc == "" {
+		return ""
+	}
+	return "Alt-Svc: " + altSvc + "\r\n"
+}
+
+func httpResponseWithHeaders(statusCode int, altSvc, headers, body string) string {
+	return fmt.Sprintf("HTTP/1.1 %d %s\r\n%s%s\r\n%s", statusCode, http.StatusText(statusCode), headers, altSvcHeaderLine(altSvc), body)
 }
 
 type httpUpgradeAcceptResult struct {

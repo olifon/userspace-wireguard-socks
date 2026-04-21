@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha1"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -229,7 +230,7 @@ type turnHTTPServer struct {
 
 func (s *turnHTTPServer) Addr() net.Addr { return s.addr }
 
-func newTurnHTTPServer(base net.Listener, path string) (*turnHTTPServer, error) {
+func newTurnHTTPServer(base net.Listener, path, altSvc string) (*turnHTTPServer, error) {
 	if path == "" {
 		path = "/"
 	}
@@ -244,12 +245,12 @@ func newTurnHTTPServer(base net.Listener, path string) (*turnHTTPServer, error) 
 	closeFn := func() error {
 		var first error
 		if server != nil {
-			if err := server.Close(); err != nil && first == nil {
+			if err := server.Close(); err != nil && !isIgnorableCloseErr(err) && first == nil {
 				first = err
 			}
 		}
 		if base != nil {
-			if err := base.Close(); err != nil && first == nil {
+			if err := base.Close(); err != nil && !isIgnorableCloseErr(err) && first == nil {
 				first = err
 			}
 		}
@@ -258,7 +259,7 @@ func newTurnHTTPServer(base net.Listener, path string) (*turnHTTPServer, error) 
 	packetMux = newTurnMuxPacketConn(base.Addr(), closeFn)
 	streamLn = newTurnStreamListener(base.Addr(), closeFn)
 	mux := http.NewServeMux()
-	mux.HandleFunc(path, makeTURNHTTPUpgradeHandler(packetMux, streamLn))
+	mux.HandleFunc(path, makeTURNHTTPUpgradeHandler(packetMux, streamLn, altSvc))
 	server = &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -271,8 +272,11 @@ func newTurnHTTPServer(base net.Listener, path string) (*turnHTTPServer, error) 
 	}, nil
 }
 
-func makeTURNHTTPUpgradeHandler(packetConn *turnMuxPacketConn, streamLn *turnStreamListener) http.HandlerFunc {
+func makeTURNHTTPUpgradeHandler(packetConn *turnMuxPacketConn, streamLn *turnStreamListener, altSvc string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if altSvc != "" {
+			w.Header().Set("Alt-Svc", altSvc)
+		}
 		if r.Method != http.MethodGet {
 			http.Error(w, "GET required", http.StatusMethodNotAllowed)
 			return
@@ -295,21 +299,21 @@ func makeTURNHTTPUpgradeHandler(packetConn *turnMuxPacketConn, streamLn *turnStr
 		case strings.EqualFold(upgrade, "websocket"):
 			key := strings.TrimSpace(r.Header.Get("Sec-WebSocket-Key"))
 			if key == "" {
-				_, _ = io.WriteString(conn, "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nmissing Sec-WebSocket-Key")
+				_, _ = io.WriteString(conn, httpResponseWithHeaders(http.StatusBadRequest, altSvc, "Content-Type: text/plain\r\nConnection: close\r\n", "missing Sec-WebSocket-Key"))
 				_ = conn.Close()
 				return
 			}
 			if proto := strings.TrimSpace(r.Header.Get("Sec-WebSocket-Protocol")); proto != "" && !headerTokenMatches(proto, turnWebSocketSubprotocol) {
-				_, _ = io.WriteString(conn, "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nSec-WebSocket-Protocol must include turn")
+				_, _ = io.WriteString(conn, httpResponseWithHeaders(http.StatusBadRequest, altSvc, "Content-Type: text/plain\r\nConnection: close\r\n", "Sec-WebSocket-Protocol must include turn"))
 				_ = conn.Close()
 				return
 			}
-			_, _ = fmt.Fprintf(conn, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\nSec-WebSocket-Protocol: %s\r\n\r\n", websocketAcceptKey(key), turnWebSocketSubprotocol)
+			_, _ = fmt.Fprintf(conn, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\nSec-WebSocket-Protocol: %s\r\n%s\r\n", websocketAcceptKey(key), turnWebSocketSubprotocol, altSvcHeaderLine(altSvc))
 			ws := &wsConn{conn: conn, remote: conn.RemoteAddr().String(), clientSide: false}
 			packetConn.addPeer(conn.RemoteAddr(), ws.WriteFrame, conn.Close)
 			go pumpTURNWebSocketFrames(packetConn, conn.RemoteAddr(), ws)
 		case strings.EqualFold(upgrade, "TURN"):
-			_, _ = io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: TURN\r\nSec-TURN-Transport: tcp\r\n\r\n")
+			_, _ = io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: TURN\r\nSec-TURN-Transport: tcp\r\n"+altSvcHeaderLine(altSvc)+"\r\n")
 			select {
 			case <-streamLn.closed:
 				_ = conn.Close()
@@ -318,7 +322,7 @@ func makeTURNHTTPUpgradeHandler(packetConn *turnMuxPacketConn, streamLn *turnStr
 				_ = conn.Close()
 			}
 		default:
-			_, _ = io.WriteString(conn, "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nwebsocket or TURN upgrade required on this path")
+			_, _ = io.WriteString(conn, httpResponseWithHeaders(http.StatusBadRequest, altSvc, "Content-Type: text/plain\r\nConnection: close\r\n", "websocket or TURN upgrade required on this path"))
 			_ = conn.Close()
 		}
 	}
@@ -597,6 +601,25 @@ func headerTokenMatches(raw, want string) bool {
 		}
 	}
 	return false
+}
+
+func formatHTTP3AltSvc(port int) string {
+	return fmt.Sprintf(`h3=":%d"; ma=86400`, port)
+}
+
+func altSvcHeaderLine(altSvc string) string {
+	if altSvc == "" {
+		return ""
+	}
+	return "Alt-Svc: " + altSvc + "\r\n"
+}
+
+func httpResponseWithHeaders(statusCode int, altSvc, headers, body string) string {
+	return fmt.Sprintf("HTTP/1.1 %d %s\r\n%s%s\r\n%s", statusCode, http.StatusText(statusCode), headers, altSvcHeaderLine(altSvc), body)
+}
+
+func isIgnorableCloseErr(err error) bool {
+	return errors.Is(err, net.ErrClosed) || strings.Contains(err.Error(), "use of closed network connection")
 }
 
 type turnStringAddr string

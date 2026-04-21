@@ -84,6 +84,7 @@ type TURNListenerConfig struct {
 	Type           string `yaml:"type"`
 	Listen         string `yaml:"listen"`
 	Path           string `yaml:"path,omitempty"`
+	AdvertiseHTTP3 bool   `yaml:"advertise_http3,omitempty"`
 	CertFile       string `yaml:"cert_file,omitempty"`
 	KeyFile        string `yaml:"key_file,omitempty"`
 	VerifyPeer     bool   `yaml:"verify_peer,omitempty"`
@@ -1108,7 +1109,7 @@ func buildPionServer(cfg Config) (*openRelayPion, error) {
 				cleanup()
 				return nil, err
 			}
-			httpServer, err := newTurnHTTPServer(rawListener, listener.Path)
+			httpServer, err := newTurnHTTPServer(rawListener, listener.Path, "")
 			if err != nil {
 				cleanup()
 				return nil, err
@@ -1141,7 +1142,13 @@ func buildPionServer(cfg Config) (*openRelayPion, error) {
 				cleanup()
 				return nil, err
 			}
-			httpServer, err := newTurnHTTPServer(tls.NewListener(rawListener, serverTLS), listener.Path)
+			altSvc := ""
+			if listener.AdvertiseHTTP3 {
+				if tcpAddr, ok := rawListener.Addr().(*net.TCPAddr); ok && tcpAddr.Port > 0 {
+					altSvc = formatHTTP3AltSvc(tcpAddr.Port)
+				}
+			}
+			httpServer, err := newTurnHTTPServer(tls.NewListener(rawListener, serverTLS), listener.Path, altSvc)
 			if err != nil {
 				cleanup()
 				return nil, err
