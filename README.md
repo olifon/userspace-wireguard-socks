@@ -1,192 +1,93 @@
 # Userspace WireGuard Gateway
 
-WireGuard networking without root, without kernel modules, and without touching the host network stack.
+WireGuard without root, without kernel modules, and without changing the host routing table.
 
-`uwgsocks` is a rootless WireGuard data plane: userspace WireGuard, userspace TCP/IP, pluggable outer transports, proxy entrypoints, relay logic, and a raw socket API in a single binary. It runs anywhere: containers, CI pipelines, Android Termux, Windows, macOS, and locked-down hosts where kernel WireGuard or `/dev/net/tun` are unavailable.
+`uwgsocks` is a rootless userspace WireGuard runtime. It can run as a client,
+server, relay, or peer-sync hub, and applications can use it through SOCKS5,
+HTTP, forwards, a raw socket API, Linux wrapper interception, or host TUN.
 
-## Why this exists
-
-Standard WireGuard requires root and a kernel TUN interface. That rules it out for containers, unprivileged CI jobs, and any system where you cannot change the routing table. It also uses plain UDP, which is easy to block or fingerprint in restrictive networks.
-
-`uwgsocks` removes both constraints — and uniquely, it works as a **server** too. You can host a WireGuard exit node, relay hub, or lightweight mesh coordinator on any machine, under any account, with no installation: a Mac mini, a Termux session, a Windows desktop, a container, or an IoT device.
-
-## Where it fits
-
-If you are comparing `uwgsocks` with tools such as `wireproxy`, Tailscale, or
-traditional WireGuard server wrappers, the overlap is real but not identical:
-
-- like `wireproxy`, `uwgsocks` can act as a rootless userspace WireGuard
-  client for proxy-aware applications
-- like a VPN/control-plane stack, it can also run as a server, relay, or
-  peer-sync hub
-- unlike a kernel-VPN-only setup, it can terminate traffic through SOCKS5,
-  HTTP, forwards, a raw socket API, wrapper interception, or host TUN mode
-
-The intended outcome is not “replace every other tool,” but to give users a
-single userspace WireGuard runtime that can cover client, server, relay, and
-restricted-network use cases without root.
-
-## Looking for a VPN server with a web UI?
-
-See [simple-wireguard-server](https://github.com/reindertpelsma/simple-wireguard-server) — a zero-install WireGuard control plane built on top of `uwgsocks`. It adds a dashboard, user management, OIDC login, protected service publishing, transport-aware client configs, and optional peer syncing / P2P discovery.
+If you are comparing it with tools like `wireproxy`, Tailscale, or a standard
+WireGuard server wrapper, the overlap is real:
+- like `wireproxy`, it can be a rootless userspace WireGuard client
+- like a control-plane stack, it can also run as a server or relay
+- unlike a kernel-only setup, it can expose multiple userspace entry paths and
+  carry WireGuard over TCP/TLS/HTTP(S)/QUIC/DTLS/TURN when plain UDP is awkward
 
 ## Quick Start
 
 ```bash
 bash compile.sh
 
-# Start a rootless WireGuard client.
+# Rootless client with SOCKS5
 ./uwgsocks --wg-config client.conf --socks5 127.0.0.1:1080
-
-# Use a proxy-aware app through the tunnel.
 curl --proxy socks5://127.0.0.1:1080 https://example.com
 
-# Or transparently route any Linux app — no proxy support required.
+# Linux transparent app wrapping
 ./uwgsocks --config examples/socksify.yaml
 ./uwgwrapper -- curl https://example.com
 
-# Generate keys or a starter config pair without wireguard-tools.
+# Generate keys/config helpers without wireguard-tools
 ./uwgsocks genkey
-./uwgsocks pubkey < privatekey.txt
-./uwgsocks genpair --server-address 10.0.0.1/32 --client-address 10.0.0.2/32 --server-endpoint vpn.example.com:51820
+./uwgsocks genpair --server-address 10.0.0.1/32 --client-address 10.0.0.2/32
 ```
 
-## What it covers
+## Main Binaries
 
-- Rootless WireGuard client and server mode
-- SOCKS5, HTTP proxy, local forwards, reverse forwards, and relay forwarding
-- Linux transparent app wrapping via `uwgwrapper` and fdproxy
-- Raw socket API for TCP, UDP, ICMP ping, listener sockets, and DNS frames
-- Outer transports for difficult networks: UDP, TCP, TLS, HTTP(S), QUIC, DTLS, and TURN
-- Optional mesh control for peer syncing and direct peer discovery on top of standard WireGuard keys
-
-## How apps enter the tunnel
-
-| Method | When to use |
+| Binary | Purpose |
 |---|---|
-| SOCKS5 / HTTP proxy | App has built-in proxy support |
-| Port forwards | Fixed ports you want mapped locally |
-| `uwgwrapper` (Linux) | App has no proxy support — intercepts socket calls via LD_PRELOAD, falls back to ptrace for static Go/Rust binaries |
-| Raw socket API | Embedding `uwgsocks` as a Go library |
+| `uwgsocks` | Full userspace WireGuard runtime: proxies, relay, API, DNS, mesh control, transports |
+| `uwgsocks-lite` | Reduced-feature build for minimal deployments |
+| `uwgwrapper` | Linux-only transparent interception for apps without SOCKS5/HTTP support |
+| `turn` | Standalone TURN relay with HTTP/HTTPS/QUIC carrier support |
 
-## Surviving restrictive firewalls
+## Install
 
-Standard WireGuard UDP is easy to fingerprint and block. `uwgsocks` can carry WireGuard over:
-
-`udp` · `tcp` · `tls` · `https` (WebSocket) · `quic` (WebTransport) · `dtls` · `turn`
-
-A single `#!TCP=required` comment in your wg-quick config is enough to switch a peer to TCP transport — no YAML needed. The same directive parser also supports transport URLs and mesh control hints such as `#!URL=...` and `#!Control=...`.
-
-## Binaries
-
-- **`uwgsocks`** — WireGuard engine, SOCKS5/HTTP proxy, port forwards, ACL engine, DNS, relay, and runtime API. Runs on Linux, macOS, Windows, FreeBSD, and OpenBSD.
-- **`uwgwrapper`** — Linux-only launcher that transparently routes any application through `uwgsocks`. Uses LD_PRELOAD for the fast path and ptrace/seccomp for static binaries.
-- **`turn/`** — standalone TURN relay for relay-friendly UDP paths, CGNAT traversal, and reverse-proxy-friendly HTTP/HTTPS/QUIC carriers.
-
-### Which binary do I need?
-
-| Binary | When to use |
-|---|---|
-| `uwgsocks` | Full-featured userspace WireGuard client/server, transports, mesh control, shaping, relay, proxies, raw socket API |
-| `uwgsocks-lite` | Reduced-feature build for minimal deployments that only need the core UDP runtime and main proxy/API path |
-| `uwgwrapper` | Linux-only transparent interception for applications that cannot use SOCKS5/HTTP directly |
-| `turn` | Standalone TURN relay deployment, including HTTP/HTTPS/QUIC carrier modes |
-
-## Build
-
-```bash
-bash compile.sh   # builds uwgsocks everywhere; builds uwgwrapper on Linux amd64/arm64
-go test ./...
-```
-
-## Install Script
-
-For Unix-like hosts, the repo also ships a release-driven installer:
+Unix-like hosts:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/reindertpelsma/userspace-wireguard-socks/main/install.sh | sh -s -- uwgsocks
-curl -fsSL https://raw.githubusercontent.com/reindertpelsma/userspace-wireguard-socks/main/install.sh | sh -s -- turn
-curl -fsSL https://raw.githubusercontent.com/reindertpelsma/userspace-wireguard-socks/main/install.sh | sh -s -- uwgwrapper
 ```
 
-It fetches the latest tagged GitHub release for the current OS/arch and installs
-the binary into `/usr/local/bin` by default. Set `PREFIX=...` or `VERSION=...`
-to override the destination or release tag.
-
-Windows also ships `install.bat` / `install.ps1`:
+Windows:
 
 ```powershell
 curl.exe -fsSLo install.bat https://raw.githubusercontent.com/reindertpelsma/userspace-wireguard-socks/main/install.bat
-curl.exe -fsSLo install.ps1 https://raw.githubusercontent.com/reindertpelsma/userspace-wireguard-socks/main/install.ps1
 install.bat uwgsocks
 ```
 
-## Containers
-
-Release tags also publish Linux container images to GHCR:
-
+Release tags also publish container images:
 - `ghcr.io/reindertpelsma/uwgsocks:<tag>`
 - `ghcr.io/reindertpelsma/uwgsocks-turn:<tag>`
 
-Mount a config file:
-
-```bash
-docker run --rm \
-  -p 51820:51820/udp \
-  -p 1080:1080 \
-  -p 8118:8118 \
-  -v "$PWD/uwgsocks.yaml:/config/uwgsocks.yaml:ro" \
-  ghcr.io/reindertpelsma/uwgsocks:v0.1.0-beta.1
-```
-
-Or inject config through `UWG_CONFIG_INLINE` / `UWG_CONFIG_B64`.
-
-TURN example:
-
-```bash
-docker run --rm \
-  -p 3478:3478/tcp \
-  -p 3478:3478/udp \
-  -v "$PWD/turn.yaml:/config/turn.yaml:ro" \
-  ghcr.io/reindertpelsma/uwgsocks-turn:v0.1.0-beta.1
-```
-
-Requires Go. Building `uwgwrapper` additionally requires gcc on Linux. See [docs/compatibility.md](docs/compatibility.md) for supported platforms.
-
-For Windows host-TUN mode, ship the official signed `wintun.dll` next to
-`uwgsocks.exe` in the release zip, or install it into `C:\\Windows\\System32`.
-
-Tagged releases also publish the standalone `turn` server for Linux, macOS,
-Windows, FreeBSD, and OpenBSD. Main `uwgsocks` Linux release assets include
-`amd64`, `arm64`, `riscv64`, `mips`, and `mipsle`; macOS and Windows include
-`amd64` and `arm64`; BSD releases include `amd64` and `arm64`.
-SOCKS5/HTTP, forwards, relay, and the raw socket API do not need `wintun.dll`;
-only host-TUN mode does.
-
-## Support summary
+## Platform Status
 
 - Supported and repeatedly tested:
   - `uwgsocks`: Linux, macOS, Windows, FreeBSD
-  - `uwgwrapper`: Linux amd64/arm64 (glibc and musl), Android-like Linux environments
+  - `uwgwrapper`: Linux amd64/arm64 on glibc and musl
 - Working but still conservative to advertise:
   - `uwgsocks` on OpenBSD
-- Experimental build targets:
+- Experimental targets:
   - `uwgsocks` on `linux/riscv64`, `linux/mips`, `linux/mipsle`
 - Not yet claimed as supported:
   - `linux/386`, `windows/386`
 
+For Windows host-TUN mode, ship the official signed `wintun.dll` beside
+`uwgsocks.exe` or install it into `C:\Windows\System32`.
+
 ## Documentation
 
-- [Configuration reference](docs/configuration.md)
+- [Configuration guide](docs/configuration.md)
 - [Complete config map](docs/config-reference.md)
-- [Host TUN how-to](docs/howto/host-tun.md)
-- [Mesh control / peer sync how-to](docs/howto/mesh-control.md)
 - [Transport modes](docs/transport-modes.md)
+- [Host TUN](docs/howto/host-tun.md)
+- [Mesh control / peer sync](docs/howto/mesh-control.md)
 - [Proxy routing order](docs/proxy-routing.md)
-- [Testing and security model](docs/testing.md)
 - [Raw socket API](docs/socket-protocol.md)
+- [Testing and compatibility](docs/testing.md)
 - [TURN relay](turn/README.md)
-- [How-to guides](docs/howto/README.md)
+
+Looking for a web UI and multi-user control plane? See
+[simple-wireguard-server](https://github.com/reindertpelsma/simple-wireguard-server).
 
 ## License
 
