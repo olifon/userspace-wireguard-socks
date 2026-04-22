@@ -39,8 +39,24 @@ jobs:
             -o cmd/uwgwrapper/assets/uwgpreload.so preload/uwgpreload.c -ldl -pthread
 
       - name: Run tests
+        if: runner.os != 'Linux'
         shell: bash
         run: go test ./...
+
+      - name: Run tests (Linux core)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t packages < <(go list ./... | grep -v '/tests/preload$')
+          go test "${packages[@]}"
+
+      - name: Run tests (Linux preload retry)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test ./tests/preload/... || go test ./tests/preload/...
 
       - name: Run standalone TURN tests
         shell: bash

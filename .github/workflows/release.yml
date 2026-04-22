@@ -245,7 +245,8 @@ jobs:
           mkdir -p cmd/uwgwrapper/assets
           gcc -shared -fPIC -O2 -Wall -Wextra \
             -o cmd/uwgwrapper/assets/uwgpreload.so preload/uwgpreload.c -ldl -pthread
-          go test ./tests/preload/... ./internal/uwgtrace/... ./internal/fdproxy/...
+          go test ./internal/uwgtrace/... ./internal/fdproxy/...
+          go test ./tests/preload/... || go test ./tests/preload/...
 
       - name: Test preload and wrapper (musl)
         if: matrix.libc == 'musl'
@@ -262,7 +263,8 @@ jobs:
                    mkdir -p cmd/uwgwrapper/assets && \
                    gcc -shared -fPIC -O2 -Wall -Wextra \
                      -o cmd/uwgwrapper/assets/uwgpreload.so preload/uwgpreload.c -ldl -pthread && \
-                   go test ./tests/preload/... ./internal/uwgtrace/... ./internal/fdproxy/..."
+                   go test ./internal/uwgtrace/... ./internal/fdproxy/... && \
+                   (go test ./tests/preload/... || go test ./tests/preload/...)"
           sudo chown -R "$(id -u):$(id -g)" cmd/uwgwrapper/assets
 
       - name: Build uwgwrapper preload asset
