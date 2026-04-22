@@ -36,7 +36,7 @@ Implemented and tested:
 - inbound TCP accept notification from server to client
 - DNS frame with UDP-first, TCP-fallback system DNS exchange
 - malformed-frame rejection
-- a Linux `LD_PRELOAD` proof path using a managed Unix socket fd for connected
+- a Linux `LD_PRELOAD` wrapper path using a managed Unix socket fd for connected
   TCP, connected UDP, unconnected UDP `sendto`/`recvfrom`, TCP listener
   `accept`, duplicated fds, fork inheritance, and selected exec inheritance
 
@@ -48,10 +48,10 @@ Still intentionally limited:
   Connected ICMP sockets follow the same outbound ACL and `fallback_direct`
   routing policy as TCP/UDP, except direct fallback depends on the host kernel
   supporting unprivileged ping sockets.
-- the preload/ptrace wrapper is still a proof layer, not a production libc
-  shim: `sendmsg`/`recvmsg`/`sendmmsg`/`recvmmsg` are covered for TCP and UDP,
-  but full `select`/`epoll` shimming and some uncommon socket options are not
-  implemented
+- the preload/ptrace wrapper is a compatibility layer, not a general-purpose
+  replacement libc: `sendmsg`/`recvmsg`/`sendmmsg`/`recvmmsg` are covered for
+  TCP and UDP, but full `select`/`epoll` shimming and some uncommon socket
+  options are not implemented
 - the managed-fd optimization is local-only; remote HTTP `/uwg/socket` users
   need a local fd bridge daemon such as `uwgfdproxy`
 
@@ -238,7 +238,7 @@ interface alongside loopback.
 
 ## Managed Unix FD Bridge
 
-The local preload proof uses a Unix socket manager rather than trying to make a
+The local preload wrapper uses a Unix socket manager rather than trying to make a
 kernel TUN device or a true AF_INET socket. For destination-fixed sockets, the
 preload wrapper can connect to the manager and replace the application's dummy
 socket fd with that Unix manager connection:
@@ -293,7 +293,7 @@ after exec by identifying the manager Unix peer dynamically and reading the
 after exec, so arbitrary UDP exec inheritance is not complete yet.
 
 TCP listeners and unconnected UDP bind sockets need wrapper handling because
-there is no single fixed remote endpoint. The current proof layer handles the
+there is no single fixed remote endpoint. The current wrapper layer handles the
 core calls:
 
 - TCP listener sockets never carry `read(2)`/`write(2)` data directly; the

@@ -46,7 +46,7 @@ platforms (no `LD_PRELOAD` / ptrace support outside Linux).
 |---|---|
 | macOS arm64 | CI on every push (GitHub Actions `macos-latest`); soak and race-detector tests run on Mac Mini M1 |
 | FreeBSD amd64 | Manually tested on FreeBSD 15.0 droplet; core `go test ./...` and real host-TUN smoke test pass |
-| OpenBSD amd64 | Manually tested on OpenBSD 7.8 droplet; core `go test ./...` and real host-TUN smoke test pass |
+| OpenBSD amd64 | Manually tested on OpenBSD 7.8 droplet; core `go test ./...` and real host-TUN smoke test pass; treat as experimental for now |
 | Windows amd64 | CI on every push (GitHub Actions `windows-latest`) |
 | Windows arm64 | Manually tested (arm64 VM on Raspberry Pi) |
 | Linux arm64 Termux (Android) | Manually tested |
@@ -80,10 +80,19 @@ in releases. Runtime test coverage is limited to QEMU emulation.
 | Linux riscv64 | QEMU-tested: all core tests pass; one IPv6 ICMP test skipped due to QEMU network limitation |
 | Linux mips (big-endian) | Build-only; no container images available for QEMU runtime testing |
 | Linux mipsle (little-endian) | Build-only; targeted at EdgeRouter X and similar devices |
+| Linux 386 | Lite build cross-compiles cleanly; runtime support not yet validated on a trustworthy real 32-bit host |
+| Windows 386 | Lite build cross-compiles cleanly; runtime support not yet validated on a real 32-bit host |
 
 `uwgwrapper` is not built for exotic architectures. The `LD_PRELOAD` shim and
 ptrace/seccomp filter tables are architecture-specific and only maintained for
 amd64 and arm64.
+
+### Wrapper support status
+
+`uwgwrapper` should be treated as Linux-only supported functionality, not as an
+experimental sidecar. It has repeated preload, ptrace, and fdproxy coverage in
+the automated suite on supported Linux targets. What remains platform-limited
+is not maturity on Linux, but portability outside Linux.
 
 ## Known limitations by platform
 

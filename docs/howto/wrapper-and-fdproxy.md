@@ -77,7 +77,7 @@ escaping the tunnel.
 - the wrapper does not work across user boundaries
 - loopback traffic is intentionally not tunneled
 - `SO_REUSEPORT` is local to one fdproxy instance and is not coordinated across different wrapper processes
-- support is still experimental compared with direct SOCKS or HTTP
+- direct SOCKS or HTTP is still simpler when an application already supports it
 
 ## Explicit fdproxy Daemon Mode
 
