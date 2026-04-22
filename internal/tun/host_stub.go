@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Reindert Pelsma
 // SPDX-License-Identifier: ISC
 
-//go:build !linux && !darwin && !windows && !freebsd
+//go:build !linux && !darwin && !windows && !freebsd && !openbsd
 
 package tun
 

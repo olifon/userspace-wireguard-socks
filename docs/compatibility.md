@@ -46,6 +46,7 @@ platforms (no `LD_PRELOAD` / ptrace support outside Linux).
 |---|---|
 | macOS arm64 | CI on every push (GitHub Actions `macos-latest`); soak and race-detector tests run on Mac Mini M1 |
 | FreeBSD amd64 | Manually tested on FreeBSD 15.0 droplet; core `go test ./...` and real host-TUN smoke test pass |
+| OpenBSD amd64 | Manually tested on OpenBSD 7.8 droplet; core `go test ./...` and real host-TUN smoke test pass |
 | Windows amd64 | CI on every push (GitHub Actions `windows-latest`) |
 | Windows arm64 | Manually tested (arm64 VM on Raspberry Pi) |
 | Linux arm64 Termux (Android) | Manually tested |
@@ -60,8 +61,12 @@ The standalone `turn/` server is also published as a release artifact.
 | Linux arm64 | CI-tested in `turn/`; release binary shipped |
 | Linux riscv64 | Cross-compiled release binary shipped |
 | Linux mips64 | Cross-compiled release binary shipped |
+| FreeBSD amd64 | Cross-compiled release binary shipped |
+| FreeBSD arm64 | Cross-compiled release binary shipped |
 | macOS amd64 | Cross-compiled release binary shipped |
 | macOS arm64 | CI-tested in `turn/`; release binary shipped |
+| OpenBSD amd64 | Cross-compiled release binary shipped |
+| OpenBSD arm64 | Cross-compiled release binary shipped |
 | Windows amd64 | CI-tested in `turn/`; release binary shipped |
 | Windows arm64 | Cross-compiled release binary shipped |
 
@@ -102,7 +107,7 @@ amd64 and arm64.
 - UDP buffer size warnings from quic-go are cosmetic on macOS; QUIC transport
   functions correctly.
 
-**FreeBSD:**
+**FreeBSD / OpenBSD:**
 - Host TUN support uses the native `tun` interface and can be configured by
   `uwgsocks` itself using `ifconfig` and `route`.
 - Host-TUN DNS server changes are not currently automated; use

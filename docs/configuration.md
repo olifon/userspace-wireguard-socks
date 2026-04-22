@@ -509,7 +509,7 @@ AllowedIPs, outbound proxy, and `fallback_direct` routing as SOCKS5/HTTP and
 the raw socket API.
 
 `tun.configure` applies host interface settings through the local platform:
-Linux uses netlink, macOS uses `ifconfig`/`route`, FreeBSD uses
+Linux uses netlink, macOS uses `ifconfig`/`route`, FreeBSD and OpenBSD use
 `ifconfig`/`route`, and Windows uses the native TUN adapter plus `netsh`
 route/address commands. It sets the MTU, assigns the WireGuard `Address=`
 prefixes, brings the interface up where needed, and installs routes. If
@@ -521,7 +521,8 @@ so a broader route such as `172.16.0.0/12` suppresses a contained route such as
 `dns_servers` optionally configures host DNS servers on the TUN interface when
 the platform backend supports it. Today that is best-effort on Linux
 (`resolvectl` or `systemd-resolve`) and Windows (`netsh`). macOS `utun` and
-FreeBSD `tun` DNS configuration are not currently automated by `uwgsocks`.
+FreeBSD/OpenBSD `tun` DNS configuration are not currently automated by
+`uwgsocks`.
 
 `dns_resolv_conf` is an explicit opt-in override for DNS server updates. When
 set to an absolute path, `uwgsocks` writes `tun.dns_servers` as plain
