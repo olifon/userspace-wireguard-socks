@@ -7,7 +7,6 @@
 /dist/
 /build/
 /tmp/
-/tasks
 # Nested UI repo lives here but is committed separately.
 /uwgsocks-ui/
 *.swp
@@ -22,8 +21,6 @@
 .claude
 
 turn-open-relay.yaml
-
-/tasks
 
 # Local, real VPN configs used during manual testing. The repository examples
 # use demonstration-only keys instead.

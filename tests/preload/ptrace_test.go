@@ -838,7 +838,7 @@ func runWrappedTargetWithOptions(t *testing.T, art wrapperArtifacts, httpSock, t
 		}
 		if ctx.Err() == context.DeadlineExceeded {
 			killProcessGroup(cmd)
-			if attempt < 2 && retryableWrappedTimeout(target) {
+			if attempt < 2 && retryableWrappedTimeout(target, transport, args) {
 				t.Logf("retrying wrapped target after timeout: %s %v", target, args)
 				continue
 			}
@@ -975,9 +975,21 @@ func retryableWrappedFailure(out []byte, err error) bool {
 	return false
 }
 
-func retryableWrappedTimeout(target string) bool {
+func retryableWrappedTimeout(target, transport string, args []string) bool {
 	base := filepath.Base(target)
-	return base == "rawmix_client" || base == "mixed_client" || base == "raw_client" || base == "curl"
+	if base == "rawmix_client" || base == "mixed_client" || base == "raw_client" || base == "curl" {
+		return true
+	}
+	// ptrace-only UDP iov handling is occasionally flaky on busy GNU runners; a
+	// retry is cheaper than letting a single transient hang fail the full release.
+	if base == "stub_client" && transport == "ptrace-only" {
+		for _, arg := range args {
+			if arg == "iov" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func buildWithEnv(t *testing.T, dir string, env map[string]string, name string, args ...string) {

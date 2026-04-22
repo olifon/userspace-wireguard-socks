@@ -3,7 +3,7 @@
 # Requires Docker Desktop (or Docker with binfmt_misc QEMU support installed).
 # On macOS Apple Silicon, linux/arm64 is native; others are emulated via QEMU.
 #
-# Usage: ./scripts/test-exotic-arches.sh [arch...]
+# Usage: ./tests/test-exotic-arches.sh [arch...]
 #   arch: riscv64 | mips | mipsle | arm64 | amd64 | all (default: all)
 #
 # Note: mips/mipsle are big/little-endian MIPS32. riscv64 requires a Go image

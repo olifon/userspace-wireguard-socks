@@ -63,8 +63,8 @@ Important behavioral properties called out in the docs:
 - `internal/uwgtrace/` — ptrace/seccomp tracing support for wrapper modes.
 - `internal/fdproxy/` — managed socket bridge used by wrapper/preload paths.
 - `preload/` — `uwgpreload.c` LD_PRELOAD shim used by `uwgwrapper`.
-- `tasks/` — design notes / implementation plans for larger subsystems.
 - `tests/` — malicious, soak, integration-style coverage.
+- `tests/` also contains helper scripts for manual or platform-specific test runs.
 - `turn/` — standalone TURN relay implementation and examples.
 
 ## Feature areas

@@ -128,7 +128,7 @@ go vet ./...
 The repository also includes:
 
 - a loopback throughput benchmark in `internal/engine`
-- `./scripts/iperf_loopback.sh`
+- `./tests/iperf_loopback.sh`
 - wrapper tests that exercise preload, ptrace, seccomp, fork, exec, message syscalls, IPv6, ICMP, and bind behavior
 
 See [Testing plan](../testing.md) for the current detailed coverage and

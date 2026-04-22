@@ -29,7 +29,7 @@ Run:
 go test ./...
 go test -race ./internal/config ./internal/engine ./tests/malicious ./tests/preload
 go test ./internal/engine -run '^$' -bench BenchmarkLoopbackSOCKSThroughput -benchtime=3x
-./scripts/iperf_loopback.sh
+./tests/iperf_loopback.sh
 ```
 
 Real host-TUN smoke tests are opt-in and require privileges:
@@ -73,7 +73,7 @@ The main suite covers:
 - Connection table overflow grace and transparent TCP memory budget behavior.
 - Per-peer transparent connection-table isolation and traffic-shaper TCP pacing.
 
-`scripts/iperf_loopback.sh` builds `uwgsocks` when needed, writes temporary
+`tests/iperf_loopback.sh` builds `uwgsocks` when needed, writes temporary
 demo WireGuard configs, starts two binaries, exposes an iperf3 server through a
 server-side reverse-forward and a client-side local TCP/UDP forward, runs TCP
 and UDP iperf3 clients, prints a JSON-derived summary, then cleans up.
