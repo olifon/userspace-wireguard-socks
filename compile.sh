@@ -1,9 +1,9 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
 export GOTOOLCHAIN="${GOTOOLCHAIN:-auto}"
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 cd "${ROOT_DIR}"
 
 if ! command -v go >/dev/null 2>&1; then
@@ -33,7 +33,7 @@ case "${OS}" in
   linux)
     build_uwgsocks
     ARCH="$(uname -m)"
-    if [[ "$ARCH" == "x86_64" || "$ARCH" == "aarch64" ]]; then
+    if [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "aarch64" ]; then
       if command -v gcc >/dev/null 2>&1; then
         build_uwgwrapper_linux
         echo "COMPILE SUCCEEDED. Built uwgsocks and uwgwrapper."

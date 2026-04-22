@@ -39,6 +39,18 @@ jobs:
           - goos: darwin
             goarch: arm64
             artifact_name: uwgsocks-darwin-arm64
+          - goos: freebsd
+            goarch: amd64
+            artifact_name: uwgsocks-freebsd-amd64
+          - goos: freebsd
+            goarch: arm64
+            artifact_name: uwgsocks-freebsd-arm64
+          - goos: openbsd
+            goarch: amd64
+            artifact_name: uwgsocks-openbsd-amd64
+          - goos: openbsd
+            goarch: arm64
+            artifact_name: uwgsocks-openbsd-arm64
           - goos: windows
             goarch: amd64
             artifact_name: uwgsocks-windows-amd64.exe
@@ -102,6 +114,18 @@ jobs:
           - goos: darwin
             goarch: arm64
             artifact_name: uwgsocks-lite-darwin-arm64
+          - goos: freebsd
+            goarch: amd64
+            artifact_name: uwgsocks-lite-freebsd-amd64
+          - goos: freebsd
+            goarch: arm64
+            artifact_name: uwgsocks-lite-freebsd-arm64
+          - goos: openbsd
+            goarch: amd64
+            artifact_name: uwgsocks-lite-openbsd-amd64
+          - goos: openbsd
+            goarch: arm64
+            artifact_name: uwgsocks-lite-openbsd-arm64
           - goos: windows
             goarch: amd64
             artifact_name: uwgsocks-lite-windows-amd64.exe
@@ -162,6 +186,18 @@ jobs:
           - goos: darwin
             goarch: arm64
             artifact_name: turn-darwin-arm64
+          - goos: freebsd
+            goarch: amd64
+            artifact_name: turn-freebsd-amd64
+          - goos: freebsd
+            goarch: arm64
+            artifact_name: turn-freebsd-arm64
+          - goos: openbsd
+            goarch: amd64
+            artifact_name: turn-openbsd-amd64
+          - goos: openbsd
+            goarch: arm64
+            artifact_name: turn-openbsd-arm64
           - goos: windows
             goarch: amd64
             artifact_name: turn-windows-amd64.exe
@@ -243,11 +279,20 @@ jobs:
         if: matrix.libc == 'gnu'
         run: |
           set -euo pipefail
-          mkdir -p cmd/uwgwrapper/assets
-          gcc -shared -fPIC -O2 -Wall -Wextra \
-            -o cmd/uwgwrapper/assets/uwgpreload.so preload/uwgpreload.c -ldl -pthread
-          go test ./internal/uwgtrace/... ./internal/fdproxy/...
-          go test ./tests/preload/... || go test ./tests/preload/...
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            --cap-add SYS_PTRACE \
+            --security-opt seccomp=unconfined \
+            golang:1.25-bullseye \
+            bash -lc "apt-get update >/dev/null && \
+                     apt-get install -y gcc libc6-dev >/dev/null && \
+                     mkdir -p cmd/uwgwrapper/assets && \
+                     gcc -shared -fPIC -O2 -Wall -Wextra \
+                       -o cmd/uwgwrapper/assets/uwgpreload.so preload/uwgpreload.c -ldl -pthread && \
+                     go test ./internal/uwgtrace/... ./internal/fdproxy/... && \
+                     (go test ./tests/preload/... || go test ./tests/preload/...)"
+          sudo chown -R "$(id -u):$(id -g)" cmd/uwgwrapper/assets
 
       - name: Test preload and wrapper (musl)
         if: matrix.libc == 'musl'
@@ -268,7 +313,23 @@ jobs:
                    (go test ./tests/preload/... || go test ./tests/preload/...)"
           sudo chown -R "$(id -u):$(id -g)" cmd/uwgwrapper/assets
 
-      - name: Build uwgwrapper preload asset
+      - name: Build uwgwrapper preload asset (gnu baseline)
+        if: matrix.libc == 'gnu'
+        run: |
+          set -euo pipefail
+          mkdir -p cmd/uwgwrapper/assets dist
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            golang:1.25-bullseye \
+            bash -lc "apt-get update >/dev/null && \
+                     apt-get install -y gcc libc6-dev >/dev/null && \
+                     gcc -shared -fPIC -O2 -Wall -Wextra \
+                       -o cmd/uwgwrapper/assets/uwgpreload.so preload/uwgpreload.c -ldl -pthread"
+          sudo chown -R "$(id -u):$(id -g)" cmd/uwgwrapper/assets
+
+      - name: Build uwgwrapper preload asset (musl)
+        if: matrix.libc == 'musl'
         run: |
           set -euo pipefail
           mkdir -p cmd/uwgwrapper/assets dist

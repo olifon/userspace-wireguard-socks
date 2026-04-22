@@ -23,7 +23,7 @@ os="${TARGET_OS:-$os}"
 arch="${TARGET_ARCH:-$arch}"
 
 case "$os" in
-  linux|darwin|freebsd) ;;
+  linux|darwin|freebsd|openbsd) ;;
   *)
     echo "unsupported OS: $os" >&2
     exit 1

@@ -34,9 +34,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p cmd/uwgwrapper/assets
-          gcc -shared -fPIC -O2 -Wall -Wextra \
-            -o cmd/uwgwrapper/assets/uwgpreload.so preload/uwgpreload.c -ldl -pthread
+          docker run --rm \
+            -v "$PWD:/workspace" \
+            -w /workspace \
+            golang:1.25-bullseye \
+            bash -lc 'apt-get update >/dev/null && apt-get install -y gcc libc6-dev >/dev/null && \
+              mkdir -p cmd/uwgwrapper/assets && \
+              gcc -shared -fPIC -O2 -Wall -Wextra \
+                -o cmd/uwgwrapper/assets/uwgpreload.so preload/uwgpreload.c -ldl -pthread'
+          sudo chown -R "$(id -u):$(id -g)" cmd/uwgwrapper/assets
 
       - name: Run tests
         if: runner.os != 'Linux'
@@ -124,10 +130,49 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p cmd/uwgwrapper/assets
-          gcc -shared -fPIC -O2 -Wall -Wextra \
-            -o cmd/uwgwrapper/assets/uwgpreload.so preload/uwgpreload.c -ldl -pthread
+          docker run --rm \
+            -v "$PWD:/workspace" \
+            -w /workspace \
+            golang:1.25-bullseye \
+            bash -lc 'apt-get update >/dev/null && apt-get install -y gcc libc6-dev >/dev/null && \
+              mkdir -p cmd/uwgwrapper/assets && \
+              gcc -shared -fPIC -O2 -Wall -Wextra \
+                -o cmd/uwgwrapper/assets/uwgpreload.so preload/uwgpreload.c -ldl -pthread'
+          sudo chown -R "$(id -u):$(id -g)" cmd/uwgwrapper/assets
 
       - name: Run lite tests
         shell: bash
         run: go test -tags lite ./...
+
+  cross-build:
+    name: cross-build ${{ matrix.goos }} ${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: freebsd
+            goarch: amd64
+          - goos: freebsd
+            goarch: arm64
+          - goos: openbsd
+            goarch: amd64
+          - goos: openbsd
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Cross-build uwgsocks
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          go build -trimpath ./cmd/uwgsocks
+          go build -tags lite -trimpath ./cmd/uwgsocks
+          cd turn && go build -trimpath .

@@ -88,6 +88,14 @@ It fetches the latest tagged GitHub release for the current OS/arch and installs
 the binary into `/usr/local/bin` by default. Set `PREFIX=...` or `VERSION=...`
 to override the destination or release tag.
 
+Windows also ships `install.bat` / `install.ps1`:
+
+```powershell
+curl.exe -fsSLo install.bat https://raw.githubusercontent.com/reindertpelsma/userspace-wireguard-socks/main/install.bat
+curl.exe -fsSLo install.ps1 https://raw.githubusercontent.com/reindertpelsma/userspace-wireguard-socks/main/install.ps1
+install.bat uwgsocks
+```
+
 ## Containers
 
 Release tags also publish Linux container images to GHCR:
