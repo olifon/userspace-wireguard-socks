@@ -273,27 +273,15 @@ jobs:
           version: 0.14.1
 
       # Run preload and wrapper tests before building the release artifact.
-      # gnu: test natively using the system gcc (glibc), so LD_PRELOAD works correctly.
-      # musl: test inside a Docker golang:alpine container (musl libc) for the same reason.
+      # gnu: run tests on the host runner, but build the shipped preload asset later in
+      #      a bullseye container for an older glibc baseline.
+      # musl: test inside a Docker golang:alpine container so LD_PRELOAD resolves against musl.
       - name: Test preload and wrapper (gnu)
         if: matrix.libc == 'gnu'
         run: |
           set -euo pipefail
-          docker run --rm \
-            -v "${{ github.workspace }}:/workspace" \
-            -w /workspace \
-            --cap-add SYS_PTRACE \
-            --security-opt seccomp=unconfined \
-            golang:1.24-bullseye \
-            bash -lc 'export PATH=/usr/local/go/bin:$PATH GOTOOLCHAIN=auto && \
-                     apt-get update >/dev/null && \
-                     apt-get install -y gcc libc6-dev >/dev/null && \
-                     mkdir -p cmd/uwgwrapper/assets && \
-                     gcc -shared -fPIC -O2 -Wall -Wextra \
-                       -o cmd/uwgwrapper/assets/uwgpreload.so preload/uwgpreload.c -ldl -pthread -lpthread && \
-                     go test ./internal/uwgtrace/... ./internal/fdproxy/... && \
-                     (go test ./tests/preload/... || go test ./tests/preload/...)'
-          sudo chown -R "$(id -u):$(id -g)" cmd/uwgwrapper/assets
+          go test ./internal/uwgtrace/... ./internal/fdproxy/...
+          go test ./tests/preload/... || go test ./tests/preload/...
 
       - name: Test preload and wrapper (musl)
         if: matrix.libc == 'musl'
