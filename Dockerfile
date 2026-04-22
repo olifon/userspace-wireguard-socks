@@ -3,6 +3,7 @@ RUN apk add --no-cache ca-certificates git
 WORKDIR /src
 
 COPY go.mod go.sum ./
+COPY third_party/anet ./third_party/anet
 RUN go mod download
 
 COPY . .

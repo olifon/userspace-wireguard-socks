@@ -2,10 +2,11 @@ FROM golang:1.25-alpine AS builder
 RUN apk add --no-cache ca-certificates git
 WORKDIR /src
 
-COPY go.mod go.sum ./
+COPY turn/go.mod turn/go.sum ./
+COPY third_party/anet /third_party/anet
 RUN go mod download
 
-COPY . .
+COPY turn/. .
 
 RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/turn .
 
@@ -14,7 +15,7 @@ RUN apk add --no-cache ca-certificates
 WORKDIR /app
 
 COPY --from=builder /out/turn /app/turn
-COPY docker-entrypoint.sh /entrypoint.sh
+COPY turn/docker-entrypoint.sh /entrypoint.sh
 
 RUN chmod +x /entrypoint.sh
 
