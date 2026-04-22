@@ -74,6 +74,20 @@ bash compile.sh   # builds uwgsocks everywhere; builds uwgwrapper on Linux amd64
 go test ./...
 ```
 
+## Install Script
+
+For Unix-like hosts, the repo also ships a release-driven installer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/reindertpelsma/userspace-wireguard-socks/main/install.sh | sh -s -- uwgsocks
+curl -fsSL https://raw.githubusercontent.com/reindertpelsma/userspace-wireguard-socks/main/install.sh | sh -s -- turn
+curl -fsSL https://raw.githubusercontent.com/reindertpelsma/userspace-wireguard-socks/main/install.sh | sh -s -- uwgwrapper
+```
+
+It fetches the latest tagged GitHub release for the current OS/arch and installs
+the binary into `/usr/local/bin` by default. Set `PREFIX=...` or `VERSION=...`
+to override the destination or release tag.
+
 ## Containers
 
 Release tags also publish Linux container images to GHCR:
