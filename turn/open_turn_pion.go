@@ -217,6 +217,8 @@ type boundListener struct {
 	Addr net.Addr
 }
 
+const maxPendingAllocations = 64
+
 func loadConfig(path string) (Config, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -647,6 +649,10 @@ func (o *openRelayPion) onAuth(srcAddr, dstAddr net.Addr, protocol, username, re
 		return
 	}
 	o.mu.Lock()
+	if len(o.pendingAllocations) >= maxPendingAllocations {
+		o.mu.Unlock()
+		return
+	}
 	o.pendingAllocations = append(o.pendingAllocations, res)
 	o.mu.Unlock()
 }

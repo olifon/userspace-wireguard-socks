@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"net"
@@ -248,7 +249,7 @@ func startAPIServer(cfg APIConfig, relay *openRelayPion) (*turnAPIServer, error)
 func requireBearerToken(token string, next http.Handler) http.Handler {
 	want := "Bearer " + token
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != want {
+		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte(want)) != 1 {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="turn"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return

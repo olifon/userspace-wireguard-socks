@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -182,5 +183,36 @@ func TestTURNAPIStatusIncludesActiveSession(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected alice session in status: %+v", status.Sessions)
+	}
+}
+
+func TestRequireBearerTokenRejectsWrongLengthAndAcceptsMatch(t *testing.T) {
+	hit := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := requireBearerToken("secret", next)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer sec")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("short token code=%d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if hit {
+		t.Fatal("handler accepted short token")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("matching token code=%d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if !hit {
+		t.Fatal("handler rejected matching token")
 	}
 }

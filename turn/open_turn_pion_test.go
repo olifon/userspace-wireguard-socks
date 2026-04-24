@@ -257,6 +257,23 @@ func TestBuildPionServerMultiListenerAllocations(t *testing.T) {
 	}
 }
 
+func TestOpenRelayPionPendingAllocationCap(t *testing.T) {
+	src := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 12345}
+	res := &relayReservation{Username: "alice", ClientAddr: src.String()}
+	wrapper := &openRelayPion{
+		reservations:       map[string]*relayReservation{},
+		clientReservations: map[string]*relayReservation{},
+	}
+	wrapper.reservations[wrapper.reservationKey("alice", src)] = res
+
+	for i := 0; i < maxPendingAllocations+10; i++ {
+		wrapper.onAuth(src, nil, "udp", "alice", "example.org", "Allocate", true)
+	}
+	if got := len(wrapper.pendingAllocations); got != maxPendingAllocations {
+		t.Fatalf("pending allocations = %d, want %d", got, maxPendingAllocations)
+	}
+}
+
 func TestBuildPionServerTLSAndDTLSVerifyPeer(t *testing.T) {
 	ca := newTurnTestCA(t)
 	serverCert, serverKey := ca.issueLeaf(t, "turn-server", []net.IP{net.ParseIP("127.0.0.1")}, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth})
