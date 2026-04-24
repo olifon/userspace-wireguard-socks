@@ -76,5 +76,6 @@ transports:
 
 ## Validation Note
 
-The config validates locally, but end-to-end QUIC performance should still be
-verified on a real Linux host before treating it as a production baseline.
+The config validates locally, but QUIC is still less battle-tested on the
+gVisor-backed userspace path than plain UDP or HTTPS/WebSocket. Validate it on
+the target Linux host before you make it the default transport for production.

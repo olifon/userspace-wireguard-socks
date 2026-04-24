@@ -15,8 +15,11 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -201,6 +204,126 @@ func TestMeshBearerTokenBindsServerStaticKey(t *testing.T) {
 	}
 	if got := wgtypes.Key(plain).String(); got != clientKey.PublicKey().String() {
 		t.Fatalf("decrypted peer=%q want %q", got, clientKey.PublicKey().String())
+	}
+}
+
+func TestMeshControlFetchChallengeLimitsBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/challenge" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"server_public_key":"`+strings.Repeat("A", meshChallengeBodyLimit*2)+`","challenge_public_key":"AQ==","expires_unix":1}`)
+	}))
+	defer server.Close()
+
+	controlURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &meshControlClient{
+		controlURL: controlURL,
+		httpClient: server.Client(),
+	}
+	if _, err := client.fetchChallenge(context.Background()); err == nil {
+		t.Fatal("expected oversized challenge response to fail")
+	}
+}
+
+func TestApplyMeshDiscoveredPeersCapsDynamicPeers(t *testing.T) {
+	parent := config.Peer{
+		PublicKey:  "parent",
+		AllowedIPs: []string{"10.1.0.0/16"},
+	}
+	eng := &Engine{
+		cfg: config.Config{
+			WireGuard: config.WireGuard{
+				Peers: []config.Peer{parent},
+			},
+		},
+		dynamicPeers: map[string]*dynamicPeer{
+			"other-existing": {
+				ParentPublicKey: "other",
+				Peer: config.Peer{
+					PublicKey:  "other-existing",
+					AllowedIPs: []string{"192.0.2.1/32"},
+				},
+			},
+		},
+	}
+
+	discovered := make([]meshDiscoveredPeer, 0, meshDynamicPeerLimit+32)
+	for i := 0; i < meshDynamicPeerLimit+32; i++ {
+		ip := netip.AddrFrom4([4]byte{10, 1, byte(i >> 8), byte(i)})
+		discovered = append(discovered, meshDiscoveredPeer{
+			PublicKey:  "peer-" + strconv.Itoa(i),
+			AllowedIPs: []string{netip.PrefixFrom(ip, 32).String()},
+		})
+	}
+	if err := eng.applyMeshDiscoveredPeers(parent, discovered); err != nil {
+		t.Fatal(err)
+	}
+	if len(eng.dynamicPeers) != meshDynamicPeerLimit {
+		t.Fatalf("dynamic peer count=%d want %d", len(eng.dynamicPeers), meshDynamicPeerLimit)
+	}
+	if eng.dynamicPeers["other-existing"] == nil {
+		t.Fatal("existing non-parent dynamic peer was evicted")
+	}
+	parentCount := 0
+	for _, dp := range eng.dynamicPeers {
+		if dp != nil && dp.ParentPublicKey == parent.PublicKey {
+			parentCount++
+		}
+	}
+	if parentCount != meshDynamicPeerLimit-1 {
+		t.Fatalf("parent dynamic peer count=%d want %d", parentCount, meshDynamicPeerLimit-1)
+	}
+}
+
+func TestApplyMeshDiscoveredPeersReplacesStalePeersAtCapacity(t *testing.T) {
+	parent := config.Peer{
+		PublicKey:  "parent",
+		AllowedIPs: []string{"10.2.0.0/16"},
+	}
+	eng := &Engine{
+		cfg: config.Config{
+			WireGuard: config.WireGuard{
+				Peers: []config.Peer{parent},
+			},
+		},
+		dynamicPeers: make(map[string]*dynamicPeer, meshDynamicPeerLimit),
+	}
+	for i := 0; i < meshDynamicPeerLimit; i++ {
+		ip := netip.AddrFrom4([4]byte{10, 2, byte(i >> 8), byte(i)})
+		eng.dynamicPeers["old-"+strconv.Itoa(i)] = &dynamicPeer{
+			ParentPublicKey: parent.PublicKey,
+			Peer: config.Peer{
+				PublicKey:  "old-" + strconv.Itoa(i),
+				AllowedIPs: []string{netip.PrefixFrom(ip, 32).String()},
+			},
+		}
+	}
+
+	discovered := make([]meshDiscoveredPeer, 0, meshDynamicPeerLimit)
+	for i := 0; i < meshDynamicPeerLimit; i++ {
+		ip := netip.AddrFrom4([4]byte{10, 2, byte((i + meshDynamicPeerLimit) >> 8), byte(i + meshDynamicPeerLimit)})
+		discovered = append(discovered, meshDiscoveredPeer{
+			PublicKey:  "new-" + strconv.Itoa(i),
+			AllowedIPs: []string{netip.PrefixFrom(ip, 32).String()},
+		})
+	}
+	if err := eng.applyMeshDiscoveredPeers(parent, discovered); err != nil {
+		t.Fatal(err)
+	}
+	if len(eng.dynamicPeers) != meshDynamicPeerLimit {
+		t.Fatalf("dynamic peer count=%d want %d", len(eng.dynamicPeers), meshDynamicPeerLimit)
+	}
+	if eng.dynamicPeers["new-0"] == nil {
+		t.Fatal("new dynamic peer was not inserted at capacity")
+	}
+	if eng.dynamicPeers["old-0"] != nil {
+		t.Fatal("stale dynamic peer was not removed")
 	}
 }
 

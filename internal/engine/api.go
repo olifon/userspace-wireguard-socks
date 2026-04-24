@@ -4,6 +4,7 @@
 package engine
 
 import (
+	"bytes"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
@@ -29,6 +30,8 @@ var (
 	ErrPeerNotFound    = errors.New("peer not found")
 	ErrForwardNotFound = errors.New("forward not found")
 )
+
+const maxAPIJSONBodyBytes = 1 << 20
 
 type apiPeer struct {
 	PublicKey           string               `json:"public_key"`
@@ -183,7 +186,7 @@ func (e *Engine) handleAPIResolve(w http.ResponseWriter, r *http.Request) {
 }
 
 func readAPIWireGuardConfigBody(r *http.Request) (string, error) {
-	const maxWireGuardConfigBytes = 1 << 20
+	const maxWireGuardConfigBytes = maxAPIJSONBodyBytes
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxWireGuardConfigBytes+1))
 	if err != nil {
 		return "", err
@@ -207,6 +210,17 @@ func readAPIWireGuardConfigBody(r *http.Request) (string, error) {
 	return string(body), nil
 }
 
+func decodeAPIJSONBody(r *http.Request, dst any) error {
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxAPIJSONBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(body) > maxAPIJSONBodyBytes {
+		return fmt.Errorf("json body is larger than %d bytes", maxAPIJSONBodyBytes)
+	}
+	return json.NewDecoder(bytes.NewReader(body)).Decode(dst)
+}
+
 func (e *Engine) handleAPIInterfaceIPs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
@@ -228,7 +242,7 @@ func (e *Engine) handleAPIACLList(w http.ResponseWriter, r *http.Request) {
 		writeAPIJSON(w, http.StatusOK, aclRulesByName(c, name))
 	case http.MethodPost:
 		var rule acl.Rule
-		if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+		if err := decodeAPIJSONBody(r, &rule); err != nil {
 			writeAPIError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -241,7 +255,7 @@ func (e *Engine) handleAPIACLList(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	case http.MethodPut:
 		var rules []acl.Rule
-		if err := json.NewDecoder(r.Body).Decode(&rules); err != nil {
+		if err := decodeAPIJSONBody(r, &rules); err != nil {
 			writeAPIError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -285,7 +299,7 @@ func (e *Engine) handleAPIForwards(w http.ResponseWriter, r *http.Request) {
 		writeAPIJSON(w, http.StatusOK, e.apiForwards())
 	case http.MethodPost:
 		var req apiForward
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeAPIJSONBody(r, &req); err != nil {
 			writeAPIError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -432,7 +446,7 @@ func (e *Engine) handleAPIPeers(w http.ResponseWriter, r *http.Request) {
 		writeAPIJSON(w, http.StatusOK, out)
 	case http.MethodPost, http.MethodPut:
 		var req apiPeer
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeAPIJSONBody(r, &req); err != nil {
 			writeAPIError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -503,7 +517,7 @@ func (e *Engine) handleAPIACLs(w http.ResponseWriter, r *http.Request) {
 		writeAPIJSON(w, http.StatusOK, aclToAPI(e.ACL()))
 	case http.MethodPut, http.MethodPost:
 		var req apiACL
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeAPIJSONBody(r, &req); err != nil {
 			writeAPIError(w, http.StatusBadRequest, err.Error())
 			return
 		}

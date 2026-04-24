@@ -23,7 +23,8 @@ It is built on Pion TURN and adds:
 - internal relay-to-relay routing optimization
 - `outbound_only` users that may only receive replies after they send first
 - `internal_only` users that may only talk to other TURN allocations on the same server
-- optional WireGuard packet filtering on each relay port
+- optional WireGuard-aware filtering on each relay port, including server-public-key checks for hidden WireGuard backends
+- relay-side filtering that drops obvious garbage before it reaches the private WireGuard node
 - optional local management API for status, user updates, and username-as-port range updates
 
 ## Quick Start
@@ -269,7 +270,19 @@ Supported `wireguard_mode` values:
 - `default-with-overwrite`
 - `required-in-username`
 
-The TURN server does not decrypt WireGuard traffic. It only validates and filters packet flow.
+The TURN server does not decrypt WireGuard traffic. It validates and filters
+packet flow before relaying it.
+
+That matters when this binary is the public edge in front of a private
+WireGuard server:
+
+- the relay can pin traffic to the expected hidden server identity
+- unrelated Internet noise does not have to reach the private backend
+- random UDP spray and obvious junk packets are dropped at the relay instead of
+  being forwarded blindly
+
+In practice, that gives you a small public ingress box that is better behaved
+than a generic open TURN relay when the real service behind it is WireGuard.
 
 ## Mapped Addresses
 

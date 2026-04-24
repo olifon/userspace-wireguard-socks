@@ -14,18 +14,38 @@ nodes into one private peer network. It lets peers:
 - use a stable relayed parent path as the default backbone
 - upgrade to a direct peer-to-peer path when both sides can reach each other
 
-## Validate The Hub And Peer Examples
+## Try The Hub And Peer Examples
 
-Hub:
+Start the hub in its own working directory so its relative Unix API socket does
+not collide with the peer:
 
 ```bash
-./uwgsocks --config ./examples/mesh-control-hub.yaml --check
+export UWG_EXAMPLES="$(pwd)/examples"
+mkdir -p /tmp/uwg-mesh-hub
+cd /tmp/uwg-mesh-hub
+uwgsocks --config "$UWG_EXAMPLES/mesh-control-hub.yaml"
 ```
 
-Peer:
+In a second terminal, start the peer from a different working directory:
 
 ```bash
-./uwgsocks --config ./examples/mesh-control-peer.yaml --check
+export UWG_EXAMPLES="$(pwd)/examples"
+mkdir -p /tmp/uwg-mesh-peer1
+cd /tmp/uwg-mesh-peer1
+uwgsocks --config "$UWG_EXAMPLES/mesh-control-peer.yaml"
+```
+
+Once the peer is up, prove that the tunnel-only controller is reachable through
+the mesh:
+
+```bash
+curl --proxy socks5h://127.0.0.1:1080 http://100.64.80.1:8787/v1/challenge
+```
+
+You can also inspect the peer-side runtime view:
+
+```bash
+uwgsocks status --api unix:/tmp/uwg-mesh-peer1/uwgsocks.sock --text
 ```
 
 In plain terms:

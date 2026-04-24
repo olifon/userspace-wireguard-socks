@@ -48,7 +48,6 @@ without opening a host port on the app machine.
 For public internet ingress, run the companion control plane on a public host:
 
 ```bash
-cd /workspace/simple-wireguard-server
 ./uwgsocks-ui -listen 0.0.0.0:8080
 ```
 
@@ -89,4 +88,3 @@ That token protects runtime management. The public ingress auth layer lives in
 
 Use them together when you want local services to appear on the public internet
 without opening inbound ports on the origin machine.
-

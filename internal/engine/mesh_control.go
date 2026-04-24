@@ -35,10 +35,12 @@ import (
 )
 
 const (
-	meshTokenVersionV1   = 1
-	meshTokenVersionV2   = 2
-	meshAuthContextLabel = "uwgsocks-mesh-auth"
-	meshBodyContextLabel = "uwgsocks-mesh-body"
+	meshTokenVersionV1     = 1
+	meshTokenVersionV2     = 2
+	meshAuthContextLabel   = "uwgsocks-mesh-auth"
+	meshBodyContextLabel   = "uwgsocks-mesh-body"
+	meshChallengeBodyLimit = 4 << 10
+	meshDynamicPeerLimit   = 1024
 )
 
 type meshChallengeResponse struct {
@@ -641,15 +643,16 @@ func (e *Engine) applyMeshDiscoveredPeers(parent config.Peer, discovered []meshD
 	for _, peer := range static {
 		staticKeys[peer.PublicKey] = struct{}{}
 	}
-	seen := make(map[string]struct{}, len(discovered))
 	type update struct {
 		key  string
 		peer config.Peer
 	}
-	var upserts []update
-	var removals []string
-
-	e.dynamicMu.Lock()
+	type candidate struct {
+		key  string
+		peer config.Peer
+	}
+	candidateIndex := make(map[string]int, len(discovered))
+	candidates := make([]candidate, 0, len(discovered))
 	for _, disc := range discovered {
 		if disc.PublicKey == parent.PublicKey {
 			continue
@@ -660,15 +663,6 @@ func (e *Engine) applyMeshDiscoveredPeers(parent config.Peer, discovered []meshD
 		allowed := meshTrimAllowedIPs(disc.AllowedIPs, parentPrefixes)
 		if len(allowed) == 0 {
 			continue
-		}
-		seen[disc.PublicKey] = struct{}{}
-		dp, exists := e.dynamicPeers[disc.PublicKey]
-		if exists && dp.ParentPublicKey != parent.PublicKey {
-			continue
-		}
-		endpoint := disc.Endpoint
-		if exists && dp.Active && dp.Peer.Endpoint != "" {
-			endpoint = dp.Peer.Endpoint
 		}
 		trust := config.MeshTrust(disc.MeshTrust)
 		switch trust {
@@ -681,27 +675,50 @@ func (e *Engine) applyMeshDiscoveredPeers(parent config.Peer, discovered []meshD
 		peer := config.Peer{
 			PublicKey:           disc.PublicKey,
 			PresharedKey:        disc.PSK,
-			Endpoint:            endpoint,
+			Endpoint:            disc.Endpoint,
 			AllowedIPs:          allowed,
 			PersistentKeepalive: meshDynamicKeepalive(parent),
 			MeshAcceptACLs:      disc.MeshAccept,
 			MeshTrust:           trust,
 		}
-		if !exists {
-			dp = &dynamicPeer{ParentPublicKey: parent.PublicKey}
-			e.dynamicPeers[disc.PublicKey] = dp
+		if idx, ok := candidateIndex[disc.PublicKey]; ok {
+			candidates[idx].peer = peer
+			continue
 		}
-		dp.Peer = peer
-		dp.LastControl = now
-		upserts = append(upserts, update{key: disc.PublicKey, peer: peer})
+		candidateIndex[disc.PublicKey] = len(candidates)
+		candidates = append(candidates, candidate{key: disc.PublicKey, peer: peer})
 	}
+	var upserts []update
+	var removals []string
+
+	e.dynamicMu.Lock()
 	for key, dp := range e.dynamicPeers {
 		if dp.ParentPublicKey == parent.PublicKey {
-			if _, ok := seen[key]; !ok {
+			if _, ok := candidateIndex[key]; !ok {
 				removals = append(removals, key)
 				delete(e.dynamicPeers, key)
 			}
 		}
+	}
+	for _, cand := range candidates {
+		dp, exists := e.dynamicPeers[cand.key]
+		if exists && dp.ParentPublicKey != parent.PublicKey {
+			continue
+		}
+		if !exists && len(e.dynamicPeers) >= meshDynamicPeerLimit {
+			continue
+		}
+		peer := cand.peer
+		if exists && dp.Active && dp.Peer.Endpoint != "" {
+			peer.Endpoint = dp.Peer.Endpoint
+		}
+		if !exists {
+			dp = &dynamicPeer{ParentPublicKey: parent.PublicKey}
+			e.dynamicPeers[cand.key] = dp
+		}
+		dp.Peer = peer
+		dp.LastControl = now
+		upserts = append(upserts, update{key: cand.key, peer: peer})
 	}
 	e.dynamicMu.Unlock()
 
@@ -1536,7 +1553,7 @@ func (c *meshControlClient) fetchChallenge(ctx context.Context) (meshChallengeRe
 		return meshChallengeResponse{}, fmt.Errorf("mesh challenge status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	var out meshChallengeResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, meshChallengeBodyLimit)).Decode(&out); err != nil {
 		return meshChallengeResponse{}, err
 	}
 	return out, nil

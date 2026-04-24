@@ -38,6 +38,9 @@ turn:
   realm: local-turn.example
   username: wireguard
   password: super-secret-turn-password
+  # Loopback demo only. For public Internet ingress, prefer
+  # no_create_permission: true or relay-side policy instead of pinning every
+  # client source IP here.
   permissions:
     - 127.0.0.1
 ```
@@ -45,9 +48,9 @@ turn:
 That means the WireGuard server itself does not need a public UDP socket. It
 binds through the TURN allocation.
 
-For this localhost demo, the explicit permission is intentional: TURN
-allocations only accept peer traffic they are permitted to talk to. On one box,
-the peer source IP is `127.0.0.1`, so the demo pins that permission directly.
+For this localhost demo, the explicit permission is only there because the peer
+source IP is `127.0.0.1`. It proves the loopback relay path end-to-end on one
+machine. It is not the normal public-ingress pattern for WireGuard.
 
 ## Start A Client
 
@@ -70,14 +73,12 @@ In a real deployment:
 - run `turn` on a small VPS or public edge box
 - keep the private WireGuard server behind NAT
 - publish one mapped relay port per server identity
-- optionally enable TURN-side WireGuard filtering
-- when the relay policy is intentionally open, use `no_create_permission: true`
-  on TURN transports instead of prelisting every peer source IP
+- use `no_create_permission: true` or relay-side policy instead of prelisting
+  every possible client IP
+- enable TURN-side WireGuard guarding so the relay can filter inbound traffic
+  by the server's public key before it reaches the hidden backend
+- let the TURN edge absorb random Internet noise and obvious garbage instead of
+  spraying every packet at the private WireGuard node
 
 This is the cleanest way to expose a server that cannot port-forward its own
 UDP listener.
-
-## Validation Note
-
-The local loopback TURN demo passes end-to-end when the explicit localhost TURN
-permission is present.
