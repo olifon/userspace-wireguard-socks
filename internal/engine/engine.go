@@ -74,6 +74,7 @@ type Engine struct {
 
 	relayMu        sync.Mutex
 	relayFlows     map[relayFlowKey]*relayFlow
+	relayFlowPeers map[string]int
 	relayLastSweep time.Time
 
 	meshACLMu        sync.Mutex
@@ -169,6 +170,7 @@ func New(cfg config.Config, logger *log.Logger) (*Engine, error) {
 		outACL:             acl.List{Default: cfg.ACL.OutboundDefault, Rules: cfg.ACL.Outbound},
 		relACL:             acl.List{Default: cfg.ACL.RelayDefault, Rules: cfg.ACL.Relay},
 		relayFlows:         make(map[relayFlowKey]*relayFlow),
+		relayFlowPeers:     make(map[string]int),
 		meshACLsIn:         make(map[string]acl.List),
 		meshACLsOut:        make(map[string]acl.List),
 		meshACLFlows:       make(map[string]map[relayFlowKey]*relayFlow),

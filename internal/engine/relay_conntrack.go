@@ -103,7 +103,7 @@ func (e *Engine) allowRelayTracked(meta relayPacketMeta, now time.Time) bool {
 		if !e.relayCanAddFlowLocked(meta) {
 			return e.allowRelayStatelessFallback(meta)
 		}
-		e.relayFlows[relayForwardKey(meta)] = newRelayFlow(meta, now)
+		e.relayInsertFlowLocked(newRelayFlow(meta, now))
 		return true
 	}
 	return e.allowRelayStatelessFallback(meta)
@@ -162,6 +162,9 @@ func (e *Engine) ensureRelayFlowsLocked() {
 	if e.relayFlows == nil {
 		e.relayFlows = make(map[relayFlowKey]*relayFlow)
 	}
+	if e.relayFlowPeers == nil {
+		e.relayFlowPeers = make(map[string]int)
+	}
 }
 
 func (e *Engine) relayFindFlowLocked(meta relayPacketMeta) (*relayFlow, bool, bool) {
@@ -213,7 +216,7 @@ func (e *Engine) allowExistingRelayFlowLocked(flow *relayFlow, forward bool, met
 	case relayTCPEstablished, relayTCPFinWait, relayTCPTimeWait:
 		flow.last = now
 		if meta.tcpFlags&tcpFlagRST != 0 {
-			delete(e.relayFlows, flow.key)
+			e.relayDeleteFlowLocked(flow.key)
 			return true
 		}
 		e.updateRelayTCPClosingLocked(flow, forward, meta)
@@ -267,16 +270,7 @@ func (e *Engine) relayCanAddFlowLocked(meta relayPacketMeta) bool {
 		maxPerPeer = 4096
 	}
 	peer := e.relayPeerKey(meta.src.Addr())
-	count := 0
-	for _, flow := range e.relayFlows {
-		if e.relayPeerKey(flow.key.InitIP) == peer {
-			count++
-			if count >= maxPerPeer {
-				return false
-			}
-		}
-	}
-	return true
+	return e.relayFlowPeers[peer] < maxPerPeer
 }
 
 func (e *Engine) relayPeerKey(ip netip.Addr) string {
@@ -294,7 +288,7 @@ func (e *Engine) relaySweepLocked(now time.Time) {
 	before := len(e.relayFlows)
 	for key, flow := range e.relayFlows {
 		if relayFlowExpired(flow, now, e.tcpIdleTimeout(), e.udpIdleTimeout()) {
-			delete(e.relayFlows, key)
+			e.relayDeleteFlowLocked(key)
 		}
 	}
 	if len(e.relayFlows) > 0 && len(e.relayFlows)*4 < before {
@@ -554,12 +548,36 @@ func relayICMPEchoReply(meta relayPacketMeta) bool {
 
 func relayICMPError(proto, typ byte) bool {
 	if proto == 58 {
-		return typ < 128
+		switch typ {
+		case 1, 2, 3, 4:
+			return true
+		default:
+			return false
+		}
 	}
 	switch typ {
 	case 3, 4, 5, 11, 12:
 		return true
 	default:
 		return false
+	}
+}
+
+func (e *Engine) relayInsertFlowLocked(flow *relayFlow) {
+	e.relayFlows[flow.key] = flow
+	e.relayFlowPeers[e.relayPeerKey(flow.key.InitIP)]++
+}
+
+func (e *Engine) relayDeleteFlowLocked(key relayFlowKey) {
+	flow, ok := e.relayFlows[key]
+	if !ok {
+		return
+	}
+	delete(e.relayFlows, key)
+	peer := e.relayPeerKey(flow.key.InitIP)
+	if count := e.relayFlowPeers[peer] - 1; count > 0 {
+		e.relayFlowPeers[peer] = count
+	} else {
+		delete(e.relayFlowPeers, peer)
 	}
 }
