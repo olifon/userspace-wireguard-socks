@@ -71,17 +71,17 @@ turn:
   realm: local-turn.example
   username: wireguard
   password: super-secret-turn-password
-  permissions:
-    - 127.0.0.1
+  no_create_permission: true
 ```
 
 That means the WireGuard server itself does not need a public UDP socket. It
-binds through the TURN allocation.
+binds through the TURN allocation and lets the relay policy decide which client
+source networks may reach it.
 
-For this one-box demo, the explicit TURN permission is intentional:
+For this one-box demo:
 
-- the hidden server needs a reply path back to the local test client
-- on one box, that client source IP is `127.0.0.1`
+- the TURN edge allows inbound traffic from `127.0.0.0/8`
+- the hidden `uwgsocks` server does not pin a static TURN permission list
 - the relay still enforces WireGuard-aware filtering and handshake throttling
 - the real backend still stays hidden behind the relay
 
@@ -129,8 +129,10 @@ In a real deployment:
 - run `turn` on a small VPS or public edge box
 - keep the private WireGuard server behind NAT
 - publish one mapped relay port per server identity
-- configure TURN permissions for the client IPs or source ranges that should be
-  able to reach the hidden server
+- configure relay-side `source_networks` and `permission_behavior` for the
+  client IPs or ranges that should be able to reach the hidden server
+- keep `no_create_permission: true` on the hidden server when you want the edge
+  relay to own that admission decision
 - enable TURN-side WireGuard guarding so the relay can filter inbound traffic
   by the server's public key before it reaches the hidden backend
 - let the TURN edge absorb random Internet noise, bad handshakes, and obvious

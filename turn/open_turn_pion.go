@@ -676,6 +676,24 @@ func (o *openRelayPion) allowPeer(clientAddr net.Addr, peerIP net.IP) bool {
 	return sourceAllowed(peerIP, res.Sources)
 }
 
+func (o *openRelayPion) allowInboundWithoutPermission(clientAddr net.Addr, peerIP net.IP, hasPermissions bool) bool {
+	res := o.clientReservation(clientAddr)
+	if res == nil || !sourceAllowed(peerIP, res.Sources) {
+		return false
+	}
+
+	switch res.Behavior {
+	case BehaviorAllow:
+		return true
+	case BehaviorAllowIfNoPermissions:
+		return !hasPermissions
+	case BehaviorRejectUnlessPermitted:
+		return false
+	default:
+		return false
+	}
+}
+
 func newRelayPacketConn(base net.PacketConn, wrapper *openRelayPion, res *relayReservation, publicAddr net.Addr, preReserved bool) (*relayPacketConn, error) {
 	actualUDP, ok := base.LocalAddr().(*net.UDPAddr)
 	if !ok {
@@ -1129,6 +1147,9 @@ func buildPionServer(cfg Config) (*openRelayPion, error) {
 		permissionHandler := func(clientAddr net.Addr, peerIP net.IP) bool {
 			return wrapper.allowPeer(clientAddr, peerIP)
 		}
+		inboundPermissionHandler := func(clientAddr net.Addr, peerIP net.IP, hasPermissions bool) bool {
+			return wrapper.allowInboundWithoutPermission(clientAddr, peerIP, hasPermissions)
+		}
 		switch listener.Type {
 		case "udp":
 			listenAddr, err := net.ResolveUDPAddr("udp", listener.Listen)
@@ -1142,9 +1163,10 @@ func buildPionServer(cfg Config) (*openRelayPion, error) {
 				return nil, err
 			}
 			packetConnConfigs = append(packetConnConfigs, turn.PacketConnConfig{
-				PacketConn:            pc,
-				RelayAddressGenerator: relayGen,
-				PermissionHandler:     permissionHandler,
+				PacketConn:               pc,
+				RelayAddressGenerator:    relayGen,
+				PermissionHandler:        permissionHandler,
+				InboundPermissionHandler: inboundPermissionHandler,
 			})
 			wrapper.recordListener(listener.Type, pc.LocalAddr())
 		case "tcp":
@@ -1154,9 +1176,10 @@ func buildPionServer(cfg Config) (*openRelayPion, error) {
 				return nil, err
 			}
 			listenerConfigs = append(listenerConfigs, turn.ListenerConfig{
-				Listener:              ln,
-				RelayAddressGenerator: relayGen,
-				PermissionHandler:     permissionHandler,
+				Listener:                 ln,
+				RelayAddressGenerator:    relayGen,
+				PermissionHandler:        permissionHandler,
+				InboundPermissionHandler: inboundPermissionHandler,
 			})
 			wrapper.recordListener(listener.Type, ln.Addr())
 		case "tls":
@@ -1178,9 +1201,10 @@ func buildPionServer(cfg Config) (*openRelayPion, error) {
 			}
 			ln := tls.NewListener(rawListener, tlsCfg)
 			listenerConfigs = append(listenerConfigs, turn.ListenerConfig{
-				Listener:              ln,
-				RelayAddressGenerator: relayGen,
-				PermissionHandler:     permissionHandler,
+				Listener:                 ln,
+				RelayAddressGenerator:    relayGen,
+				PermissionHandler:        permissionHandler,
+				InboundPermissionHandler: inboundPermissionHandler,
 			})
 			wrapper.recordListener(listener.Type, ln.Addr())
 		case "dtls":
@@ -1206,9 +1230,10 @@ func buildPionServer(cfg Config) (*openRelayPion, error) {
 				return nil, err
 			}
 			listenerConfigs = append(listenerConfigs, turn.ListenerConfig{
-				Listener:              ln,
-				RelayAddressGenerator: relayGen,
-				PermissionHandler:     permissionHandler,
+				Listener:                 ln,
+				RelayAddressGenerator:    relayGen,
+				PermissionHandler:        permissionHandler,
+				InboundPermissionHandler: inboundPermissionHandler,
 			})
 			wrapper.recordListener(listener.Type, ln.Addr())
 		case "http":
@@ -1223,14 +1248,16 @@ func buildPionServer(cfg Config) (*openRelayPion, error) {
 				return nil, err
 			}
 			packetConnConfigs = append(packetConnConfigs, turn.PacketConnConfig{
-				PacketConn:            httpServer.PacketConn,
-				RelayAddressGenerator: relayGen,
-				PermissionHandler:     permissionHandler,
+				PacketConn:               httpServer.PacketConn,
+				RelayAddressGenerator:    relayGen,
+				PermissionHandler:        permissionHandler,
+				InboundPermissionHandler: inboundPermissionHandler,
 			})
 			listenerConfigs = append(listenerConfigs, turn.ListenerConfig{
-				Listener:              httpServer.Listener,
-				RelayAddressGenerator: relayGen,
-				PermissionHandler:     permissionHandler,
+				Listener:                 httpServer.Listener,
+				RelayAddressGenerator:    relayGen,
+				PermissionHandler:        permissionHandler,
+				InboundPermissionHandler: inboundPermissionHandler,
 			})
 			wrapper.recordListener(listener.Type, httpServer.Addr())
 		case "https":
@@ -1262,14 +1289,16 @@ func buildPionServer(cfg Config) (*openRelayPion, error) {
 				return nil, err
 			}
 			packetConnConfigs = append(packetConnConfigs, turn.PacketConnConfig{
-				PacketConn:            httpServer.PacketConn,
-				RelayAddressGenerator: relayGen,
-				PermissionHandler:     permissionHandler,
+				PacketConn:               httpServer.PacketConn,
+				RelayAddressGenerator:    relayGen,
+				PermissionHandler:        permissionHandler,
+				InboundPermissionHandler: inboundPermissionHandler,
 			})
 			listenerConfigs = append(listenerConfigs, turn.ListenerConfig{
-				Listener:              httpServer.Listener,
-				RelayAddressGenerator: relayGen,
-				PermissionHandler:     permissionHandler,
+				Listener:                 httpServer.Listener,
+				RelayAddressGenerator:    relayGen,
+				PermissionHandler:        permissionHandler,
+				InboundPermissionHandler: inboundPermissionHandler,
 			})
 			wrapper.recordListener(listener.Type, httpServer.Addr())
 		case "quic":
@@ -1285,9 +1314,10 @@ func buildPionServer(cfg Config) (*openRelayPion, error) {
 				return nil, err
 			}
 			packetConnConfigs = append(packetConnConfigs, turn.PacketConnConfig{
-				PacketConn:            server.PacketConn,
-				RelayAddressGenerator: relayGen,
-				PermissionHandler:     permissionHandler,
+				PacketConn:               server.PacketConn,
+				RelayAddressGenerator:    relayGen,
+				PermissionHandler:        permissionHandler,
+				InboundPermissionHandler: inboundPermissionHandler,
 			})
 			wrapper.recordListener(listener.Type, server.Addr())
 		}

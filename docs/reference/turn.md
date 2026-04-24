@@ -25,8 +25,7 @@ transports:
       password: secret
       realm: example
       protocol: udp
-      permissions:
-        - 198.51.100.10
+      no_create_permission: true
 ```
 
 Then point the peer at that named transport:
@@ -117,20 +116,28 @@ is: turn it on when the relay is protecting a hidden WireGuard server.
 ## Permissions Versus Relay Policy
 
 For the common “public edge relay in front of one hidden WireGuard server”
-pattern, assume the hidden server still needs TURN permissions for the client
-IPs that should be able to reach it.
+pattern, the cleanest setup is usually:
 
-That usually means:
+- relay-side `source_networks` plus `permission_behavior` on the `turn` daemon
+- `no_create_permission: true` on the hidden `uwgsocks` server
+- optional WireGuard guarding on the relay side
 
-- `permissions:` on the `uwgsocks` side for the peers or source ranges that
-  should be able to reach the hidden server
-- relay-side policy and WireGuard guarding on the `turn` side
+That keeps the admission decision at the public edge and lets the hidden server
+stay behind one stable mapped relay port without maintaining a static TURN peer
+list.
 
-For a one-box local demo, that permission is often just `127.0.0.1`.
+Static `permissions:` on the `uwgsocks` side are still useful when you want the
+client allocation itself to pin a narrow peer list. That is more relevant for
+mesh or point-to-point TURN usage than for the “publish one hidden WireGuard
+server behind a relay” pattern.
 
-`no_create_permission: true` is still available for cases where TURN permissions
-are being handled out-of-band, but it is not the current copy-paste path for
-public hidden-server ingress.
+`permission_behavior` applies on the relay side:
+
+- `allow`: accept peers from allowed `source_networks` even without explicit
+  TURN permissions on the allocation
+- `allow-if-no-permissions`: open until the allocation starts creating
+  explicit permissions, then fall back to normal TURN permission checks
+- `reject-unless-permitted`: require classic TURN permissions
 
 ## TURN Over Other Carriers
 

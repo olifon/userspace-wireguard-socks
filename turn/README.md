@@ -179,7 +179,9 @@ Key fields:
 - `port`: fixed relay port
 - `mapped_address`: public relay address returned to clients
 - `source_networks`: client IP allowlist
-- `permission_behavior`: relay policy mode for how peer traffic is handled
+- `permission_behavior`: relay policy mode for inbound peer traffic when the
+  client skips static CREATE_PERMISSION setup or the allocation has no explicit
+  permissions yet
 
 ### Per-User Dynamic Port Range
 

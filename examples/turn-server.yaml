@@ -14,11 +14,9 @@ turn:
   realm: local-turn.example
   username: wireguard
   password: super-secret-turn-password
-  # Local one-box demo: permit the loopback client to reach the hidden server.
-  # For a real deployment, replace this with the client IPs or source ranges
-  # that should be able to reach the mapped relay port.
-  permissions:
-    - 127.0.0.1
+  # Hidden-server ingress mode: rely on relay-side permission_behavior and
+  # source_networks instead of creating static TURN permissions here.
+  no_create_permission: true
 
 inbound:
   transparent: true

@@ -633,6 +633,162 @@ func TestOutboundOnlyRequiresPriorSend(t *testing.T) {
 	<-replyDone
 }
 
+func TestPermissionBehaviorAllowAllowsInboundWithoutExplicitPermission(t *testing.T) {
+	cfg := Config{
+		Realm: "example.org",
+		Listen: ListenConfig{
+			TurnListen: "127.0.0.1:0",
+			RelayIP:    "127.0.0.1",
+		},
+		Users: []UserConfig{{
+			Username:           "alice",
+			Password:           "alice-pass",
+			Port:               40111,
+			PermissionBehavior: "allow",
+			SourceNetworks:     []string{"127.0.0.0/8"},
+		}},
+	}
+	server := newTestTURNServer(t, cfg)
+	client := newTestTURNClient(t, server.listenAddr.String(), "alice", "alice-pass", "example.org")
+	relayConn := allocateRelay(t, client)
+	defer relayConn.Close()
+
+	peerConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peerConn.Close()
+
+	if _, err := peerConn.WriteToUDP([]byte("first-contact"), relayConn.LocalAddr().(*net.UDPAddr)); err != nil {
+		t.Fatalf("peer send: %v", err)
+	}
+	if err := relayConn.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 1024)
+	n, from, err := relayConn.ReadFrom(buf)
+	if err != nil {
+		t.Fatalf("relay read: %v", err)
+	}
+	if got := string(buf[:n]); got != "first-contact" {
+		t.Fatalf("unexpected payload %q", got)
+	}
+	if from.String() != peerConn.LocalAddr().String() {
+		t.Fatalf("unexpected source %s", from)
+	}
+}
+
+func TestPermissionBehaviorAllowIfNoPermissionsStopsAfterExplicitPermission(t *testing.T) {
+	cfg := Config{
+		Realm: "example.org",
+		Listen: ListenConfig{
+			TurnListen: "127.0.0.1:0",
+			RelayIP:    "127.0.0.1",
+		},
+		Users: []UserConfig{{
+			Username:           "alice",
+			Password:           "alice-pass",
+			Port:               40112,
+			PermissionBehavior: "allow-if-no-permissions",
+			SourceNetworks:     []string{"127.0.0.0/8"},
+		}},
+	}
+	server := newTestTURNServer(t, cfg)
+	client := newTestTURNClient(t, server.listenAddr.String(), "alice", "alice-pass", "example.org")
+	relayConn := allocateRelay(t, client)
+	defer relayConn.Close()
+
+	peer1, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer1.Close()
+	if _, err := peer1.WriteToUDP([]byte("allowed-before-permission"), relayConn.LocalAddr().(*net.UDPAddr)); err != nil {
+		t.Fatalf("peer1 send: %v", err)
+	}
+	if err := relayConn.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 1024)
+	n, from, err := relayConn.ReadFrom(buf)
+	if err != nil {
+		t.Fatalf("relay read peer1: %v", err)
+	}
+	if got := string(buf[:n]); got != "allowed-before-permission" {
+		t.Fatalf("unexpected payload %q", got)
+	}
+	if from.String() != peer1.LocalAddr().String() {
+		t.Fatalf("unexpected source %s", from)
+	}
+
+	if err := client.CreatePermission(peer1.LocalAddr()); err != nil {
+		t.Fatalf("create permission: %v", err)
+	}
+
+	peer2, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.2"), Port: 0})
+	if err != nil {
+		t.Skipf("secondary loopback address unavailable: %v", err)
+	}
+	defer peer2.Close()
+	if _, err := peer2.WriteToUDP([]byte("blocked-after-permission"), relayConn.LocalAddr().(*net.UDPAddr)); err != nil {
+		t.Fatalf("peer2 send: %v", err)
+	}
+	assertReadTimeout(t, relayConn)
+}
+
+func TestPermissionBehaviorRejectUnlessPermittedRequiresExplicitPermission(t *testing.T) {
+	cfg := Config{
+		Realm: "example.org",
+		Listen: ListenConfig{
+			TurnListen: "127.0.0.1:0",
+			RelayIP:    "127.0.0.1",
+		},
+		Users: []UserConfig{{
+			Username:           "alice",
+			Password:           "alice-pass",
+			Port:               40113,
+			PermissionBehavior: "reject-unless-permitted",
+			SourceNetworks:     []string{"127.0.0.0/8"},
+		}},
+	}
+	server := newTestTURNServer(t, cfg)
+	client := newTestTURNClient(t, server.listenAddr.String(), "alice", "alice-pass", "example.org")
+	relayConn := allocateRelay(t, client)
+	defer relayConn.Close()
+
+	peerConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peerConn.Close()
+
+	if _, err := peerConn.WriteToUDP([]byte("blocked-without-permission"), relayConn.LocalAddr().(*net.UDPAddr)); err != nil {
+		t.Fatalf("peer send before permission: %v", err)
+	}
+	assertReadTimeout(t, relayConn)
+
+	if err := client.CreatePermission(peerConn.LocalAddr()); err != nil {
+		t.Fatalf("create permission: %v", err)
+	}
+	if _, err := peerConn.WriteToUDP([]byte("allowed-with-permission"), relayConn.LocalAddr().(*net.UDPAddr)); err != nil {
+		t.Fatalf("peer send after permission: %v", err)
+	}
+	if err := relayConn.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 1024)
+	n, from, err := relayConn.ReadFrom(buf)
+	if err != nil {
+		t.Fatalf("relay read after permission: %v", err)
+	}
+	if got := string(buf[:n]); got != "allowed-with-permission" {
+		t.Fatalf("unexpected payload %q", got)
+	}
+	if from.String() != peerConn.LocalAddr().String() {
+		t.Fatalf("unexpected source %s", from)
+	}
+}
+
 func TestInternalOnlyBlocksExternalTraffic(t *testing.T) {
 	cfg := Config{
 		Realm: "example.org",
