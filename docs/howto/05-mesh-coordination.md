@@ -192,9 +192,8 @@ At this point you have:
 - one stable parent path through the hub
 - one controller distributing peers and projected policy
 - one child peer learning another child peer
-- a direct peer-to-peer attempt when the outer transport is UDP-capable
-- automatic fallback to the parent relay path when direct connectivity is not
-  possible
+- a direct path when both sides can reach each other over the outer transport
+- automatic fallback to the parent relay path when they cannot
 
 ## Multi-Server Use
 

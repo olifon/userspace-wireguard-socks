@@ -202,10 +202,10 @@ Endpoint = quic://127.0.0.1:8443/wg
 
 Then rerun the same local app, server, client, and `curl` check.
 
-In this sandbox the QUIC config validated, but the end-to-end data path did
-not complete reliably. That is consistent with gVisor-style environments being
-a poor QUIC baseline. On a normal Linux host, QUIC is the transport to prefer
-when you need DPI resistance without TCP meltdown.
+In this sandbox the QUIC config validated, but the end-to-end data path was
+not a trustworthy signal. Restrictive dev sandboxes and some gVisor-style
+environments are a poor place to judge QUIC. Validate it on a normal Linux
+host before making it your default transport.
 
 The important syntax is:
 
@@ -223,6 +223,6 @@ The important syntax is:
 - Use TURN when the real server is hidden behind NAT or a firewall and needs a
   public relay.
 
-If you are running inside a restrictive gVisor sandbox, treat UDP and
-HTTPS/WebSocket as the safer production baseline. QUIC is strongest on normal
+If you are validating this in a restrictive dev sandbox, treat UDP and
+HTTPS/WebSocket as the safer baseline for the demo. QUIC is strongest on normal
 Linux hosts.

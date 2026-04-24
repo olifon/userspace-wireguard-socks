@@ -84,6 +84,22 @@ For normal WireGuard ingress, this is the right shape:
 - let the TURN relay's own policy decide who may hit the mapped relay port
 - let the WireGuard-aware guard filter by the hidden server identity
 
+Verify that the hidden server has claimed the relay port:
+
+```bash
+uwgsocks status \
+  --api http://127.0.0.1:9090 \
+  --token demo-api-token-change-me \
+  --text
+
+curl -H 'Authorization: Bearer demo-api-token-change-me' \
+  http://127.0.0.1:9090/v1/status | python3 -m json.tool
+```
+
+For this example, the important field is `listen_port: 40000`. That tells you
+the private server is now reachable through the TURN relay's mapped port, even
+though the server itself never opened `40000/udp` on the host.
+
 ## Start A Client
 
 ```bash
