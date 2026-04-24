@@ -1,6 +1,17 @@
 # Open TURN Relay
 
-This TURN server is tuned for UDP relay use cases where relay ports, WireGuard filtering, and policy control matter more than classic WebRTC media relay defaults.
+This TURN server is built to make private services reachable when direct port
+forwarding is not an option.
+
+The main use case is WireGuard:
+
+- put a small public TURN relay on a VPS
+- keep the real `uwgsocks` or WireGuard node behind NAT, CGNAT, or a corporate firewall
+- let clients reach that hidden node through TURN without exposing the private host directly
+
+That same pattern also works for other UDP applications, but the project is
+tuned first for WireGuard-style traffic, relay-port control, and policy
+enforcement rather than generic WebRTC media relay defaults.
 
 It is built on Pion TURN and adds:
 - fixed relay ports per user
@@ -21,6 +32,13 @@ It is built on Pion TURN and adds:
 go build -o turn .
 ./turn -config turn-open-relay.example.yaml
 ```
+
+For a public ingress relay, the typical deployment is:
+
+1. Run `turn` on the public edge host.
+2. Point the private `uwgsocks` or WireGuard server at that TURN endpoint.
+3. Give clients a `turn://`, `turns://`, or TURN-over-HTTP/HTTPS/QUIC carrier
+   so they can reach the hidden server through the relay.
 
 Convenience build scripts are also included:
 
@@ -66,7 +84,7 @@ The server supports three allocation styles:
 3. Per-user dynamic port range:
    one username gets any free port inside its configured range, this user can then also connect multiple times.
    Unlike fixed user ports and the username-as-ports, this user can have multiple sessions.
-   This is useful for users that are Wireguard clients, or Wireguard servers that only need a temporary ephermal port.
+   This is useful for users that are WireGuard clients, or WireGuard servers that only need a temporary ephemeral port.
 
 When one TURN client sends to the public `XOR-RELAYED-ADDRESS` of another live TURN client on the same server, the packet is routed internally inside the Go process instead of going out to the network. WireGuard guards still apply on both sides.
 

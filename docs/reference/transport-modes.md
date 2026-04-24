@@ -1,38 +1,46 @@
-# Transport modes
+# Transport Modes
 
-Standard wireguard only supports UDP transport over IPv4 or IPv6. This works fine over most networks however there are many cases where
-1. You do not have the ability to expose a Wireguard port directly, but you can accept incomming connections through web connections
-2. You need a proxy to connect to the internet/network you want to run Wireguard over
-3. Or you need a small relay to proxy Wireguard to your machine seamlessly 
-4. Or you are on a network that blocks VPNs because it does not support UDP or has MTU issues, even if the network is not actively blocking vpns
-5. Or you want to make sure your VPN traffic does not look like a VPN
+Standard WireGuard uses UDP over IPv4 or IPv6. That is the best default when
+it works, but it is not enough for every deployment.
 
-All five are legitemate cases where you want to use transport modes to carry Wireguard traffic.
+`uwgsocks` adds alternate outer transports for situations such as:
 
-`uwgsocks` support all useful transport modes that works on all networks you can think off, you can tunnel Wireguard. The following transport modes are supported:
+1. The host cannot expose a WireGuard UDP port directly, but can accept web-style traffic.
+2. The process must reach the network through a proxy first.
+3. A small relay is needed to front a private WireGuard server.
+4. The network blocks UDP, has MTU trouble, or fingerprints VPN traffic aggressively.
+5. The deployment needs WireGuard to blend in with ordinary HTTPS, HTTP/3, or TURN traffic.
 
-* UDP
-* TCP
-* HTTP
-* HTTPS
-* QUIC (HTTP/3)
-* TLS
-* DTLS (UDP)
-* TURN
+The supported transport families are:
 
-Those can then be carried over a proxy of SOCKS5 or HTTP(S).
+- UDP
+- TCP
+- TLS
+- HTTP
+- HTTPS
+- QUIC (HTTP/3)
+- DTLS
+- TURN
 
-Connection-oriented transports like TLS/TCP/HTTP/HTTPS/QUIC support full roaming like normal UDP. Connections are automatically re-attempted from 
-scratch whenever Wireguard wants to start a new handshake because of a failed handshake or session.
+Most of them can also be carried through outbound SOCKS5 or HTTP(S) proxies.
 
-The transport security (like HTTP vs HTTPS or DTLS vs UDP) does NOT have any relevance for the security of your Wireguard tunnel data, as data is always encrypted and authenticated by Wireguard.
+Connection-oriented transports such as TCP, TLS, HTTP, HTTPS, and QUIC still
+support WireGuard roaming semantics. When a session fails, `uwgsocks` tears
+down the outer connection and reconnects when WireGuard needs to re-handshake.
+
+The transport wrapper itself does not change the cryptographic security of the
+WireGuard payload. WireGuard remains the authenticated and encrypted tunnel.
+The outer transport only changes how the encrypted packets move across the
+network.
 
 ## UDP
 
-UDP is the default transport mode. UDP has both listen and connect mode.
+UDP is the default and preferred transport.
 
-1. UDP in connect mode choses a random UDP source port per Wireguard peer. This mode cannot receive incomming wireguard connections.
-2. UDP in listen mode can both receive and send UDP packets to existing/new wireguard peers. If ListenPort is specified in the config this mode is used. All UDP packets will have the same UDP source port.
+- Client mode: each peer uses its own ephemeral source port. This mode cannot
+  receive unsolicited inbound WireGuard traffic.
+- Listen mode: one stable UDP port is bound and reused for all peers. This is
+  the mode used when `ListenPort` or `wireguard.listen_port` is set.
 
 ```yaml
 transports:
@@ -44,13 +52,18 @@ transports:
 
 ## TCP
 
-TCP is used when you are on a network that does not support UDP or has MTU issue with Wireguard. TCP is connection oriented, in that for every peer a conenction must be established when the session is active. 
+TCP is useful when UDP is unavailable or badly handled by the network.
 
-TCP has both listen and connect mode:
-1. TCP in connect mode connects to another peer when it becomes active (e.g data is queued or PersistentKeepAlive). The connection remains alive as long as the default 'UDP' timeout. Reconnections happen automatically on handshake/session failures, always within 10 seconds (as by default in Wireguard)
-2. TCP in listen mode can receive TCP clients on a port. When connected, packets send to that peer will re-use the TCP connection.
+Semantics:
 
-TCP tunnels Wireguard by prefixing a 2 byte big-endian header that tells how long the wireguard packet is that follows, send in a transport stream. 
+- Connect mode: `uwgsocks` opens a TCP connection when a peer becomes active.
+- Listen mode: `uwgsocks` accepts inbound TCP clients on the configured port.
+- Packets are framed on the stream with a 2-byte big-endian length prefix.
+
+Trade-off:
+
+- TCP works in more places.
+- TCP also introduces head-of-line blocking and is usually slower than UDP.
 
 ```yaml
 transports:
@@ -62,48 +75,54 @@ transports:
 
 ## TLS
 
-TLS is TCP wireguard send over a TLS stream. This can be useful to make it look like HTTPS web traffic. by default the client does not validate server certificates since Wireguard is already encrypted, and the server by default just serves a random in-memory self-signed certificate.
+TLS is WireGuard-over-TCP wrapped in TLS.
 
-In most cases this mode is not useful, unless you really want to conceal your traffic for deep inspection firewalls. TCP transport usually solves the issue for most use cases with UDP and if you want/must use a reverse proxy to expose your application then HTTP/HTTPS will do the job for you.
+Use it when the traffic needs to look like generic TLS rather than plain TCP.
+In many deployments, HTTP or HTTPS transport is a better fit because it works
+more naturally with reverse proxies and CDN-style edges.
+
+By default, clients do not need PKI validation for the transport itself because
+WireGuard already authenticates the tunnel. TLS here is primarily an outer
+carrier and compatibility layer.
 
 ```yaml
 transports:
   - name: wireguard-tls
-    base: tcp
+    base: tls
     listen: true
     listen_port: 8443
 ```
 
+## HTTP And HTTPS
 
-## HTTP/HTTPS
+HTTP and HTTPS carry WireGuard inside WebSocket frames, one WireGuard packet
+per binary frame.
 
-HTTP/HTTPS tunnel wireguad over Websocket frames, each frame is a Websocket binary frame containing a Wireguard packet
+This is useful when:
 
-The semantics are the same as TCP, only the connection is bootstrapped with Websocket. The main advantage is that with HTTP you can put Wireguard behidn a reverse proxy like cloudflare/CDN accelerator and just connect using a URL, without that reverse proxy being able to inspect traffic. It also works over networks that actively MITM HTTPS connections as part of a corperate firewall.
+- the server must sit behind a reverse proxy
+- the deployment wants a URL-based endpoint
+- the network is more tolerant of web traffic than raw UDP
 
-In addition a raw HTTP upgrade to regular TCP transport is also supported, compatible with [https://codeberg.org/eduVPN/proxyguard/](https://codeberg.org/eduVPN/proxyguard/). This can be useful when:
-
-1. Some internet proxies do not support backpressure on their websockets. If you notice that whenever you try to saturate your internet connection that it gets killed or becomes horrible, switching to a raw upgrade protocol might help. However most proxies will support backpressure fine as they just forward streams.
-2. If you need to connect to a server that requires ProxyGuard
-
-Its more common that a raw connection upgrade is blocked by reverse proxies than proxies seeing Websocket not having a backpressure, which is why its not set to the default.
+`uwgsocks` also supports a raw HTTP upgrade mode compatible with ProxyGuard.
+That can help on intermediaries that handle upgraded streams better than
+WebSocket backpressure.
 
 ```yaml
 transports:
   - name: wireguard-http
     base: http
-    #websocket (default) or proxyguard. For inbound connections on listen mode both are supported regardless of this value
-    upgrade_mode: websocket 
+    websocket:
+      upgrade_mode: websocket
     listen: true
     listen_port: 80
+
   - name: wireguard-https
-    upgrade_mode: websocket
     base: https
+    websocket:
+      upgrade_mode: websocket
     listen: true
     listen_port: 443
-
-    # Configuration below is completely optional, by default a random self-generated cert is used
-    # and since clients do not validate certs, clients can just connect without this 'tls' section
     tls:
       cert_file: /etc/letsencrypt/live/vpn/fullchain.pem
       key_file: /etc/letsencrypt/live/vpn/privkey.pem
@@ -115,12 +134,19 @@ transports:
 
 ## QUIC (HTTP/3)
 
-QUIC is added to expose Wireguard behind HTTP/3 capable reverse proxies to improve performance. it uses QUIC WebTransport [https://developer.mozilla.org/en-US/docs/Web/API/WebTransport](https://developer.mozilla.org/en-US/docs/Web/API/WebTransport), which is a valid web standard specifically for HTTP/3 making it most likely to be forwarded over reverse proxies just like WebSocket.
+QUIC is the high-performance answer when HTTP-style fronting is needed but TCP
+meltdown is unacceptable.
 
-The above modes all require sending wireguard over TCP which has the TCP meltdown problem and degrades performance compared to UDP. By using HTTP/3 which itself is over UDP port 443, we can establish unreliable transport stream. This allows Wireguard to be hosted behind a global reverse proxy/TURN allowing you to easily expose Wireguard on machines where you do not have a port available to port forward and not have the ability/will to host a small TURN relay server on a VPS or want to benefit from the improved IP routing of global CDN networks.
+Why it matters:
 
-In addition to WebTransport, WebSocket over QUIC is also supported. This makes it possible to connect through WebSocket over HTTP to the reverse proxy and let the reverse proxy still tunnel the traffic over QUIC to your Wireguard server, allowing one URL to both terminate HTTP Websocket TCP and QUIC UDP.
+- HTTP and HTTPS over TCP can suffer badly under loss because the outer stream
+  stalls all inner traffic.
+- QUIC keeps the outer carrier on UDP, usually port `443`, while still fitting
+  into modern HTTP/3 infrastructure.
 
+`uwgsocks` uses QUIC WebTransport and also accepts WebSocket-over-HTTP/3 on the
+same path. That lets one edge URL serve both stream-oriented and UDP-friendly
+outer transport paths.
 
 ```yaml
 transports:
@@ -128,9 +154,6 @@ transports:
     base: quic
     listen: true
     listen_port: 443
-
-    # Configuration below is completely optional, by default a random self-generated cert is used
-    # and since clients do not validate certs, clients can just connect without this 'tls' section
     tls:
       cert_file: /etc/letsencrypt/live/vpn/fullchain.pem
       key_file: /etc/letsencrypt/live/vpn/privkey.pem
@@ -142,33 +165,39 @@ transports:
 
 ## DTLS
 
-DTLS is added to make your Wireguard traffic look like legitemate WebRTC traffic. This has the advantage over TLS in that its still UDP and unreliable transport meaning you won't have the TCP meltdown problem.
+DTLS is the UDP-native analogue of TLS.
+
+Use it when the deployment wants traffic that looks more like WebRTC-style UDP
+than plain WireGuard UDP, without introducing TCP head-of-line blocking.
 
 ```yaml
 transports:
-  - name: wireguard-quic
+  - name: wireguard-dtls
     base: dtls
     listen: true
     listen_port: 52201
 ```
 
-# TURN
+## TURN
 
-TURN is supported to use a small TURN server on a linux server (like VPS) to forward incomming connections to your Wireguard server if it does not have the ability to port forward a port.
+TURN is the relay option for deployments where direct inbound UDP is not
+available.
 
-The TURN relay can also be used to let Wireguard clients connect through TURN over TCP/DTLS when normal Wireguard UDP fails and your target server cannot port forward ports.
+Typical uses:
 
-TURN supports the following transport modes:
+- fronting a private WireGuard server behind NAT
+- reaching a server through restrictive networks
+- relaying through carriers that already resemble ordinary WebRTC/TURN traffic
 
-* TURN UDP
-* TURN TCP
-* TURN TLS
-* TURN DTLS
-* TURN HTTP over WebSocket or raw HTTP upgrade
-* TURN HTTPS over WebSocket or raw HTTP upgrade
-* TURN QUIC over WebTransport datagrams, with RFC 9220 WebSocket over HTTP/3 also accepted on the same path
+Supported TURN carrier modes:
 
-TURN is also used by WebRTC so TURN traffic is very unlikely to be blocked/affected by firewalls as many web applications and apps legitemately use this for multimedia streaming, even the normal TURN UDP which does not use any kind of concealing/obfuscation.
+- TURN UDP
+- TURN TCP
+- TURN TLS
+- TURN DTLS
+- TURN HTTP over WebSocket or raw HTTP upgrade
+- TURN HTTPS over WebSocket or raw HTTP upgrade
+- TURN QUIC over WebTransport datagrams, with RFC 9220 WebSocket over HTTP/3 on the same path
 
 ```yaml
 transports:
@@ -178,34 +207,31 @@ transports:
     turn:
       server: turn.example.com:3478
       username: wg
-      password: secret # password is not sent over clear in turn, but used to authenticate the connection with a hash
+      password: secret
       realm: example
-      protocol: udp # udp, tcp, tls, dtls, http, https, quic
+      protocol: udp
       no_create_permission: false
       include_wg_public_key: false
       permissions: [198.51.100.10/32]
-      
-      # a TLS section can be put for TURN as well
 ```
 
-For TURN over HTTP/HTTPS/QUIC the default path is `/turn`. The same TURN
-listener accepts both WebSocket framing and a raw `Upgrade: TURN` stream on
-that path, so reverse proxies can choose between WebSocket compatibility and
-plain upgraded-stream backpressure semantics.
+For TURN over HTTP, HTTPS, or QUIC, the default path is `/turn`. The same
+listener accepts both WebSocket framing and raw `Upgrade: TURN` streams.
 
-# Proxy
+## Proxying The Outer Transport
 
-When you need/want to use a proxy to connect to the Wireguard server, then the above 'base' transports can be routed over it. uwgsocks supports connecting to SOCKS5 and HTTP/HTTPS proxies. Only socks5 proxies support 'UDP' transports like UDP, TURN UDP and DTLS, otherwise you must use a TCP-based transport.
+If the host running `uwgsocks` must first reach the network through another
+proxy, the outer transport can be routed through SOCKS5 or HTTP(S).
 
-SOCKS5/HTTP proxies is mostly supported to let Wireguard connect to local applications like Tor or a corperate zero-trust network app that exposes a proxy on loopback, instead of global HTTP/SOCKS5 proxies.
+Important limitation:
 
-For anonymous HTTPS proxies by default the server certificate is not validated as Wireguard inside the proxy is already encrypted and authenticated. However if you provide a username/password for the proxy, then the uwgsocks will validate the server certificate to prevent exposing your proxy credentials in the clear. This flag is overridable in the config.
-
-The idea why TLS certificates for transports are not validated is to have a higher success rate and ease of use since you do not have to do proper certificate maintenance on client/server keeping the authentication to just Wireguard public/private keys and has a higher success rate when there are misconfigurations.
+- SOCKS5 can carry UDP-style transports such as UDP, TURN UDP, and DTLS.
+- HTTP CONNECT is stream-oriented, so UDP-style transports must switch to a
+  stream-oriented carrier such as TCP, TLS, HTTP, or HTTPS.
 
 ```yaml
 proxy:
-  type: socks5 #http, https or socks5
+  type: socks5
   socks5:
     server: 127.0.0.1:1080
     username: ""
@@ -214,6 +240,9 @@ proxy:
     server: proxy.example.com:443
     username: ""
     password: ""
-
-    # tls config can also be put here if type is https
 ```
+
+For anonymous HTTPS proxies, `uwgsocks` defaults to relaxed certificate
+verification because WireGuard still authenticates the tunnel payload. If proxy
+credentials are configured, the runtime validates the proxy certificate by
+default so those credentials are not exposed to a spoofed proxy endpoint.

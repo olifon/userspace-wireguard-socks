@@ -6,8 +6,6 @@
 Previous: [04 Firewall And ACLs](04-firewall-and-acls.md)  
 Next: [06 Mesh Coordination](06-mesh-coordination.md)
 
-This is the firewall-evasion chapter.
-
 Standard WireGuard over UDP is fast, but it is also easy to fingerprint and
 easy to block on hostile networks. `uwgsocks` can wrap WireGuard in TCP, TLS,
 HTTP, HTTPS, QUIC, and TURN carriers.
@@ -78,8 +76,5 @@ transports:
 
 ## Validation Note
 
-On April 24, 2026, the config validated locally in this sandbox, but I did not
-trust the sandbox for a clean end-to-end QUIC performance signal. Treat QUIC as
-feature-complete in config, but verify on a real Linux host if you are tuning
-it for production.
-
+The config validates locally, but end-to-end QUIC performance should still be
+verified on a real Linux host before treating it as a production baseline.

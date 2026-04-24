@@ -1,5 +1,7 @@
 # Userspace WireGuard Socks
 
+Run WireGuard anywhere without root.
+
 `uwgsocks` is a rootless WireGuard gateway, relay, and application router for
 machines where a kernel VPN is the wrong tool.
 

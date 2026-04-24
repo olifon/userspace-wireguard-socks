@@ -17,6 +17,7 @@
 *.log
 *.o
 *.so
+client_test.yaml
 .codex
 .claude
 

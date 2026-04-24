@@ -6,8 +6,6 @@
 Previous: [01 Simple Client Proxy](01-simple-client-proxy.md)  
 Next: [03 Wrapper Interception](03-wrapper-interception.md)
 
-This is the “ngrok killer” story.
-
 At the data-plane level, `uwgsocks` exposes local services with
 `reverse_forwards`. At the internet edge, the companion project
 `simple-wireguard-server` publishes those services through protected HTTPS

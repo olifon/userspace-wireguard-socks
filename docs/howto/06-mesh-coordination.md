@@ -6,8 +6,6 @@
 Previous: [05 Pluggable Transports](05-pluggable-transports.md)  
 Next: [07 TURN Relay Ingress](07-turn-relay-ingress.md)
 
-This is the SD-WAN chapter.
-
 `mesh_control` is the small tunnel-only coordination plane that lets peers:
 
 - discover other peers

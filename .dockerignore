@@ -1,13 +1,47 @@
-.git
-.github
-dist
+# Copyright (c) 2026 Reindert Pelsma
+# SPDX-License-Identifier: ISC
+
+/uwgsocks
+/uwgfdproxy
+/uwgwrapper
+/dist/
+/build/
+/tmp/
 bin
-tmp
+/turn/turn
+# Nested UI repo lives here but is committed separately.
+/uwgsocks-ui/
+*.swp
+*.test
+*.prof
+*.pprof
+*.out
+*.log
+*.o
+*.sock
 *.db
 *.db-*
-*.log
-*.sock
-uwgsocks
-uwgwrapper
-turn/turn
-cmd/uwgwrapper/assets/uwgpreload.so
+*.so
+client_test.yaml
+.codex
+.claude
+
+turn-open-relay.yaml
+
+# Local, real VPN configs used during manual testing. The repository examples
+# use demonstration-only keys instead.
+/*.local.conf
+/*.local.yaml
+
+# .dockerignore specific, but still committed to GitHub, so not in .gitignore
+.git
+.github
+.gitignore
+LICENSE
+library_example_test.go
+*.md
+docs
+install.bat
+install.ps1
+install.sh
+examples

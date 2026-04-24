@@ -6,8 +6,8 @@
 Previous: [06 Mesh Coordination](06-mesh-coordination.md)  
 Next: [08 Reference Map](08-reference-map.md)
 
-This is the “my WireGuard server is behind NAT and I still want inbound
-connectivity” pattern.
+This is the “WireGuard server behind NAT, but still reachable for inbound
+clients” pattern.
 
 The idea is simple:
 
@@ -79,5 +79,5 @@ UDP listener.
 
 ## Validation Note
 
-The local loopback TURN demo now passes end-to-end in this sandbox after adding
-the explicit localhost TURN permission.
+The local loopback TURN demo passes end-to-end when the explicit localhost TURN
+permission is present.

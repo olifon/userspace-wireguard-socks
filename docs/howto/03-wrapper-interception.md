@@ -6,8 +6,6 @@
 Previous: [02 Server And Ingress](02-server-and-ingress.md)  
 Next: [04 Firewall And ACLs](04-firewall-and-acls.md)
 
-This is the stealth move.
-
 `uwgwrapper` forces unmodified Linux applications through the mesh, including
 programs that do not speak SOCKS5 or HTTP and even statically linked binaries
 that bypass libc fast paths.

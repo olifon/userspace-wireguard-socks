@@ -6,8 +6,6 @@
 Previous: [How-To Index](README.md)  
 Next: [02 Server And Ingress](02-server-and-ingress.md)
 
-This is the 60-second demo.
-
 You will run a rootless WireGuard server on loopback, then a rootless WireGuard
 client that exposes SOCKS5 and HTTP proxy listeners. No host routes. No kernel
 VPN. No root.

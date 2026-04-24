@@ -6,8 +6,6 @@
 Previous: [03 Wrapper Interception](03-wrapper-interception.md)  
 Next: [05 Pluggable Transports](05-pluggable-transports.md)
 
-This is the zero-trust layer.
-
 `uwgsocks` does not just relay packets. It applies outbound ACLs, inbound ACLs,
 and relay ACLs with a userspace conntrack engine so replies can flow without
 opening lateral movement across the mesh.

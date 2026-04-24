@@ -102,22 +102,5 @@ For a release candidate, run two binaries for hours:
 - Periodic API peer, ACL, forward, and reverse-forward updates.
 - Metrics collected from `/v1/status`: goroutine count from the process, heap from pprof if enabled externally, active connection table size, transfer counters, and last handshake.
 
-Also run a real-world browser test through SOCKS5, including HTTP/3-capable sites, because UDP behavior through SOCKS5 clients varies in practice.
-
-One recent real multi-host pass, including amd64, arm64 Termux, arm64 Docker,
-and gVisor, is summarized in
-[docs/live-matrix-2026-04-18.md](live-matrix-2026-04-18.md).
-
-## External Review Checklist
-
-Before calling this production-safe, ask another engineer to review:
-
-- Host-forwarding defaults and redirect behavior.
-- Tunnel address filtering defaults.
-- SOCKS5 parser, especially UDP ASSOCIATE and BIND.
-- HTTP proxy CONNECT parsing and authentication.
-- API authentication and key redaction.
-- DNS fallback behavior and transaction caps.
-- WireGuard peer update and `AllowedIPs` cache update path.
-- Transparent TCP backpressure and global memory limits.
-- Relay ACL behavior, stateless directional mode, and stateful reply tracking.
+Also run a real-world browser test through SOCKS5, including HTTP/3-capable
+sites, because UDP behavior through SOCKS5 clients varies in practice.
