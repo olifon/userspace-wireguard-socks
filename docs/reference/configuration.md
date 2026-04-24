@@ -683,7 +683,8 @@ port when supplied, and peer set, while rejecting `Address`, `DNS`, and `MTU`
 changes that require rebuilding the userspace netstack.
 
 `/v1/socket` is the HTTP-upgraded raw socket protocol documented in
-[`docs/socket-protocol.md`](socket-protocol.md). It is the lowest-level local
+[`docs/reference/socket-protocol.md`](socket-protocol.md). It is the
+lowest-level local
 integration surface in `uwgsocks`: a program can create TCP, UDP, ICMP ping,
 and listener-style sockets directly on top of the userspace TCP/IP stack
 instead of going through SOCKS5 or HTTP proxying. `uwgwrapper` and other local

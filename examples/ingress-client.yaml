@@ -1,0 +1,21 @@
+# Copyright (c) 2026 Reindert Pelsma
+# SPDX-License-Identifier: ISC
+
+# Reverse-forward demo for the ingress how-to. A remote peer that can reach
+# 100.64.90.99:8080 inside the mesh is forwarded back to the local host's
+# 127.0.0.1:8080 web app.
+wireguard:
+  config_file: ./examples/client.conf
+
+proxy:
+  http: 127.0.0.1:8082
+  socks5: 127.0.0.1:1080
+  fallback_direct: false
+
+reverse_forwards:
+  - proto: tcp
+    listen: 100.64.90.99:8080
+    target: 127.0.0.1:8080
+
+acl:
+  outbound_default: allow

@@ -11,6 +11,7 @@ wireguard:
 
 turn:
   server: 127.0.0.1:3478 #Put to your real turn server IP
+  realm: local-turn.example
   username: wireguard
   password: super-secret-turn-password
 

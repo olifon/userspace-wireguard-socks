@@ -6,13 +6,13 @@ wireguard:
   config_file: ./examples/client.conf
 
 api:
-  listen: unix:/run/uwgsocks/api.sock
+  listen: unix:/tmp/uwgsocks-api.sock
   allow_unauthenticated_unix: true
 
 proxy:
   http_listeners:
     # uwgfdproxy can connect to this Unix HTTP listener and use /uwg/socket.
-    - unix:/run/uwgsocks/http.sock
+    - unix:/tmp/uwgsocks-http.sock
 
 socket_api:
   bind: true

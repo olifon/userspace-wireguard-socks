@@ -7,7 +7,7 @@ This is the searchable, field-by-field YAML map for `uwgsocks`.
 
 Use this document when you already know roughly what feature you want and need
 to find the exact option name. Use [Configuration reference](configuration.md)
-and the how-to guides for the behavior and deployment model behind those
+and the [how-to guides](../howto/README.md) for the behavior and deployment model behind those
 options.
 
 Values shown below are defaults where a sensible default exists, otherwise

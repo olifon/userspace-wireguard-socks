@@ -12,7 +12,7 @@ wireguard:
   peers:
     - public_key: c3vrZMkOC89b9UdW3kajFr1y/tzsKDLn9udcchDBER0=
       preshared_key: Qrs3RDGqMFVjWVu1CXX4C3gs8tGvIva3/LlljSBjNSc=
-      endpoint: edge.example.com:51820
+      endpoint: 127.0.0.1:51820
       allowed_ips:
         - 100.64.80.1/32
         - 100.64.80.3/32

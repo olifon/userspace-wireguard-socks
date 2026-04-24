@@ -1,25 +1,52 @@
 <!-- Copyright (c) 2026 Reindert Pelsma -->
 <!-- SPDX-License-Identifier: ISC -->
 
-# Technical How-To
+# How-To Index
 
-This replaces the old repository-root `Full-Technical-How-To.md` with smaller,
-task-oriented documents under `docs/`.
+`uwgsocks` is a rootless WireGuard gateway, relay, and application router. It
+is for the developer who wants WireGuard inside a container, CI job, laptop, or
+locked-down server without touching kernel routes.
 
-Start here:
+If you only remember one thing: this project bridges WireGuard into a userspace
+`gVisor` TCP/IP stack. That makes it a rootless network hypervisor, not just a
+SOCKS proxy and not just a `wireguard-go` wrapper.
 
-- [Build and Quick Start](build-and-quickstart.md)
-- [Host TUN](host-tun.md)
-- [Mesh Control and Peer Sync](mesh-control.md)
-- [Wrapper and fdproxy](wrapper-and-fdproxy.md)
-- [Configuration and Routing](configuration-and-routing.md)
-- [API, Library, and Testing](api-library-and-testing.md)
+## Install
 
-For the canonical references, also keep these nearby:
+```bash
+curl -fsSL https://raw.githubusercontent.com/reindertpelsma/userspace-wireguard-socks/main/install.sh | sh -s -- uwgsocks
+curl -fsSL https://raw.githubusercontent.com/reindertpelsma/userspace-wireguard-socks/main/install.sh | sh -s -- uwgwrapper
+curl -fsSL https://raw.githubusercontent.com/reindertpelsma/userspace-wireguard-socks/main/install.sh | sh -s -- turn
+```
 
-- [Configuration reference](../configuration.md)
-- [Complete config map](../config-reference.md)
-- [Proxy routing reference](../proxy-routing.md)
-- [Raw socket API](../socket-protocol.md)
-- [Testing plan](../testing.md)
-- [TURN relay](../../turn/README.md)
+Build from source instead:
+
+```bash
+bash compile.sh
+```
+
+On Windows, use the release page or the install instructions in the repository
+root [README.md](../../README.md).
+
+## Read In Order
+
+1. [01 Simple Client Proxy](01-simple-client-proxy.md)
+2. [02 Server And Ingress](02-server-and-ingress.md)
+3. [03 Wrapper Interception](03-wrapper-interception.md)
+4. [04 Firewall And ACLs](04-firewall-and-acls.md)
+5. [05 Pluggable Transports](05-pluggable-transports.md)
+6. [06 Mesh Coordination](06-mesh-coordination.md)
+7. [07 TURN Relay Ingress](07-turn-relay-ingress.md)
+8. [08 Reference Map](08-reference-map.md)
+
+## Demo Notes
+
+- The examples under [`examples/`](../../examples/README.md) ship with fixed
+  local-demo keys so you can test immediately.
+- For production, generate real keys with `uwgsocks genkey` or
+  `uwgsocks genpair`.
+- The commands in this guide were written against the files in `examples/`.
+- The public-subdomain ingress story is powered by `uwgsocks` plus the
+  companion control plane
+  [`simple-wireguard-server`](https://github.com/reindertpelsma/simple-wireguard-server).
+

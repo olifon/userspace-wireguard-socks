@@ -1,0 +1,26 @@
+# Copyright (c) 2026 Reindert Pelsma
+# SPDX-License-Identifier: ISC
+
+# Local TURN relay for the TURN how-to. This binds only to loopback and exposes
+# a fixed relay port that a WireGuard client can dial as a normal UDP endpoint.
+realm: "local-turn.example"
+software: "uwgsocks-local-turn"
+allocation_ttl: "10m"
+nonce_ttl: "10m"
+preopen_single_ports: false
+
+listen:
+  relay_ip: "127.0.0.1"
+
+listeners:
+  - type: "udp"
+    listen: "127.0.0.1:3478"
+
+users:
+  - username: "wireguard"
+    password: "super-secret-turn-password"
+    port: 40000
+    permission_behavior: "allow"
+    source_networks:
+      - "127.0.0.0/8"
+    mapped_address: "127.0.0.1:40000"
