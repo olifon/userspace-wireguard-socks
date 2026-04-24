@@ -335,8 +335,10 @@ type Forward struct {
 	// unix+dgram socket for a forward. Unnamed senders cannot receive replies,
 	// so the default is false.
 	AllowUnnamedDGRAM bool `yaml:"allow_unnamed_dgram,omitempty"`
-	// FrameBytes selects the big-endian length prefix used for TCP over
-	// message-oriented Unix sockets. Valid values are 0 (default to 4), 2, and 4.
+	// FrameBytes selects the big-endian length prefix used when a forward maps
+	// a stream protocol onto a message-oriented Unix socket, or a datagram
+	// protocol onto a Unix stream socket. Valid values are 0 (default to 4), 2,
+	// and 4.
 	FrameBytes int `yaml:"frame_bytes,omitempty"`
 }
 

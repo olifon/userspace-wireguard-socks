@@ -1842,8 +1842,8 @@ func (e *Engine) handleTCPReverseForwardConn(tunnel net.Conn, f config.Forward) 
 	var host net.Conn
 	if targetEP.IsUnix() {
 		host, err = dialUnixEndpoint(targetEP)
-		if err == nil && targetEP.UsesMessages() {
-			host = wrapFramedUnixMessageConn(host, f)
+		if err == nil {
+			host = wrapUnixForwardConn(f.Proto, targetEP, f, host)
 		}
 	} else {
 		var d net.Dialer
@@ -1932,6 +1932,9 @@ func (e *Engine) serveUDPReverseForward(pc net.PacketConn, f config.Forward, tar
 			var c net.Conn
 			if targetEP.IsUnix() {
 				c, err = dialUnixEndpoint(targetEP)
+				if err == nil {
+					c = wrapUnixForwardConn(f.Proto, targetEP, f, c)
+				}
 			} else {
 				var d net.Dialer
 				c, err = d.DialContext(ctx, "udp", f.Target)

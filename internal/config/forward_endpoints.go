@@ -32,6 +32,10 @@ func (e ForwardEndpoint) UsesMessages() bool {
 	return e.Kind == ForwardEndpointUnixDgram || e.Kind == ForwardEndpointUnixSeqpacket
 }
 
+func (e ForwardEndpoint) UsesStream() bool {
+	return e.Kind == ForwardEndpointUnixStream
+}
+
 func (e ForwardEndpoint) Network() string {
 	switch e.Kind {
 	case ForwardEndpointUnixStream:
@@ -83,9 +87,6 @@ func ParseForwardEndpoint(proto, raw string) (ForwardEndpoint, error) {
 	default:
 		return ep, fmt.Errorf("unsupported unix endpoint scheme %q", scheme)
 	}
-	if proto == "udp" && ep.Kind == ForwardEndpointUnixStream {
-		return ep, fmt.Errorf("UDP does not support unix stream endpoints")
-	}
 	ep.Address = addr
 	return ep, nil
 }
@@ -114,16 +115,30 @@ func ValidateForwardEndpoints(f Forward, reverse bool) error {
 	if f.FrameBytes != 0 && f.FrameBytes != 2 && f.FrameBytes != 4 {
 		return fmt.Errorf("frame_bytes must be 2, 4, or empty")
 	}
-	if f.Proto == "udp" && f.FrameBytes != 0 {
-		return fmt.Errorf("frame_bytes is only valid for TCP forwards")
-	}
 	if f.FrameBytes != 0 {
-		usesMessageSocket := listen.UsesMessages() || target.UsesMessages()
-		if !usesMessageSocket {
-			return fmt.Errorf("frame_bytes only applies when a TCP forward uses unix+dgram or unix+seqpacket")
+		if !forwardNeedsFraming(f.Proto, listen) && !forwardNeedsFraming(f.Proto, target) {
+			return fmt.Errorf("frame_bytes only applies when TCP uses unix+dgram or unix+seqpacket, or when UDP uses unix+stream")
 		}
 	}
 	return nil
+}
+
+func ForwardNeedsFraming(proto string, ep ForwardEndpoint) bool {
+	return forwardNeedsFraming(proto, ep)
+}
+
+func forwardNeedsFraming(proto string, ep ForwardEndpoint) bool {
+	if !ep.IsUnix() {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(proto)) {
+	case "tcp":
+		return ep.UsesMessages()
+	case "udp":
+		return ep.UsesStream()
+	default:
+		return false
+	}
 }
 
 func splitUnixEndpoint(raw string) (scheme, addr string, ok bool) {

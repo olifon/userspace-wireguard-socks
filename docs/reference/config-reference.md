@@ -171,14 +171,14 @@ forwards:                      # Host listeners that forward traffic into the tu
     target: 10.10.0.20:5432    # Tunnel destination to dial. Must stay host:port.
     proxy_protocol: ""         # "" | v1 | v2
     allow_unnamed_dgram: false # Only for udp + unix+dgram forwards. Unnamed senders otherwise drop.
-    frame_bytes: 0             # Only for tcp over unix+dgram or unix+seqpacket. 0 | 2 | 4 (0 defaults to 4).
+    frame_bytes: 0             # Framing width when TCP uses unix+dgram/seqpacket or UDP uses unix+stream. 0 | 2 | 4.
 
 reverse_forwards:              # Tunnel listeners that forward traffic back to the host.
   - proto: tcp                 # tcp | udp
     listen: 100.64.0.10:8443   # Tunnel-side listen address for the reverse forward.
     target: 127.0.0.1:443      # Host destination to dial, or unix:// target for local services.
     proxy_protocol: ""         # "" | v1 | v2
-    frame_bytes: 0             # Only for tcp reverse forwards targeting unix+dgram or unix+seqpacket.
+    frame_bytes: 0             # Framing width when a reverse forward crosses stream/message Unix socket semantics.
 
 dns_server:                    # Small DNS server hosted inside the tunnel.
   listen: ""                   # Tunnel-only DNS listener, not a host port bind.

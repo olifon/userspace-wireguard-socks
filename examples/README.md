@@ -12,6 +12,7 @@ tokens before real deployment.
 - `server.yaml` / `server.conf`: basic server / exit-node shape
 - `exit-client.yaml` / `exit-server.yaml`: rootless exit-node pair
 - `forwarding.yaml`: local forwards and reverse forwards
+- `unix-forwarding.yaml`: Unix socket forwards and reverse forwards
 - `ingress-client.yaml`: reverse-forward demo for local app ingress
 - `socksify.yaml`: `uwgwrapper` / proxy-oriented local app routing
 - `turn-server.yaml`: WireGuard server that binds through a TURN relay

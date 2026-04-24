@@ -394,13 +394,19 @@ it on loopback.
 UDP supports Unix `dgram` and `seqpacket` sockets. Each Unix sender becomes one
 userspace UDP flow with the normal UDP idle timeout. For `unix+dgram`, replies
 go back to the sender's Unix address, so unnamed senders are dropped by default
-unless `allow_unnamed_dgram: true` is set on that forward listener.
+unless `allow_unnamed_dgram: true` is set on that forward listener. UDP can
+also use `unix+stream` when you want one Unix stream connection to carry framed
+UDP datagrams.
 
 TCP supports Unix `stream`, `dgram`, and `seqpacket`. When TCP is mapped onto a
 message-oriented Unix socket (`dgram` or `seqpacket`), each message carries a
 big-endian length prefix so the byte stream survives intact. Use
 `frame_bytes: 2` or `frame_bytes: 4` to pick the prefix width; the default is
 4 bytes.
+
+`uwgsocks` probes the requested Unix socket family at startup. If the current
+runtime does not support a requested family such as `unix+seqpacket`, startup
+fails with a clear error instead of silently degrading to another socket type.
 
 CLI:
 

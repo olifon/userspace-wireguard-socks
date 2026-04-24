@@ -100,6 +100,7 @@ Start with the guided flow:
 - [06 Mesh Coordination](docs/howto/06-mesh-coordination.md)
 - [07 TURN Relay Ingress](docs/howto/07-turn-relay-ingress.md)
 - [08 Reference Map](docs/howto/08-reference-map.md)
+- [09 Unix Socket Forwards](docs/howto/09-unix-socket-forwards.md)
 
 Deep reference docs:
 

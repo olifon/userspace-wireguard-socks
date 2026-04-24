@@ -38,6 +38,7 @@ root [README.md](../../README.md).
 6. [06 Mesh Coordination](06-mesh-coordination.md)
 7. [07 TURN Relay Ingress](07-turn-relay-ingress.md)
 8. [08 Reference Map](08-reference-map.md)
+9. [09 Unix Socket Forwards](09-unix-socket-forwards.md)
 
 ## Demo Notes
 
@@ -49,4 +50,3 @@ root [README.md](../../README.md).
 - The public-subdomain ingress story is powered by `uwgsocks` plus the
   companion control plane
   [`simple-wireguard-server`](https://github.com/reindertpelsma/simple-wireguard-server).
-

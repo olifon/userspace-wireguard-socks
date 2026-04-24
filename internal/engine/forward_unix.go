@@ -25,6 +25,8 @@ import (
 
 const unixMessageChunkBytes = 60 * 1024
 
+var unixNetworkSupportCache sync.Map
+
 func frameBytesForForward(f config.Forward) int {
 	if f.FrameBytes == 2 {
 		return 2
@@ -45,7 +47,74 @@ func prepareUnixSocketPath(path string) error {
 	return nil
 }
 
+func unixForwardNeedsFraming(proto string, ep config.ForwardEndpoint) bool {
+	return config.ForwardNeedsFraming(proto, ep)
+}
+
+func wrapUnixForwardConn(proto string, ep config.ForwardEndpoint, f config.Forward, c net.Conn) net.Conn {
+	if !unixForwardNeedsFraming(proto, ep) {
+		return c
+	}
+	return wrapFramedUnixMessageConn(c, f)
+}
+
+func requireUnixNetworkSupport(network string) error {
+	if network == "" {
+		return nil
+	}
+	if cached, ok := unixNetworkSupportCache.Load(network); ok {
+		if msg, _ := cached.(string); msg != "" {
+			return fmt.Errorf("%s", msg)
+		}
+		return nil
+	}
+	err := probeUnixNetworkSupport(network)
+	if err != nil {
+		unixNetworkSupportCache.Store(network, err.Error())
+		return err
+	}
+	unixNetworkSupportCache.Store(network, "")
+	return nil
+}
+
+func probeUnixNetworkSupport(network string) error {
+	suffix, err := randomHexSuffix()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(os.TempDir(), "uwgsocks-cap-"+suffix+".sock")
+	switch network {
+	case "unix":
+		ln, err := net.Listen("unix", path)
+		if err != nil {
+			return fmt.Errorf("%s sockets are not supported on %s: %w", network, runtime.GOOS, err)
+		}
+		_ = ln.Close()
+	case "unixpacket":
+		ln, err := net.Listen("unixpacket", path)
+		if err != nil {
+			return fmt.Errorf("%s sockets are not supported on %s: %w", network, runtime.GOOS, err)
+		}
+		_ = ln.Close()
+	case "unixgram":
+		pc, err := net.ListenPacket("unixgram", path)
+		if err != nil {
+			return fmt.Errorf("%s sockets are not supported on %s: %w", network, runtime.GOOS, err)
+		}
+		_ = pc.Close()
+	default:
+		return fmt.Errorf("unsupported unix socket network %q", network)
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 func listenUnixEndpoint(ep config.ForwardEndpoint) (net.Listener, error) {
+	if err := requireUnixNetworkSupport(ep.Network()); err != nil {
+		return nil, err
+	}
 	if err := prepareUnixSocketPath(ep.Address); err != nil {
 		return nil, err
 	}
@@ -53,6 +122,9 @@ func listenUnixEndpoint(ep config.ForwardEndpoint) (net.Listener, error) {
 }
 
 func listenUnixDatagram(ep config.ForwardEndpoint) (*net.UnixConn, error) {
+	if err := requireUnixNetworkSupport(ep.Network()); err != nil {
+		return nil, err
+	}
 	if err := prepareUnixSocketPath(ep.Address); err != nil {
 		return nil, err
 	}
@@ -69,6 +141,9 @@ func listenUnixDatagram(ep config.ForwardEndpoint) (*net.UnixConn, error) {
 }
 
 func dialUnixEndpoint(ep config.ForwardEndpoint) (net.Conn, error) {
+	if err := requireUnixNetworkSupport(ep.Network()); err != nil {
+		return nil, err
+	}
 	switch ep.Kind {
 	case config.ForwardEndpointUnixStream, config.ForwardEndpointUnixSeqpacket:
 		return net.Dial(ep.Network(), ep.Address)
@@ -472,9 +547,7 @@ func (e *Engine) startTCPUnixForward(name string, f config.Forward, ep config.Fo
 				}
 				return
 			}
-			if ep.UsesMessages() {
-				c = wrapFramedUnixMessageConn(c, f)
-			}
+			c = wrapUnixForwardConn(f.Proto, ep, f, c)
 			go e.runTCPForwardConn(c, f)
 		}
 	}()
@@ -548,6 +621,7 @@ func (e *Engine) startUDPUnixForward(name string, f config.Forward, ep config.Fo
 				}
 				return
 			}
+			c = wrapUnixForwardConn(f.Proto, ep, f, c)
 			go e.handleUDPUnixPacketForwardConn(c, f)
 		}
 	}()

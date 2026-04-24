@@ -1,0 +1,47 @@
+# Copyright (c) 2026 Reindert Pelsma
+# SPDX-License-Identifier: ISC
+
+# Demonstrates Unix socket listeners for forwards and Unix socket targets for
+# reverse forwards. Replace the WireGuard keys, addresses, and local paths
+# before using this outside a local test.
+wireguard:
+  config_file: ./examples/client.conf
+
+proxy:
+  socks5: 127.0.0.1:1080
+  fallback_direct: true
+
+forwards:
+  # Local Unix stream listener. Programs that speak to this socket reach the
+  # remote TCP service through WireGuard.
+  - proto: tcp
+    listen: unix:///tmp/uwg-postgres.sock
+    target: 100.64.90.1:5432
+
+  # Local Unix datagram listener for a UDP service such as DNS.
+  - proto: udp
+    listen: unix+dgram:///tmp/uwg-dns.sock
+    target: 100.64.90.1:53
+
+  # Local Unix stream listener carrying framed UDP datagrams.
+  - proto: udp
+    listen: unix+stream:///tmp/uwg-udp-stream.sock
+    target: 100.64.90.1:123
+    frame_bytes: 2
+
+  # Local sequenced-packet listener carrying framed TCP bytes.
+  - proto: tcp
+    listen: unix+seqpacket:///tmp/uwg-admin.seqpacket
+    target: 100.64.90.1:19090
+    frame_bytes: 2
+
+reverse_forwards:
+  # Publish a local Unix socket service such as Docker to other peers.
+  - proto: tcp
+    listen: 100.64.90.99:2375
+    target: unix:///var/run/docker.sock
+
+  # Publish a local HTTP server bound to a Unix socket instead of loopback.
+  - proto: tcp
+    listen: 100.64.90.99:8080
+    target: unix:///tmp/node-http.sock

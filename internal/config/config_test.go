@@ -391,6 +391,21 @@ func TestParseForwardArgUnixEndpoints(t *testing.T) {
 		t.Fatalf("parsed unix dgram endpoint mismatch: %+v", ep)
 	}
 
+	f, err = ParseForwardArg("udp://unix+stream:///tmp/dns-stream.sock=100.64.71.10:53,frame_bytes=2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep, err = ParseForwardEndpoint(f.Proto, f.Listen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ep.Kind != ForwardEndpointUnixStream || ep.Network() != "unix" || f.FrameBytes != 2 {
+		t.Fatalf("parsed unix stream UDP endpoint mismatch: forward=%+v endpoint=%+v", f, ep)
+	}
+	if !ForwardNeedsFraming(f.Proto, ep) {
+		t.Fatalf("expected UDP unix stream endpoint to require framing: %+v", ep)
+	}
+
 	f = Forward{Proto: "tcp", Listen: "100.64.71.10:80", Target: "unix+seqpacket:///tmp/backend.sock", FrameBytes: 2}
 	if err := ValidateForwardEndpoints(f, true); err != nil {
 		t.Fatalf("ValidateForwardEndpoints(reverse unix seqpacket) err=%v", err)
@@ -406,7 +421,6 @@ func TestParseForwardArgUnixEndpoints(t *testing.T) {
 
 func TestValidateForwardEndpointsRejectsInvalidUnixCombos(t *testing.T) {
 	cases := []Forward{
-		{Proto: "udp", Listen: "unix+stream:///tmp/udp.sock", Target: "100.64.71.10:53"},
 		{Proto: "tcp", Listen: "127.0.0.1:8080", Target: "unix:///tmp/invalid.sock"},
 		{Proto: "tcp", Listen: "unix:///tmp/in.sock", Target: "100.64.71.10:80", AllowUnnamedDGRAM: true},
 		{Proto: "udp", Listen: "unix+dgram:///tmp/in.sock", Target: "100.64.71.10:53", FrameBytes: 4},
