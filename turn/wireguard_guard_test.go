@@ -10,6 +10,47 @@ import (
 	"golang.org/x/crypto/blake2s"
 )
 
+func makeHandshakeInitiation(t *testing.T, guard *WireguardGuard, sender uint32) []byte {
+	t.Helper()
+	packet := make([]byte, HandshakeInitiationSize)
+	packet[0] = PacketHandshakeInitiation
+	binary.LittleEndian.PutUint32(packet[4:8], sender)
+
+	h128, err := blake2s.New128(guard.Mac1Key[:])
+	if err != nil {
+		t.Fatalf("blake2s mac1: %v", err)
+	}
+	h128.Write(packet[:116])
+	copy(packet[116:132], h128.Sum(nil))
+	return packet
+}
+
+func addValidMac2(t *testing.T, guard *WireguardGuard, packet []byte, ip net.IP) {
+	t.Helper()
+	cookie := guard.getCookie(ip)
+	h128, err := blake2s.New128(cookie[:])
+	if err != nil {
+		t.Fatalf("blake2s mac2: %v", err)
+	}
+	h128.Write(packet[:132])
+	copy(packet[132:148], h128.Sum(nil))
+}
+
+func setHandshakeRateEntry(guard *WireguardGuard, ip string, last time.Time, verified bool) {
+	guard.mu.Lock()
+	defer guard.mu.Unlock()
+	for i := range guard.HandshakeRate {
+		if guard.HandshakeRate[i].IP == "" || guard.HandshakeRate[i].IP == ip {
+			guard.HandshakeRate[i] = handshakeRateEntry{
+				IP:             ip,
+				LastPostCookie: last,
+				Verified:       verified,
+			}
+			return
+		}
+	}
+}
+
 func TestWireguardGuard_Fuzz(t *testing.T) {
 	var pubKey [32]byte
 	rand.Read(pubKey[:])
@@ -48,20 +89,7 @@ func TestWireguardGuard_HandshakeAndCookies(t *testing.T) {
 	remoteAddr := &net.UDPAddr{IP: net.ParseIP("1.2.3.4"), Port: 12345}
 	relayPort := 3478
 
-	// Create valid Handshake Initiation
-	initiation := make([]byte, HandshakeInitiationSize)
-	initiation[0] = PacketHandshakeInitiation
-	binary.LittleEndian.PutUint32(initiation[4:8], 123) // sender index
-
-	// Calculate mac1
-	h, _ := blake2s.New256(nil)
-	h.Write([]byte("mac1----"))
-	h.Write(pubKey[:])
-	mac1Key := h.Sum(nil)
-
-	h128, _ := blake2s.New128(mac1Key)
-	h128.Write(initiation[:116])
-	copy(initiation[116:132], h128.Sum(nil))
+	initiation := makeHandshakeInitiation(t, guard, 123)
 
 	// Inbound Handshake Initiation -> allowed
 	allowed, modified := guard.ProcessInbound(initiation, remoteAddr, relayPort)
@@ -110,17 +138,7 @@ func TestWireguardGuard_DoSAndCookies(t *testing.T) {
 	relayPort := 3478
 
 	// Initiation without mac2 in DoS mode -> should return Cookie Reply
-	initiation := make([]byte, HandshakeInitiationSize)
-	initiation[0] = PacketHandshakeInitiation
-	binary.LittleEndian.PutUint32(initiation[4:8], 123)
-
-	h, _ := blake2s.New256(nil)
-	h.Write([]byte("mac1----"))
-	h.Write(pubKey[:])
-	mac1Key := h.Sum(nil)
-	h128, _ := blake2s.New128(mac1Key)
-	h128.Write(initiation[:116])
-	copy(initiation[116:132], h128.Sum(nil))
+	initiation := makeHandshakeInitiation(t, guard, 123)
 
 	allowed, modified := guard.ProcessInbound(initiation, remoteAddr, relayPort)
 	if allowed {
@@ -131,15 +149,108 @@ func TestWireguardGuard_DoSAndCookies(t *testing.T) {
 	}
 
 	// Now send initiation with valid mac2 (from our cookie)
-	// First get the cookie
-	ourCookie := guard.getCookie(net.ParseIP("1.2.3.4"))
-	h128mac2, _ := blake2s.New128(ourCookie[:])
-	h128mac2.Write(initiation[:132])
-	copy(initiation[132:148], h128mac2.Sum(nil))
+	addValidMac2(t, guard, initiation, net.ParseIP("1.2.3.4"))
 
 	allowed, _ = guard.ProcessInbound(initiation, remoteAddr, relayPort)
 	if !allowed {
 		t.Error("Initiation with valid mac2 should be allowed in DoS mode")
+	}
+}
+
+func TestWireguardGuard_InvalidMac2MatchesMissingMac2(t *testing.T) {
+	var pubKey [32]byte
+	rand.Read(pubKey[:])
+	guard := NewWireguardGuard(pubKey)
+	guard.DoSLevel = DoSLevelFull
+	remoteAddr := &net.UDPAddr{IP: net.ParseIP("1.2.3.4"), Port: 12345}
+
+	missing := makeHandshakeInitiation(t, guard, 111)
+	allowed, modified := guard.ProcessInbound(missing, remoteAddr, 3478)
+	if allowed || modified == nil || modified[0] != PacketCookieReply {
+		t.Fatal("missing mac2 should trigger a cookie reply in full DoS mode")
+	}
+
+	invalid := makeHandshakeInitiation(t, guard, 222)
+	for i := 132; i < 148; i++ {
+		invalid[i] = 0x42
+	}
+	allowed, modified = guard.ProcessInbound(invalid, remoteAddr, 3478)
+	if allowed || modified == nil || modified[0] != PacketCookieReply {
+		t.Fatal("invalid mac2 should be treated the same as missing mac2")
+	}
+}
+
+func TestWireguardGuard_PostCookieHandshakeRateLimits(t *testing.T) {
+	var pubKey [32]byte
+	rand.Read(pubKey[:])
+	guard := NewWireguardGuard(pubKey)
+	guard.DoSLevel = DoSLevelFull
+	remoteIP := net.ParseIP("1.2.3.4")
+	remoteAddr := &net.UDPAddr{IP: remoteIP, Port: 12345}
+	relayPort := 3478
+
+	first := makeHandshakeInitiation(t, guard, 100)
+	addValidMac2(t, guard, first, remoteIP)
+	if allowed, _ := guard.ProcessInbound(first, remoteAddr, relayPort); !allowed {
+		t.Fatal("first post-cookie initiation should be forwarded")
+	}
+
+	second := makeHandshakeInitiation(t, guard, 101)
+	addValidMac2(t, guard, second, remoteIP)
+	if allowed, _ := guard.ProcessInbound(second, remoteAddr, relayPort); allowed {
+		t.Fatal("second post-cookie initiation inside 500ms should be dropped")
+	}
+
+	setHandshakeRateEntry(guard, remoteIP.String(), time.Now().Add(-time.Second), false)
+	guard.mu.Lock()
+	guard.StricterHandshakeLimitAll = true
+	guard.mu.Unlock()
+	third := makeHandshakeInitiation(t, guard, 102)
+	addValidMac2(t, guard, third, remoteIP)
+	if allowed, _ := guard.ProcessInbound(third, remoteAddr, relayPort); allowed {
+		t.Fatal("strict all-IPs limit should enforce a 5 second post-cookie window")
+	}
+
+	setHandshakeRateEntry(guard, remoteIP.String(), time.Now().Add(-6*time.Second), false)
+	fourth := makeHandshakeInitiation(t, guard, 103)
+	addValidMac2(t, guard, fourth, remoteIP)
+	if allowed, _ := guard.ProcessInbound(fourth, remoteAddr, relayPort); !allowed {
+		t.Fatal("expired post-cookie limiter entry should allow a fresh initiation")
+	}
+}
+
+func TestWireguardGuard_StrictUnknownIPsExemptsKnownVerifiedIPs(t *testing.T) {
+	var pubKey [32]byte
+	rand.Read(pubKey[:])
+	guard := NewWireguardGuard(pubKey)
+	guard.DoSLevel = DoSLevelFull
+	guard.StricterHandshakeLimitUnknowns = true
+	relayPort := 3478
+
+	knownAddr := &net.UDPAddr{IP: net.ParseIP("10.0.0.1"), Port: 1111}
+	unknownAddr := &net.UDPAddr{IP: net.ParseIP("10.0.0.2"), Port: 2222}
+
+	guard.mu.Lock()
+	guard.Sessions = append(guard.Sessions, &WireguardSession{
+		RelayPort:     relayPort,
+		RemoteAddr:    knownAddr.String(),
+		Verified:      true,
+		LastServerPkt: time.Now(),
+	})
+	guard.mu.Unlock()
+	setHandshakeRateEntry(guard, knownAddr.IP.String(), time.Now().Add(-time.Second), true)
+	setHandshakeRateEntry(guard, unknownAddr.IP.String(), time.Now().Add(-time.Second), false)
+
+	known := makeHandshakeInitiation(t, guard, 201)
+	addValidMac2(t, guard, known, knownAddr.IP)
+	if allowed, _ := guard.ProcessInbound(known, knownAddr, relayPort); !allowed {
+		t.Fatal("known verified IP should bypass the stricter unknown-IP handshake window")
+	}
+
+	unknown := makeHandshakeInitiation(t, guard, 202)
+	addValidMac2(t, guard, unknown, unknownAddr.IP)
+	if allowed, _ := guard.ProcessInbound(unknown, unknownAddr, relayPort); allowed {
+		t.Fatal("unknown IP should be held to the stricter 5 second handshake window")
 	}
 }
 
@@ -308,4 +419,61 @@ func TestWireguardGuard_RoamSustainedEscalatesDoS(t *testing.T) {
 	if guard.DoSLevel == DoSLevelNone {
 		t.Fatal("sustained roam activity did not raise DoS level")
 	}
+}
+
+func TestWireguardGuard_HandshakeFloodEscalatesDoSAndStrictFlags(t *testing.T) {
+	var pubKey [32]byte
+	rand.Read(pubKey[:])
+	guard := NewWireguardGuard(pubKey)
+
+	guard.mu.Lock()
+	guard.ForwardedHandshakeCount = handshakeRateLimit + 1
+	guard.LastHandshakeRateReset = time.Now().Add(-2 * handshakeRateWindow)
+	guard.maintenanceHandshakePressure(time.Now())
+	if guard.DoSLevel != DoSLevelUnknownIPs {
+		t.Fatalf("first over-limit window should raise DoS to unknown-IPs, got %v", guard.DoSLevel)
+	}
+
+	guard.ForwardedHandshakeCount = handshakeRateLimit + 1
+	guard.LastHandshakeRateReset = time.Now().Add(-2 * handshakeRateWindow)
+	guard.maintenanceHandshakePressure(time.Now())
+	if guard.DoSLevel != DoSLevelFull {
+		t.Fatalf("second over-limit window should raise DoS to full, got %v", guard.DoSLevel)
+	}
+
+	guard.ForwardedHandshakeCount = handshakeRateLimit + 1
+	guard.LastHandshakeRateReset = time.Now().Add(-2 * handshakeRateWindow)
+	guard.maintenanceHandshakePressure(time.Now())
+	if !guard.StricterHandshakeLimitUnknowns {
+		t.Fatal("third over-limit window at full DoS should enable stricter unknown-IP limits")
+	}
+
+	guard.ForwardedHandshakeCount = handshakeRateLimit + 1
+	guard.LastHandshakeRateReset = time.Now().Add(-2 * handshakeRateWindow)
+	guard.maintenanceHandshakePressure(time.Now())
+	if !guard.StricterHandshakeLimitAll {
+		t.Fatal("fourth over-limit window at full DoS should enable stricter all-IP limits")
+	}
+	guard.mu.Unlock()
+}
+
+func TestWireguardGuard_DoSDecreaseClearsStrictHandshakeFlags(t *testing.T) {
+	var pubKey [32]byte
+	rand.Read(pubKey[:])
+	guard := NewWireguardGuard(pubKey)
+
+	guard.mu.Lock()
+	guard.DoSLevel = DoSLevelFull
+	guard.StricterHandshakeLimitUnknowns = true
+	guard.StricterHandshakeLimitAll = true
+	guard.DOSLowerTrigger = 11
+	guard.LastStatsReset = time.Now().Add(-11 * time.Second)
+	guard.maintenance()
+	if guard.DoSLevel != DoSLevelUnknownIPs {
+		t.Fatalf("expected DoS level to decrease by one step, got %v", guard.DoSLevel)
+	}
+	if guard.StricterHandshakeLimitUnknowns || guard.StricterHandshakeLimitAll {
+		t.Fatal("decreasing DoS level should clear stricter handshake flags")
+	}
+	guard.mu.Unlock()
 }

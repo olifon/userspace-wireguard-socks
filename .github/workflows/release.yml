@@ -11,9 +11,57 @@ permissions:
   packages: write
 
 jobs:
+  release-validate:
+    name: release validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build Linux uwgwrapper preload asset (glibc)
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD:/workspace" \
+            -w /workspace \
+            golang:1.24-bullseye \
+            bash -lc 'export PATH=/usr/local/go/bin:$PATH GOTOOLCHAIN=auto && \
+              apt-get update >/dev/null && apt-get install -y gcc libc6-dev >/dev/null && \
+              mkdir -p cmd/uwgwrapper/assets && \
+              gcc -shared -fPIC -O2 -Wall -Wextra \
+                -o cmd/uwgwrapper/assets/uwgpreload.so preload/uwgpreload.c -ldl -pthread -lpthread'
+          sudo chown -R "$(id -u):$(id -g)" cmd/uwgwrapper/assets
+
+      - name: Run release Linux tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t packages < <(go list ./... | grep -v '/tests/preload$')
+          go test "${packages[@]}"
+          go test ./tests/preload/... || go test ./tests/preload/...
+          cd turn
+          go test ./...
+
+      - name: Run release lite tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -tags lite ./...
+
+      - name: Run release soak test
+        shell: bash
+        run: |
+          set -euo pipefail
+          UWGS_SOAK=1 UWGS_SOAK_SECONDS=15 go test ./tests/soak -run TestLoopbackImpairedChattySOCKSSoak -count=1
+
   build-uwgsocks:
     name: uwgsocks ${{ matrix.goos }} ${{ matrix.goarch }}
     runs-on: ubuntu-latest
+    needs: release-validate
     strategy:
       fail-fast: false
       matrix:
@@ -89,6 +137,7 @@ jobs:
   build-uwgsocks-lite:
     name: uwgsocks-lite ${{ matrix.goos }} ${{ matrix.goarch }}
     runs-on: ubuntu-latest
+    needs: release-validate
     strategy:
       fail-fast: false
       matrix:
@@ -164,6 +213,7 @@ jobs:
   build-turn:
     name: turn ${{ matrix.goos }} ${{ matrix.goarch }}
     runs-on: ubuntu-latest
+    needs: release-validate
     strategy:
       fail-fast: false
       matrix:
@@ -237,6 +287,7 @@ jobs:
   build-uwgwrapper:
     name: uwgwrapper linux ${{ matrix.goarch }} ${{ matrix.libc }}
     runs-on: ${{ matrix.runner }}
+    needs: release-validate
     strategy:
       fail-fast: false
       matrix:

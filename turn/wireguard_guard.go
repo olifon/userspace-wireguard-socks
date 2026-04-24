@@ -33,6 +33,12 @@ const (
 	SpecialPacketRateLimit = 4          // per second
 	roamBurstWindow        = 50 * time.Millisecond
 	roamSustainedWindow    = 30 * time.Second
+	handshakePostCookieMin = 500 * time.Millisecond
+	handshakePostCookieTTL = 5 * time.Second
+	handshakeStrictWindow  = 5 * time.Second
+	handshakeRateWindow    = time.Second
+	handshakeRateLimit     = 10
+	handshakeRateTableSize = 4096
 )
 
 var (
@@ -67,6 +73,12 @@ type WireguardSession struct {
 	RoamWindowCount int
 }
 
+type handshakeRateEntry struct {
+	IP             string
+	LastPostCookie time.Time
+	Verified       bool
+}
+
 type WireguardGuard struct {
 	PublicKey [32]byte
 	Mac1Key   [32]byte
@@ -80,6 +92,12 @@ type WireguardGuard struct {
 	SecretChanged time.Time
 	DoSLevel      DoSLevel
 
+	HandshakeRate                  [handshakeRateTableSize]handshakeRateEntry
+	LastHandshakeRateReset         time.Time
+	ForwardedHandshakeCount        int
+	StricterHandshakeLimitUnknowns bool
+	StricterHandshakeLimitAll      bool
+
 	// Stats for DoS detection
 	RoamCount       int
 	HandshakeCount  int
@@ -90,9 +108,10 @@ type WireguardGuard struct {
 
 func NewWireguardGuard(publicKey [32]byte) *WireguardGuard {
 	g := &WireguardGuard{
-		PublicKey:      publicKey,
-		LastStatsReset: time.Now(),
-		MaxSessions:    DefaultMaxSessions,
+		PublicKey:              publicKey,
+		LastStatsReset:         time.Now(),
+		LastHandshakeRateReset: time.Now(),
+		MaxSessions:            DefaultMaxSessions,
 	}
 
 	h, _ := blake2s.New256(nil)
@@ -176,11 +195,12 @@ func (g *WireguardGuard) handleInboundHandshakeInitiation(packet []byte, remoteA
 	}
 
 	if !g.verifyMac1(packet, 116) {
-		g.RejectionCount++
 		return false, nil
 	}
 
 	clientIP := getIP(remoteAddr)
+	clientIPStr := clientIP.String()
+	now := time.Now()
 	ourCookie := g.getCookie(clientIP)
 
 	var cookies [][16]byte
@@ -209,23 +229,30 @@ func (g *WireguardGuard) handleInboundHandshakeInitiation(packet []byte, remoteA
 		}
 	}
 
-	// DoS protection
-	overload := g.DoSLevel != DoSLevelNone
-	if overload {
-		// Handshakes from known IPs don't need cookie reply if DoSLevel is 1
-		knownIP := false
-		if g.DoSLevel == DoSLevelUnknownIPs {
-			for _, s := range g.Sessions {
-				if s.Verified && getIPStr(s.RemoteAddr) == clientIP.String() {
-					knownIP = true
-					break
-				}
+	knownIP := g.isKnownVerifiedIP(clientIPStr)
+	underDoSProtection := g.DoSLevel == DoSLevelFull || (g.DoSLevel == DoSLevelUnknownIPs && !knownIP)
+	if underDoSProtection {
+		if entry := g.lookupHandshakeRateEntry(clientIPStr, now); entry != nil {
+			age := now.Sub(entry.LastPostCookie)
+			if age < handshakePostCookieMin {
+				return false, nil
+			}
+			if g.StricterHandshakeLimitAll && age < handshakeStrictWindow {
+				return false, nil
+			}
+			if g.StricterHandshakeLimitUnknowns && !knownIP && age < handshakeStrictWindow {
+				return false, nil
 			}
 		}
 
-		if !mac2Validated && !knownIP {
+		if !mac2Validated {
 			return false, g.createCookieReply(packet, remoteAddr)
 		}
+	}
+	rateSlot := g.selectHandshakeRateSlot(clientIPStr, now)
+	if rateSlot == -1 {
+		g.RejectionCount++
+		return false, nil
 	}
 
 	// Create or update session
@@ -277,6 +304,8 @@ func (g *WireguardGuard) handleInboundHandshakeInitiation(packet []byte, remoteA
 	copy(sess.LastMac1[:], packet[116:132])
 
 	g.HandshakeCount++
+	g.ForwardedHandshakeCount++
+	g.commitHandshakeRateSlot(rateSlot, clientIPStr, knownIP, now)
 
 	// Forward handshake initiation. If mac2 was validated against our cookie, clear it.
 	if mac2Validated && !useForwarded {
@@ -534,6 +563,7 @@ func (g *WireguardGuard) ProcessOutbound(packet []byte, remoteAddr net.Addr, rel
 	sess.DoSDataCount = 0
 	sess.LastServerPkt = time.Now()
 	sess.Verified = true
+	g.markHandshakeIPVerified(getIPStr(remoteAddrStr), sess.LastServerPkt)
 
 	return true
 }
@@ -601,6 +631,7 @@ func (g *WireguardGuard) noteRoam(sess *WireguardSession, now time.Time) {
 
 func (g *WireguardGuard) maintenance() {
 	now := time.Now()
+	g.maintenanceHandshakePressure(now)
 
 	// Update DoS level
 	if now.Sub(g.LastStatsReset) > 10*time.Second {
@@ -648,6 +679,8 @@ func (g *WireguardGuard) maintenance() {
 				if g.DOSLowerTrigger > 10 {
 					g.DOSLowerTrigger = 0
 					g.DoSLevel--
+					g.StricterHandshakeLimitUnknowns = false
+					g.StricterHandshakeLimitAll = false
 				} else {
 					g.DOSLowerTrigger++
 				}
@@ -658,6 +691,111 @@ func (g *WireguardGuard) maintenance() {
 		g.HandshakeCount = 0
 		g.RejectionCount = 0
 		g.LastStatsReset = now
+	}
+}
+
+func (g *WireguardGuard) maintenanceHandshakePressure(now time.Time) {
+	if g.LastHandshakeRateReset.IsZero() {
+		g.LastHandshakeRateReset = now
+		return
+	}
+	if now.Sub(g.LastHandshakeRateReset) < handshakeRateWindow {
+		return
+	}
+	if g.ForwardedHandshakeCount > handshakeRateLimit {
+		switch {
+		case g.DoSLevel < DoSLevelFull:
+			g.DoSLevel++
+			g.DOSLowerTrigger = 0
+		case !g.StricterHandshakeLimitUnknowns:
+			g.StricterHandshakeLimitUnknowns = true
+			g.DOSLowerTrigger = 0
+		case !g.StricterHandshakeLimitAll:
+			g.StricterHandshakeLimitAll = true
+			g.DOSLowerTrigger = 0
+		}
+	}
+	g.ForwardedHandshakeCount = 0
+	g.LastHandshakeRateReset = now
+}
+
+func (g *WireguardGuard) isKnownVerifiedIP(ip string) bool {
+	for _, s := range g.Sessions {
+		if s != nil && s.Verified && getIPStr(s.RemoteAddr) == ip {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *WireguardGuard) lookupHandshakeRateEntry(ip string, now time.Time) *handshakeRateEntry {
+	for i := range g.HandshakeRate {
+		entry := &g.HandshakeRate[i]
+		if entry.IP != ip {
+			continue
+		}
+		if entry.LastPostCookie.IsZero() || now.Sub(entry.LastPostCookie) >= handshakePostCookieTTL {
+			continue
+		}
+		return entry
+	}
+	return nil
+}
+
+func (g *WireguardGuard) selectHandshakeRateSlot(ip string, now time.Time) int {
+	var emptyIdx = -1
+	var expiredIdx = -1
+
+	for i := range g.HandshakeRate {
+		entry := &g.HandshakeRate[i]
+		switch {
+		case entry.IP == "":
+			if emptyIdx == -1 {
+				emptyIdx = i
+			}
+		case entry.IP == ip:
+			if !entry.LastPostCookie.IsZero() && now.Sub(entry.LastPostCookie) < handshakePostCookieTTL {
+				return i
+			}
+		case !entry.LastPostCookie.IsZero() && now.Sub(entry.LastPostCookie) >= handshakePostCookieTTL:
+			if expiredIdx == -1 {
+				expiredIdx = i
+			}
+		}
+	}
+
+	targetIdx := emptyIdx
+	if targetIdx == -1 {
+		targetIdx = expiredIdx
+	}
+	return targetIdx
+}
+
+func (g *WireguardGuard) commitHandshakeRateSlot(idx int, ip string, verified bool, now time.Time) {
+	if idx < 0 || idx >= len(g.HandshakeRate) {
+		return
+	}
+	g.HandshakeRate[idx] = handshakeRateEntry{
+		IP:             ip,
+		LastPostCookie: now,
+		Verified:       verified,
+	}
+}
+
+func (g *WireguardGuard) markHandshakeIPVerified(ip string, now time.Time) {
+	if ip == "" {
+		return
+	}
+	for i := range g.HandshakeRate {
+		entry := &g.HandshakeRate[i]
+		if entry.IP != ip {
+			continue
+		}
+		if entry.LastPostCookie.IsZero() || now.Sub(entry.LastPostCookie) >= handshakePostCookieTTL {
+			continue
+		}
+		entry.Verified = true
+		return
 	}
 }
 
