@@ -4,6 +4,7 @@ WORKDIR /src
 
 COPY turn/go.mod turn/go.sum ./
 COPY third_party/anet /third_party/anet
+COPY third_party/pionturnv4 /third_party/pionturnv4
 RUN go mod download
 
 COPY turn/. .
