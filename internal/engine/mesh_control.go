@@ -307,13 +307,101 @@ func (e *Engine) startMeshControlServer() error {
 	mux.HandleFunc("/v1/acls", e.handleMeshControlACLs)
 	mux.HandleFunc("/v1/subscribe", e.handleMeshControlNotImplemented)
 
-	server := e.proxyHTTPServer(mux)
+	server := e.proxyHTTPServer(meshControlRateLimit(mux))
 	go func() {
 		if err := server.Serve(ln); err != nil && !isClosedErr(err) {
 			e.log.Printf("mesh control stopped: %v", err)
 		}
 	}()
 	return nil
+}
+
+// meshControlRateLimit caps requests-per-second per source IP for the mesh
+// control HTTP listener. WireGuard peers themselves are NOT trusted in this
+// project's threat model — anyone who handshakes can hit the listener — so a
+// chatty (or hostile) peer hammering /v1/challenge or /v1/peers must not be
+// able to keep the mesh control loop hot or evict legitimate peers' state.
+//
+// The HTTP and SOCKS5 proxy listeners deliberately do NOT use this: they are
+// intended for internal/local use, where rate-limiting trades off ergonomics
+// for a defense the deployment doesn't need.
+const (
+	meshControlRequestsPerSecond = 10
+	meshControlBurst             = 20
+	meshControlMaxBuckets        = 4096
+)
+
+func meshControlRateLimit(next http.Handler) http.Handler {
+	bucketsMu := sync.Mutex{}
+	buckets := make(map[string]*meshRateBucket)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip := remoteHostOnly(r.RemoteAddr)
+		now := time.Now()
+		bucketsMu.Lock()
+		b := buckets[ip]
+		if b == nil {
+			// Cap the map so a peer cycling through source ports (or a
+			// flood from a spoofed-source IPv6 range) cannot grow it
+			// without bound. When full, drop the oldest entry rather
+			// than refusing the new one — eviction is cheaper than the
+			// cost of letting state grow unbounded.
+			if len(buckets) >= meshControlMaxBuckets {
+				evictOldestRateBucket(buckets)
+			}
+			b = &meshRateBucket{tokens: meshControlBurst, last: now}
+			buckets[ip] = b
+		}
+		// Token bucket: refill since last touch, then try to spend one.
+		elapsed := now.Sub(b.last).Seconds()
+		b.tokens = minFloat(float64(meshControlBurst), b.tokens+elapsed*float64(meshControlRequestsPerSecond))
+		b.last = now
+		ok := b.tokens >= 1
+		if ok {
+			b.tokens--
+		}
+		bucketsMu.Unlock()
+		if !ok {
+			w.Header().Set("Retry-After", "1")
+			writeAPIError(w, http.StatusTooManyRequests, "mesh control rate limit exceeded")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+type meshRateBucket struct {
+	tokens float64
+	last   time.Time
+}
+
+func evictOldestRateBucket(buckets map[string]*meshRateBucket) {
+	var oldestKey string
+	var oldest time.Time
+	for k, v := range buckets {
+		if oldestKey == "" || v.last.Before(oldest) {
+			oldestKey = k
+			oldest = v.last
+		}
+	}
+	if oldestKey != "" {
+		delete(buckets, oldestKey)
+	}
+}
+
+func minFloat(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// remoteHostOnly returns just the IP portion of a "host:port" RemoteAddr, so
+// a peer cycling source ports doesn't get a fresh bucket each time.
+func remoteHostOnly(remote string) string {
+	if host, _, err := net.SplitHostPort(remote); err == nil {
+		return host
+	}
+	return remote
 }
 
 func (e *Engine) handleMeshControlChallenge(w http.ResponseWriter, r *http.Request) {

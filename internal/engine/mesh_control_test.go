@@ -880,3 +880,48 @@ func retryMeshDialContextWithContext(ctx context.Context, eng *Engine, network, 
 	}
 	return nil, last
 }
+
+func TestMeshControlRateLimiter(t *testing.T) {
+	called := 0
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called++
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := meshControlRateLimit(inner)
+
+	hit := func(remote string) int {
+		req := httptest.NewRequest(http.MethodGet, "/v1/challenge", nil)
+		req.RemoteAddr = remote
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		return w.Result().StatusCode
+	}
+
+	// Burst budget for one source IP is meshControlBurst; the very next
+	// request after the burst is exhausted must be rejected with 429.
+	for i := 0; i < meshControlBurst; i++ {
+		if got := hit("10.0.0.1:1234"); got != http.StatusOK {
+			t.Fatalf("burst request %d/%d got status %d, want 200", i+1, meshControlBurst, got)
+		}
+	}
+	if got := hit("10.0.0.1:5678"); got != http.StatusTooManyRequests {
+		t.Fatalf("post-burst request got status %d, want 429 (rate limit)", got)
+	}
+
+	// A different source IP must have its own bucket — same connection
+	// being rate-limited should not affect a fresh peer.
+	if got := hit("10.0.0.2:1234"); got != http.StatusOK {
+		t.Fatalf("fresh-peer request got status %d, want 200", got)
+	}
+
+	// Refill: at meshControlRequestsPerSecond (10) per second, 200ms gives
+	// ~2 tokens back, so the next request from 10.0.0.1 should succeed.
+	time.Sleep(250 * time.Millisecond)
+	if got := hit("10.0.0.1:9999"); got != http.StatusOK {
+		t.Fatalf("after refill, request from 10.0.0.1 got status %d, want 200", got)
+	}
+
+	if called == 0 {
+		t.Fatal("inner handler was never reached; rate limiter is failing closed")
+	}
+}

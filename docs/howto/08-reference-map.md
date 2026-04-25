@@ -21,6 +21,7 @@ full behavioral contract.
 - [TURN integration and relay modes](../reference/turn.md)
 - [Compatibility matrix](../reference/compatibility.md)
 - [Testing notes](../reference/testing.md)
+- [Security model](../reference/security-model.md)
 - [Standalone TURN daemon](../../turn/README.md)
 
 ## What To Read For Specific Jobs
@@ -33,3 +34,4 @@ full behavioral contract.
 - Understanding transport tradeoffs: [Transport modes](../reference/transport-modes.md)
 - Running hidden servers behind a TURN edge: [TURN integration and relay modes](../reference/turn.md)
 - Platform caveats: [Compatibility matrix](../reference/compatibility.md)
+- Trust boundaries, defense-in-depth conventions, and per-surface defenses: [Security model](../reference/security-model.md)

