@@ -1,6 +1,8 @@
 // Copyright (c) 2026 Reindert Pelsma
 // SPDX-License-Identifier: ISC
 
+//go:build !lite
+
 package engine
 
 import (
@@ -11,8 +13,6 @@ import (
 	"net/http"
 	"runtime/debug"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -22,47 +22,9 @@ import (
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/transport"
 )
 
-// metricsState owns the hot-path counters that don't have a natural Prometheus
-// home (Counter requires a mutex internally; we want lock-free atomics on the
-// data path, then read them at scrape time via CounterFunc collectors).
-//
-// Every counter here MUST be safe to read with atomic.LoadUint64 from the
-// scraper goroutine while a hot-path goroutine concurrently atomic.AddUint64s.
-type metricsState struct {
-	// Mesh control rate-limited / authenticated request outcomes.
-	meshRequestsOK          atomic.Uint64
-	meshRequestsRateLimited atomic.Uint64
-	meshRequestsAuthFailed  atomic.Uint64
-
-	// (TURN carrier drops live as a package-level atomic in
-	// internal/transport — surfaced by metrics CounterFunc — to avoid
-	// taking a circular import dependency.)
-
-	// SOCKS5 connection accepted but the global cap was full; the
-	// listener silently rejected the connection. Useful to confirm
-	// concurrency caps are sized right.
-	socksConnectionsCapped atomic.Uint64
-
-	// New relay flows refused because the conntrack table (or per-peer
-	// cap) was full. Non-zero = sizing is too small or attacker is
-	// floods.
-	conntrackRefusals atomic.Uint64
-
-	// Roaming events: peer's chosen outer endpoint changed. Inferred by a
-	// periodic poller, not by an event hook, so the count may slightly
-	// undercount very fast back-and-forth roaming. Documented.
-	roamingEndpointChanges atomic.Uint64
-
-	// Roaming poller state — the last known endpoint per peer pubkey.
-	// Guarded by its own mutex, only touched by the poller goroutine and
-	// the metricsState constructor; not on any hot path.
-	roamMu       sync.Mutex
-	lastEndpoint map[string]string
-}
-
-func newMetricsState() *metricsState {
-	return &metricsState{lastEndpoint: make(map[string]string)}
-}
+// metricsState lives in metrics_state.go (always built) so call sites in
+// always-built files (socks.go, relay_conntrack.go) compile in both lite
+// and non-lite. The Prometheus exposition surface below is non-lite only.
 
 // startMetricsServer brings up the optional Prometheus listener. No-op when
 // metrics.listen is empty. Listener is intentionally separate from the admin
@@ -343,12 +305,9 @@ func netstackTCPRetransmits(e *Engine) uint64 {
 	return stats.TCPRetransmits
 }
 
-// netstackStatsSnapshot is the subset of gVisor stats this metrics layer
-// consumes. Adding fields here is a contract update with the wiring in
-// engine.netstackStats().
-type netstackStatsSnapshot struct {
-	TCPRetransmits uint64
-}
+// netstackStatsSnapshot is defined in metrics_state.go (always built) so
+// engine.netstackStats() compiles in lite. Adding fields there is a
+// contract update with the wiring in engine.netstackStats().
 
 // mustRegisterCounterFunc is the no-label form. For label-shaped counters
 // use newEnumCounterCollector — one collector per metric name, emitting
