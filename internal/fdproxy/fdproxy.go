@@ -46,6 +46,10 @@ type Options struct {
 	AllowBind    bool
 	AllowLowBind bool
 	Verbose      bool
+	// AllowedUIDs lists additional uids permitted to connect to the manager
+	// socket. The server's own euid is always allowed; root is always allowed.
+	// nil means "only the server's own uid (and root)".
+	AllowedUIDs []uint32
 }
 
 type Server struct {
@@ -57,6 +61,8 @@ type Server struct {
 	allowBind    bool
 	allowLowBind bool
 	verbose      bool
+	ownUID       uint32
+	allowedUIDs  map[uint32]struct{}
 	nextID       uint64
 
 	mu         sync.Mutex
@@ -174,14 +180,14 @@ func ListenWithOptions(opts Options) (*Server, error) {
 	if socketPath == "" {
 		socketPath = "/v1/socket"
 	}
-	_ = os.Remove(path)
-	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	ln, err := listenUnixOwnerOnly(path)
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		_ = ln.Close()
-		return nil, err
+	ownUID := uint32(os.Geteuid())
+	allowed := map[uint32]struct{}{ownUID: {}}
+	for _, u := range opts.AllowedUIDs {
+		allowed[u] = struct{}{}
 	}
 	return &Server{
 		ln:           ln,
@@ -192,10 +198,34 @@ func ListenWithOptions(opts Options) (*Server, error) {
 		allowBind:    opts.AllowBind,
 		allowLowBind: opts.AllowLowBind,
 		verbose:      opts.Verbose,
+		ownUID:       ownUID,
+		allowedUIDs:  allowed,
 		tcpMembers:   make(map[string]*tcpListenerMember),
 		tcpGroups:    make(map[string]*tcpListenerGroup),
 		udpGroups:    make(map[string]*udpListenerGroup),
 	}, nil
+}
+
+// listenUnixOwnerOnly creates the manager socket with mode 0700 from the moment
+// it appears in the filesystem so other uids cannot connect to it during the
+// window between bind() and chmod(). Abstract sockets (path starts with @) are
+// kernel-only and bypass the chmod entirely.
+func listenUnixOwnerOnly(path string) (*net.UnixListener, error) {
+	if strings.HasPrefix(path, "@") {
+		return net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	}
+	_ = os.Remove(path)
+	prevMask := syscall.Umask(0o077)
+	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	syscall.Umask(prevMask)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = ln.Close()
+		return nil, err
+	}
+	return ln, nil
 }
 
 func (s *Server) debugf(format string, args ...any) {
@@ -239,6 +269,10 @@ func (s *Server) Serve() error {
 }
 
 func (s *Server) handle(c *net.UnixConn) {
+	if !s.peerAllowed(c) {
+		_ = c.Close()
+		return
+	}
 	line, fd, err := recvRequest(c)
 	if err != nil {
 		_ = c.Close()

@@ -57,9 +57,55 @@ var (
 )
 
 var (
-	socksRequestDeadline       = 30 * time.Second
-	maxSOCKSUDPSessionsPerConn = 4096
+	socksRequestDeadline = 30 * time.Second
+
+	// maxSOCKSUDPSessionsPerConn caps the number of in-flight UDP-relay
+	// targets one SOCKS5 control connection can spawn. Each session keeps a
+	// goroutine and a 64 KiB receive buffer alive, so a permissive default
+	// multiplied by N hostile control connections used to be enough to chew
+	// through gigabytes of memory. 256 is comfortably above any realistic
+	// application's working set (browsers, BitTorrent clients).
+	maxSOCKSUDPSessionsPerConn = 256
+
+	// maxConcurrentSOCKSConns caps the number of SOCKS5 control connections
+	// in flight per engine instance. Combined with the per-conn UDP cap above
+	// this gives a worst-case memory bound of ~16 GiB for SOCKS5 — high
+	// enough not to disturb legitimate use, low enough to keep an attacker
+	// from exhausting the host's address space.
+	maxConcurrentSOCKSConns = 1024
 )
+
+// acquireSOCKSConnSlot atomically reserves one of maxConcurrentSOCKSConns
+// slots. The semaphore is initialised on first use because tests that exercise
+// SOCKS in tight loops can opt out of the cap (legacy compatibility) by setting
+// e.socksConnSem to a buffered channel themselves before serving.
+func (e *Engine) acquireSOCKSConnSlot() bool {
+	e.cfgMu.Lock()
+	if e.socksConnSem == nil {
+		e.socksConnSem = make(chan struct{}, maxConcurrentSOCKSConns)
+	}
+	sem := e.socksConnSem
+	e.cfgMu.Unlock()
+	select {
+	case sem <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (e *Engine) releaseSOCKSConnSlot() {
+	e.cfgMu.RLock()
+	sem := e.socksConnSem
+	e.cfgMu.RUnlock()
+	if sem == nil {
+		return
+	}
+	select {
+	case <-sem:
+	default:
+	}
+}
 
 type socksAddr struct {
 	atyp byte
@@ -87,6 +133,10 @@ func (a socksAddr) addrPort() (netip.AddrPort, bool) {
 
 func (e *Engine) serveSOCKSConn(c net.Conn) {
 	defer c.Close()
+	if !e.acquireSOCKSConnSlot() {
+		return
+	}
+	defer e.releaseSOCKSConnSlot()
 	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
 	if err := e.socksHandshake(c); err != nil {
 		return

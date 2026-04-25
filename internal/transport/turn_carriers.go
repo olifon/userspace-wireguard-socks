@@ -16,6 +16,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,17 @@ import (
 )
 
 const turnWebSocketSubprotocol = "turn"
+
+// maxTurnCarrierPeers caps the number of concurrent carrier-side peers a
+// single turnMuxPacketConn will track. One entry is created per WebSocket /
+// HTTP-upgrade / WebTransport session, so this bounds the memory + goroutine
+// footprint visible from outside the host. Sized to comfortably exceed any
+// realistic relay fan-out while still preventing trivial accept-loop floods.
+const maxTurnCarrierPeers = 4096
+
+// errTurnCarrierFull is returned by addPeer when the peer table is at
+// capacity. Callers reject the upgrade.
+var errTurnCarrierFull = errors.New("turn carrier: too many concurrent peers")
 
 type turnMuxPacketConn struct {
 	local     net.Addr
@@ -41,6 +53,13 @@ type turnMuxPacketConn struct {
 	readDeadline  time.Time
 	writeDeadline time.Time
 	closedCh      chan struct{}
+
+	// dropMu/drops/lastDropLog tracks frames discarded because readCh was
+	// full so we can emit a single warning per second instead of either
+	// silently losing them (the bug) or log-spamming under load.
+	dropMu      sync.Mutex
+	drops       uint64
+	lastDropLog time.Time
 }
 
 type turnPacketPeer struct {
@@ -64,14 +83,20 @@ func newTurnMuxPacketConn(local net.Addr, closeFn func() error) *turnMuxPacketCo
 	}
 }
 
-func (c *turnMuxPacketConn) addPeer(addr net.Addr, write func([]byte) error, closeFn func() error) {
+func (c *turnMuxPacketConn) addPeer(addr net.Addr, write func([]byte) error, closeFn func() error) error {
 	key := addr.String()
 	c.mu.Lock()
 	if old := c.peers[key]; old != nil && old.close != nil {
 		_ = old.close()
+		delete(c.peers, key)
+	}
+	if len(c.peers) >= maxTurnCarrierPeers {
+		c.mu.Unlock()
+		return errTurnCarrierFull
 	}
 	c.peers[key] = &turnPacketPeer{addr: addr, write: write, close: closeFn}
 	c.mu.Unlock()
+	return nil
 }
 
 func (c *turnMuxPacketConn) removePeer(addr net.Addr) {
@@ -89,6 +114,23 @@ func (c *turnMuxPacketConn) deliver(addr net.Addr, payload []byte) {
 	select {
 	case c.readCh <- pkt:
 	default:
+		c.recordDrop()
+	}
+}
+
+func (c *turnMuxPacketConn) recordDrop() {
+	c.dropMu.Lock()
+	c.drops++
+	now := time.Now()
+	dropCount := c.drops
+	logNow := now.Sub(c.lastDropLog) >= time.Second
+	if logNow {
+		c.lastDropLog = now
+		c.drops = 0
+	}
+	c.dropMu.Unlock()
+	if logNow {
+		fmt.Fprintf(os.Stderr, "turn carrier: dropped %d datagrams (readCh full)\n", dropCount)
 	}
 }
 
@@ -274,6 +316,7 @@ func NewTURNHTTPServer(base net.Listener, path string) (*TURNHTTPServer, error) 
 	server = &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		MaxHeaderBytes:    32 << 10,
 	}
 	go func() { _ = server.Serve(base) }()
 	return &TURNHTTPServer{
@@ -317,9 +360,13 @@ func makeTURNHTTPUpgradeHandler(packetConn *turnMuxPacketConn, streamLn *turnStr
 				_ = conn.Close()
 				return
 			}
-			_, _ = fmt.Fprintf(conn, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\nSec-WebSocket-Protocol: %s\r\n\r\n", websocketAcceptKey(key), turnWebSocketSubprotocol)
 			ws := &wsConn{conn: conn, remote: conn.RemoteAddr().String(), clientSide: false}
-			packetConn.addPeer(conn.RemoteAddr(), ws.WriteFrame, conn.Close)
+			if err := packetConn.addPeer(conn.RemoteAddr(), ws.WriteFrame, conn.Close); err != nil {
+				_, _ = io.WriteString(conn, "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nturn carrier at capacity")
+				_ = conn.Close()
+				return
+			}
+			_, _ = fmt.Fprintf(conn, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\nSec-WebSocket-Protocol: %s\r\n\r\n", websocketAcceptKey(key), turnWebSocketSubprotocol)
 			go pumpTURNWebSocketFrames(packetConn, conn.RemoteAddr(), ws)
 		case strings.EqualFold(upgrade, "TURN"):
 			_, _ = io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: TURN\r\nSec-TURN-Transport: tcp\r\n\r\n")
@@ -637,9 +684,12 @@ func ListenTURNQUICServer(listenAddrs []string, port int, certMgr *CertManager, 
 				return
 			}
 			remote := sess.RemoteAddr()
-			packetConn.addPeer(remote, sess.SendDatagram, func() error {
+			if err := packetConn.addPeer(remote, sess.SendDatagram, func() error {
 				return sess.CloseWithError(0, "")
-			})
+			}); err != nil {
+				_ = sess.CloseWithError(0, "carrier at capacity")
+				return
+			}
 			go pumpTURNWebTransport(packetConn, remote, sess)
 		})
 		pc, err := net.ListenPacket("udp", fmt.Sprintf("%s:%d", addr, chosen))
@@ -709,7 +759,10 @@ func turnHandleQUICWebSocket(packetConn *turnMuxPacketConn, w http.ResponseWrite
 		return
 	}
 	ws := &wsConn{conn: conn, remote: conn.RemoteAddr().String(), clientSide: false}
-	packetConn.addPeer(conn.RemoteAddr(), ws.WriteFrame, conn.Close)
+	if err := packetConn.addPeer(conn.RemoteAddr(), ws.WriteFrame, conn.Close); err != nil {
+		_ = conn.Close()
+		return
+	}
 	go pumpTURNWebSocketFrames(packetConn, conn.RemoteAddr(), ws)
 }
 

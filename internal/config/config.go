@@ -444,13 +444,17 @@ func Load(path string) (Config, error) {
 			return Config{}, err
 		}
 	}
+	// When scripts are disabled (the default for hostile/network-supplied
+	// configs), refuse PreUp/PostUp/PreDown/PostDown at parse time so a
+	// hostile .conf can never stage a hook even if scripts.allow is later
+	// flipped on by mistake or by a separate config layer.
 	if cfg.WireGuard.ConfigFile != "" {
-		if err := MergeWGQuickFile(&cfg.WireGuard, cfg.WireGuard.ConfigFile); err != nil {
+		if err := mergeWGQuickFile(&cfg.WireGuard, cfg.WireGuard.ConfigFile, !cfg.Scripts.Allow); err != nil {
 			return Config{}, err
 		}
 	}
 	if cfg.WireGuard.Config != "" {
-		if err := MergeWGQuick(&cfg.WireGuard, cfg.WireGuard.Config); err != nil {
+		if err := mergeWGQuick(&cfg.WireGuard, cfg.WireGuard.Config, !cfg.Scripts.Allow); err != nil {
 			return Config{}, err
 		}
 	}
@@ -1106,17 +1110,46 @@ func outboundProxyFromURL(raw string) (OutboundProxy, error) {
 }
 
 func MergeWGQuickFile(dst *WireGuard, path string) error {
+	return mergeWGQuickFile(dst, path, false)
+}
+
+// MergeWGQuickFileStrict is the hostile-input variant of MergeWGQuickFile, see
+// MergeWGQuickStrict for the semantics.
+func MergeWGQuickFileStrict(dst *WireGuard, path string) error {
+	return mergeWGQuickFile(dst, path, true)
+}
+
+func mergeWGQuickFile(dst *WireGuard, path string, strict bool) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	return MergeWGQuick(dst, string(b))
+	return mergeWGQuick(dst, string(b), strict)
 }
 
 // MergeWGQuick parses the ini-like wg-quick format into WireGuard. It merges
 // into dst instead of replacing it so YAML and CLI layers can intentionally add
 // peers or override individual fields.
+//
+// Use MergeWGQuickStrict to parse INI text supplied from an untrusted source
+// (for example, the runtime API or a user-supplied URL): strict mode rejects
+// PreUp/PostUp/PreDown/PostDown so a hostile config cannot stage shell hooks
+// even if scripts.allow is later flipped on, satisfying the threat model.
 func MergeWGQuick(dst *WireGuard, text string) error {
+	return mergeWGQuick(dst, text, false)
+}
+
+// MergeWGQuickStrict is the hostile-input variant of MergeWGQuick. It is the
+// parser to use whenever the wg-quick INI text was supplied by something
+// outside the operator's TCB (the runtime API, a downloaded file, etc.).
+// Other wg-quick fields and #! directives remain accepted because they only
+// describe how to talk to a peer or where to find dynamic mesh information,
+// which is by design under the peer's control.
+func MergeWGQuickStrict(dst *WireGuard, text string) error {
+	return mergeWGQuick(dst, text, true)
+}
+
+func mergeWGQuick(dst *WireGuard, text string, strict bool) error {
 	sc := bufio.NewScanner(strings.NewReader(text))
 	section := ""
 	var peer *Peer
@@ -1154,6 +1187,12 @@ func MergeWGQuick(dst *WireGuard, text string) error {
 		value = strings.TrimSpace(value)
 		switch section {
 		case "interface":
+			if strict {
+				switch key {
+				case "preup", "postup", "predown", "postdown":
+					return fmt.Errorf("wg config line %d: %s is not allowed in untrusted wg-quick input", lineNo, key)
+				}
+			}
 			if err := setInterface(dst, key, value); err != nil {
 				return fmt.Errorf("wg config line %d: %w", lineNo, err)
 			}

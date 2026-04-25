@@ -346,12 +346,24 @@ func apiListenRequiresToken(addr string, allowUnauthenticatedUnix bool) bool {
 	return ip == nil || !ip.IsLoopback()
 }
 
+// apiAlwaysAuthPaths must require an Authorization token even when the API is
+// served on a Unix socket with AllowUnauthenticatedUnix=true. /v1/resolve and
+// /uwg/resolve are gated unconditionally because an unauthenticated local
+// caller can otherwise pump arbitrary DNS queries through the system resolver
+// and read the answers, turning the daemon into a DoH amplifier and a cache-
+// shaping side channel for any sibling process on the host.
+var apiAlwaysAuthPaths = map[string]bool{
+	"/v1/resolve":  true,
+	"/uwg/resolve": true,
+}
+
 func (e *Engine) apiAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := e.cfg.API.Token
 		allowUnix := e.cfg.API.AllowUnauthenticatedUnix
 		isUnix := r.RemoteAddr == "@" || r.RemoteAddr == "" || strings.HasPrefix(r.RemoteAddr, "/")
-		if isUnix && allowUnix {
+		mustAuth := apiAlwaysAuthPaths[r.URL.Path]
+		if isUnix && allowUnix && !mustAuth {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -364,6 +376,9 @@ func (e *Engine) apiAuth(next http.Handler) http.Handler {
 				writeAPIError(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
+		} else if mustAuth {
+			writeAPIError(w, http.StatusUnauthorized, "api.token must be configured to access this endpoint")
+			return
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -643,9 +658,14 @@ func (e *Engine) RemovePeer(publicKey string) error {
 // runtime without executing or retaining PreUp/PostUp/PreDown/PostDown. It replaces the live WireGuard
 // private key/listen port/peer set, while rejecting Address/DNS/MTU changes
 // because those require rebuilding the userspace netstack.
+//
+// The runtime API is reachable by anyone who holds the API token, but the
+// config text it accepts may have come from further upstream (e.g. a UI that
+// pulled it off the network). Parse in strict mode so script hook lines are
+// rejected before they reach SetWireGuardConfig's PreUp/PostUp clearing.
 func (e *Engine) SetWireGuardConfigText(text string) error {
 	var wg config.WireGuard
-	if err := config.MergeWGQuick(&wg, text); err != nil {
+	if err := config.MergeWGQuickStrict(&wg, text); err != nil {
 		return err
 	}
 	return e.SetWireGuardConfig(wg)

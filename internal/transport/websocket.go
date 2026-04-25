@@ -242,6 +242,7 @@ func (t *WebSocketTransport) Listen(_ context.Context, port int) (Listener, erro
 		srv := &http.Server{
 			Handler:           mux,
 			ReadHeaderTimeout: 10 * time.Second,
+			MaxHeaderBytes:    32 << 10,
 		}
 		go func(l net.Listener) { _ = srv.Serve(l) }(ln)
 	}

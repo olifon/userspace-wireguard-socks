@@ -147,7 +147,11 @@ func (a *meshControlAuthenticator) Verify(r *http.Request) (meshAuthResult, erro
 		return meshAuthResult{}, errors.New("invalid bearer token length")
 	}
 	tokenVersion := token[0]
-	if tokenVersion != meshTokenVersionV1 && tokenVersion != meshTokenVersionV2 {
+	// v1 tokens were superseded by v2 in early development. Challenge() only
+	// ever issues v2 (see meshChallengeResponse.TokenVersion in Challenge),
+	// so the v1 branch is dead — tighten the gate to v2-only and drop the
+	// v1 verifier entirely below to remove a maintenance trap.
+	if tokenVersion != meshTokenVersionV2 {
 		return meshAuthResult{}, errors.New("unsupported bearer token version")
 	}
 	ephPub := token[1:33]
@@ -185,14 +189,15 @@ func (a *meshControlAuthenticator) verifyWithState(tokenVersion byte, state mesh
 	if err != nil {
 		return meshAuthResult{}, err
 	}
-	authKey := k1
-	if tokenVersion >= meshTokenVersionV2 {
-		staticShared, err := a.privKey.ECDH(eph)
-		if err != nil {
-			return meshAuthResult{}, err
-		}
-		authKey = meshAuthKey(k1, staticShared)
+	// v2 binds the server static key into the auth key alongside the
+	// challenge ephemeral so a future leak of the challenge ECDH does not on
+	// its own forge tokens. v1 (which only used k1) is no longer accepted.
+	_ = tokenVersion
+	staticShared, err := a.privKey.ECDH(eph)
+	if err != nil {
+		return meshAuthResult{}, err
 	}
+	authKey := meshAuthKey(k1, staticShared)
 	plain, err := meshOpen(body, authKey, meshAuthContextLabel)
 	if err != nil {
 		return meshAuthResult{}, err
@@ -260,6 +265,12 @@ func (a *meshControlAuthenticator) challengeCandidates(now time.Time) ([]meshCha
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	states := []meshChallengeState{current}
+	// The previous challenge state is honored for one extra rotation window
+	// past its own expiry. This intentionally widens the verifier so that
+	// clients which fetched a challenge moments before rotation still
+	// authenticate cleanly. Effective lifetime of any single ephemeral is
+	// therefore 2 * MeshControl.ChallengeRotateSeconds; size that field
+	// accordingly.
 	if a.prev.priv != nil && now.Before(a.prev.expires.Add(time.Duration(a.e.cfg.MeshControl.ChallengeRotateSeconds)*time.Second)) {
 		states = append(states, a.prev)
 	}

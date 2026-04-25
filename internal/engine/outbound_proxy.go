@@ -140,15 +140,24 @@ func dialOutboundProxyRule(ctx context.Context, network string, dst netip.AddrPo
 	}
 }
 
+// httpConnectHandshakeTimeout caps the CONNECT request+response phase
+// independently of the caller's context. A nearly-exhausted context deadline
+// would otherwise leave only a millisecond or two for the upstream reply,
+// risking a partial CONNECT line that an HTTP/1.1 keep-alive proxy could
+// reinterpret as the next request (request-smuggling shape).
+const httpConnectHandshakeTimeout = 10 * time.Second
+
 func dialHTTPConnectProxy(ctx context.Context, p config.OutboundProxy, dst netip.AddrPort) (net.Conn, error) {
 	var d net.Dialer
 	c, err := d.DialContext(ctx, "tcp", p.Address)
 	if err != nil {
 		return nil, err
 	}
-	if deadline, ok := ctx.Deadline(); ok {
-		_ = c.SetDeadline(deadline)
+	hsDeadline := time.Now().Add(httpConnectHandshakeTimeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(hsDeadline) {
+		hsDeadline = ctxDeadline
 	}
+	_ = c.SetDeadline(hsDeadline)
 	var b strings.Builder
 	fmt.Fprintf(&b, "CONNECT %s HTTP/1.1\r\nHost: %s\r\nProxy-Connection: Keep-Alive\r\n", dst, dst)
 	if p.Username != "" || p.Password != "" {

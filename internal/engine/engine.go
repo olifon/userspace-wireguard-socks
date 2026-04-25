@@ -100,6 +100,11 @@ type Engine struct {
 	socksUDPMu         sync.Mutex
 	socksUDPRelayPorts map[string]map[int]struct{}
 
+	// socksConnSem caps the number of concurrent SOCKS5 control connections
+	// the engine will service. nil means uncapped (used by tests that opt
+	// into a different limit). Initialised lazily by serveSOCKSConn.
+	socksConnSem chan struct{}
+
 	// connTable is the transparent inbound backpressure guard. It tracks only
 	// connections that consume host-side sockets; SOCKS/HTTP client sessions are
 	// controlled by listener backpressure and per-connection idle timers.

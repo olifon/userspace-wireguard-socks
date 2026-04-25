@@ -82,9 +82,15 @@ func (d *SOCKS5Dialer) DialPacket(ctx context.Context, remoteHint string) (net.P
 		ctrlConn.Close()
 		return nil, "", fmt.Errorf("socks5 udp associate: dial relay: %w", err)
 	}
+	udp, ok := udpConn.(*net.UDPConn)
+	if !ok {
+		_ = udpConn.Close()
+		ctrlConn.Close()
+		return nil, "", fmt.Errorf("socks5 udp associate: dialer returned %T, expected *net.UDPConn", udpConn)
+	}
 
 	pc := &socks5UDPConn{
-		UDPConn:  udpConn.(*net.UDPConn),
+		UDPConn:  udp,
 		ctrlConn: ctrlConn,
 	}
 	return pc, relayAddr, nil
