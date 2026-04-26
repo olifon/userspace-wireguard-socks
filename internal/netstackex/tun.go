@@ -22,6 +22,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -55,6 +56,19 @@ type netTun struct {
 	packetFilter   func([]byte) bool
 	ingressFilter  func([]byte) bool
 	tcpMSSClamp    bool
+
+	// injectMu serializes the producer side of InjectInbound so we
+	// never have a fresh MakeWithData/Pool.Get racing with a still-
+	// in-flight prior packet's read. Without this, gvisor's
+	// pkg/buffer.viewPool could hand a recycled chunk back to a
+	// new packet's slicecopy while the previous packet's IPv4.TTL
+	// (or any header field) read is still touching that memory —
+	// which is wrong-bytes-served data corruption, not just a TSan
+	// false positive. The race detector exposes it deterministically;
+	// production timing makes it astronomically rare but not zero,
+	// and the failure mode (one connection's bytes leaking into
+	// another's read) is severe enough to warrant the lock.
+	injectMu sync.Mutex
 }
 
 type Net netTun
@@ -230,6 +244,16 @@ func (tun *netTun) Read(buf [][]byte, sizes []int, offset int) (int, error) {
 
 // Write is wireguard-go's decapsulation path: authenticated inner IP packets
 // enter the userspace netstack here.
+//
+// The InjectInbound call is wrapped in injectMu so we never run a fresh
+// buffer.MakeWithData (which fetches a chunk from gvisor's pooled
+// viewPool) concurrently with a prior packet still being processed
+// downstream. Without this lock the viewPool could recycle a chunk
+// that the IPv4/IPv6 forwarder is still reading, causing wrong-bytes-
+// served data corruption (one connection's payload leaking into
+// another's read). See the injectMu doc on netTun for the full
+// rationale; the race-detector exposes this deterministically and
+// it would also reach production under sufficiently bad timing.
 func (tun *netTun) Write(buf [][]byte, offset int) (int, error) {
 	for _, buf := range buf {
 		packet := buf[offset:]
@@ -250,9 +274,11 @@ func (tun *netTun) Write(buf [][]byte, offset int) (int, error) {
 		default:
 			return 0, syscall.EAFNOSUPPORT
 		}
+		tun.injectMu.Lock()
 		pkb := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(packet)})
 		tun.ep.InjectInbound(protocol, pkb)
 		pkb.DecRef()
+		tun.injectMu.Unlock()
 	}
 	return len(buf), nil
 }

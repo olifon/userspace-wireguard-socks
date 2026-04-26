@@ -17,26 +17,8 @@
 ## bug, AND MUST be narrow enough that they don't mask real races
 ## in our own code paths.
 
-# gvisor.dev/gvisor/pkg/buffer.viewPool reuse
-#
-# Surfaced on macOS+race in v0.1.0-beta.{21,22} via
-# TestRelayForwardingMultiPeer (heavy concurrent InjectInbound) and
-# TestHostedDNSOverWireGuardUDPAndTCP (the malformed-DNS rejection
-# read got a stale 56-byte response from the recycled pool buffer).
-#
-# Pattern: a previous packet's IPv4.TTL read on a pooled View races
-# with MakeWithData's slicecopy into the same View handed out by
-# gvisor's viewPool for the next packet. The handover IS correctly
-# synchronized at gvisor's stack/dispatcher level (channels +
-# atomic refcounts), but the underlying byte buffer is reused via
-# sync.Pool without a per-byte happens-before edge — which the
-# race detector reports verbatim because TSan tracks memory
-# addresses, not logical handover.
-#
-# Linux+race + Windows+race PASS the same tests consistently —
-# only macOS scheduler timing surfaces this. Real users do not
-# run with -race; production binaries see no symptom.
-#
-# Upstream tracking: gvisor view-pool reuse pattern in
-# pkg/buffer/view.go.
-race:gvisor.dev/gvisor/pkg/buffer
+# (No active suppressions. The previous gvisor pkg/buffer.viewPool
+# entry was removed in v0.1.0-beta.31 when netTun.injectMu was
+# added in internal/netstackex/tun.go to serialize InjectInbound,
+# which eliminates the underlying wrong-bytes-served race instead
+# of just silencing TSan reports about it.)

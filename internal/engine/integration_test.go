@@ -2160,12 +2160,9 @@ func TestMeshControlServerBindsInsideTunnel(t *testing.T) {
 }
 
 func TestRelayForwardingMultiPeer(t *testing.T) {
-	// Race-detector reports here are gvisor's pkg/buffer.viewPool
-	// reuse pattern (sync.Pool reuse without per-byte happens-before
-	// annotation, which TSan reports verbatim). Suppressed via
-	// .gorace.suppressions at the repo root — the suppression is
-	// narrow (race:gvisor.dev/gvisor/pkg/buffer) and the substantive
-	// race-clean check still applies to our own code.
+	// (Previously raced under -race on macOS due to gvisor view-pool
+	// reuse exposing wrong bytes; fixed by netTun.injectMu in
+	// netstackex/tun.go. No skip needed now.)
 	serverKey, c1Key, c2Key := mustKey(t), mustKey(t), mustKey(t)
 	serverPort := freeUDPPort(t)
 

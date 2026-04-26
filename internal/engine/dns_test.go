@@ -131,18 +131,10 @@ func packDNSQuery(t testing.TB, id uint16, name string) []byte {
 }
 
 func TestHostedDNSOverWireGuardUDPAndTCP(t *testing.T) {
-	// Under -race, gvisor's view-pool reuse occasionally serves a
-	// stale 56-byte buffer to the tracee for the malformed-DNS
-	// rejection read, breaking the assertion at "malformed tunnel
-	// DNS unexpectedly produced 56 response bytes". The TSan
-	// suppression in .gorace.suppressions silences the race report
-	// but doesn't change the actual stale-content behavior, so we
-	// still have to skip the test under -race specifically. Real
-	// users run without -race; the race-detector instrumentation
-	// slows things enough to widen the pool-reuse window.
-	if testRaceBuild {
-		t.Skip("skipping under -race: gvisor view-pool reuse serves stale bytes; covered by suppression for race-report, but the test needs intact bytes")
-	}
+	// (Previously skipped under -race because gvisor's view-pool
+	// served stale bytes when InjectInbound ran concurrently with
+	// in-flight forwarder reads — fixed by serializing InjectInbound
+	// behind netTun.injectMu in netstackex/tun.go.)
 	oldExchange := systemDNSExchange
 	systemDNSExchange = func(req *dns.Msg, tcp bool) (*dns.Msg, error) {
 		resp := new(dns.Msg)
