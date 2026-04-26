@@ -1409,16 +1409,21 @@ func retryableWrappedTimeout(target, transport string, args []string) bool {
 
 func buildWithEnv(t *testing.T, dir string, env map[string]string, name string, args ...string) {
 	t.Helper()
+	// Always inject -buildvcs=false directly into `go build` /
+	// `go install` so the test works in containers where .git is
+	// missing OR where git refuses with "dubious ownership"
+	// (exit status 128). GOFLAGS is unreliable across container
+	// matrices — some images pre-set it and we'd be appending; some
+	// don't honor a child-set value because the parent `go test`
+	// already locked in build flags. The CLI flag wins
+	// unconditionally.
+	if name == "go" && len(args) > 0 && (args[0] == "build" || args[0] == "install") {
+		injected := append([]string{args[0], "-buildvcs=false"}, args[1:]...)
+		args = injected
+	}
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
 	cmd.Env = append([]string{}, os.Environ()...)
-	// Always set GOFLAGS=-buildvcs=false for go invocations so the
-	// test works in containers without a .git checkout. Per-command
-	// env overrides parent so this doesn't conflict with whatever
-	// the caller set.
-	if name == "go" {
-		cmd.Env = append(cmd.Env, "GOFLAGS=-buildvcs=false")
-	}
 	for key, value := range env {
 		cmd.Env = append(cmd.Env, key+"="+value)
 	}

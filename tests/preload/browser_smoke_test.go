@@ -48,9 +48,13 @@ func TestUWGWrapperNodeHeadlessChromeSmoke(t *testing.T) {
 	serverScript := filepath.Join(repo, "tests/preload/testdata/node_http_server.js")
 	markFile := filepath.Join(t.TempDir(), "chrome-post.txt")
 
+	// Node server must outlive chromium's worst-case startup
+	// (300s wrapper budget below + post-fetch cleanup), otherwise
+	// the server gets reaped mid-fetch and chromium sees a connection
+	// drop instead of the success token.
 	serverCmd, serverStderr, serverDone := startWrappedListenerProcess(t, art, pair.serverHTTPSock, transport, "node",
 		[]string{serverScript, "100.64.94.1", "18090", markFile},
-		wrapperRunOptions{timeout: 120 * time.Second})
+		wrapperRunOptions{timeout: 360 * time.Second})
 	defer func() {
 		killProcessGroup(serverCmd)
 		<-serverDone
@@ -61,6 +65,16 @@ func TestUWGWrapperNodeHeadlessChromeSmoke(t *testing.T) {
 			"--headless",
 			"--no-sandbox",
 			"--disable-gpu",
+			// Stripped CI containers don't have dbus, which makes
+			// chromium spend a long time retrying connections on
+			// startup. Disabling these subsystems explicitly
+			// trims tens of seconds off init under amd64 +
+			// minimal-container Chromium packages and brings
+			// runtime well below our 300s wrapper budget.
+			"--disable-features=DBus,VizDisplayCompositor",
+			"--disable-software-rasterizer",
+			"--disable-dev-shm-usage",
+			"--no-zygote",
 			"--virtual-time-budget=5000",
 			"--dump-dom",
 			"http://100.64.94.1:18090/",
@@ -138,12 +152,15 @@ func runWrappedTargetBrowser(t *testing.T, art wrapperArtifacts, httpSock, trans
 	t.Helper()
 
 	// Chromium startup inside a stripped container (no GPU, fallback
-	// software rendering, missing dbus) can take 30-50s before the
-	// first network request. Add comfortable budget for the wrapped
-	// browser to print --dump-dom output. 180s is well past worst
-	// observed startup; still fails fast on a real hang.
-	base := wrappedCommand(t, art, httpSock, transport, target, args, wrapperRunOptions{timeout: 180 * time.Second})
-	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	// software rendering, missing dbus) is highly variable. On amd64
+	// chromium packages with multi-process zygote init, the dbus
+	// retry loop alone can eat 90+ seconds before the first network
+	// request. Browser flags above already disable dbus/zygote/etc;
+	// 300s gives us a safety margin while still failing fast on a
+	// real wrapper hang (vs the 5s --virtual-time-budget for the
+	// page itself).
+	base := wrappedCommand(t, art, httpSock, transport, target, args, wrapperRunOptions{timeout: 300 * time.Second})
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, base.Path, base.Args[1:]...)
