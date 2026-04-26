@@ -891,13 +891,18 @@ func (t *tracer) handleRead(tid int, regs unix.PtraceRegs, seccompStop bool) err
 		if state.Active != 0 && int(state.Type)&0xf == unix.SOCK_DGRAM && state.Kind == uwgshared.KindUDPConnected {
 			regs.R8 = 0
 			regs.R9 = 0
+			regs.R10 = 0
 			return t.handleRecvfrom(tid, regs, seccompStop)
 		}
 		return t.resumeDefault(tid, seccompStop)
 	}
 	if state.Kind == uwgshared.KindTCPStream || state.Kind == uwgshared.KindUDPConnected || state.Kind == uwgshared.KindUDPListener {
+		// SYS_read is a 3-arg syscall; R10 contains whatever the
+		// userspace ABI happened to have in it. Clear it so the
+		// flags handling in handleRecvfrom doesn't see garbage.
 		regs.R8 = 0
 		regs.R9 = 0
+		regs.R10 = 0
 		return t.handleRecvfrom(tid, regs, seccompStop)
 	}
 	return t.resumeDefault(tid, seccompStop)
@@ -1176,6 +1181,17 @@ func (t *tracer) handleRecvfrom(tid int, regs unix.PtraceRegs, seccompStop bool)
 		// caller that relied on "look without consuming" semantics
 		// (TLS sniffers, SOCKS hand-off, HTTP detection).
 		flags := int(int32(regs.R10))
+		// The localFD (manager-side socket) is always blocking —
+		// we never plumbed F_SETFL onto it. If the tracee marked
+		// its proxied fd O_NONBLOCK (e.g. via SOCK_NONBLOCK or
+		// fcntl), force MSG_DONTWAIT so unix.Recvfrom returns
+		// EAGAIN instead of blocking the entire tracer. curl + any
+		// other libc that does its own I/O multiplexing would
+		// otherwise deadlock the tracer on a "is there more data?"
+		// recv after the response is fully consumed.
+		if state.SavedFL&unix.O_NONBLOCK != 0 {
+			flags |= unix.MSG_DONTWAIT
+		}
 		n, _, err := unix.Recvfrom(localFD, out, flags)
 		if err != nil {
 			return t.finishEmulated(tid, regs, -errnoResult(err), seccompStop)

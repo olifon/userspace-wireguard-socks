@@ -921,6 +921,7 @@ func (t *tracer) handleRead(tid int, regs unix.PtraceRegs, seccompStop bool) err
 	state := t.trackedSnapshot(tid, fd)
 	if state.Proxied == 0 {
 		if state.Active != 0 && int(state.Type)&0xf == unix.SOCK_DGRAM && state.Kind == uwgshared.KindUDPConnected {
+			regs.Regs[3] = 0
 			regs.Regs[4] = 0
 			regs.Regs[5] = 0
 			return t.handleRecvfrom(tid, regs, seccompStop)
@@ -928,6 +929,10 @@ func (t *tracer) handleRead(tid int, regs unix.PtraceRegs, seccompStop bool) err
 		return t.resumeDefault(tid, seccompStop)
 	}
 	if state.Kind == uwgshared.KindTCPStream || state.Kind == uwgshared.KindUDPConnected || state.Kind == uwgshared.KindUDPListener {
+		// SYS_read is a 3-arg syscall; Regs[3] (the 4th syscall arg
+		// holding flags in handleRecvfrom) contains whatever junk
+		// the userspace ABI happened to leave there. Clear it.
+		regs.Regs[3] = 0
 		regs.Regs[4] = 0
 		regs.Regs[5] = 0
 		return t.handleRecvfrom(tid, regs, seccompStop)
@@ -1204,7 +1209,13 @@ func (t *tracer) handleRecvfrom(tid int, regs unix.PtraceRegs, seccompStop bool)
 		out := make([]byte, int(regs.Regs[2]))
 		// See amd64 handler — pass MSG_PEEK / MSG_DONTWAIT / MSG_WAITALL
 		// through so look-without-consume callers work through the proxy.
+		// Also force MSG_DONTWAIT when the tracee fd is O_NONBLOCK so
+		// the tracer doesn't deadlock on a blocking unix.Recvfrom for a
+		// non-blocking userspace socket — see amd64 explanation above.
 		flags := int(int32(regs.Regs[3]))
+		if state.SavedFL&unix.O_NONBLOCK != 0 {
+			flags |= unix.MSG_DONTWAIT
+		}
 		n, _, err := unix.Recvfrom(localFD, out, flags)
 		if err != nil {
 			return t.finishEmulated(tid, regs, -errnoResult(err), seccompStop)
