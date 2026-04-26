@@ -1170,7 +1170,13 @@ func (t *tracer) handleRecvfrom(tid int, regs unix.PtraceRegs, seccompStop bool)
 	switch state.Kind {
 	case uwgshared.KindTCPStream:
 		out := make([]byte, int(regs.Rdx))
-		n, err := unix.Read(localFD, out)
+		// Pass the user's flags through (MSG_PEEK / MSG_DONTWAIT /
+		// MSG_WAITALL are the meaningful ones on TCP). unix.Read
+		// silently dropped MSG_PEEK and consumed data, breaking any
+		// caller that relied on "look without consuming" semantics
+		// (TLS sniffers, SOCKS hand-off, HTTP detection).
+		flags := int(int32(regs.R10))
+		n, _, err := unix.Recvfrom(localFD, out, flags)
 		if err != nil {
 			return t.finishEmulated(tid, regs, -errnoResult(err), seccompStop)
 		}

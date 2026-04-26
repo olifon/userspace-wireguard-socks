@@ -1202,7 +1202,10 @@ func (t *tracer) handleRecvfrom(tid int, regs unix.PtraceRegs, seccompStop bool)
 	switch state.Kind {
 	case uwgshared.KindTCPStream:
 		out := make([]byte, int(regs.Regs[2]))
-		n, err := unix.Read(localFD, out)
+		// See amd64 handler — pass MSG_PEEK / MSG_DONTWAIT / MSG_WAITALL
+		// through so look-without-consume callers work through the proxy.
+		flags := int(int32(regs.Regs[3]))
+		n, _, err := unix.Recvfrom(localFD, out, flags)
 		if err != nil {
 			return t.finishEmulated(tid, regs, -errnoResult(err), seccompStop)
 		}

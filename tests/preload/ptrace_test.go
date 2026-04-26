@@ -323,7 +323,7 @@ func TestUWGWrapperMessageSyscallsAcrossTransports(t *testing.T) {
 	for _, transport := range transports {
 		for _, tc := range cases {
 			t.Run(transport+"/"+tc.name, func(t *testing.T) {
-				if transportUsesPtrace(transport) && len(tc.syscalls) > 0 {
+				if transportTracerCountsHotpathSyscalls(transport) && len(tc.syscalls) > 0 {
 					out, stats := runWrappedTargetWithStats(t, art, httpSock, transport, art.stub, tc.args, wrapperRunOptions{
 						timeout: 60 * time.Second,
 					})
@@ -354,7 +354,7 @@ func TestUWGWrapperPselectAcrossTransports(t *testing.T) {
 	for _, transport := range []string{"preload", "preload-and-ptrace", "ptrace", "ptrace-seccomp", "ptrace-only"} {
 		t.Run(transport, func(t *testing.T) {
 			args := []string{"100.64.94.1", "18080", "tcp-pselect", "tcp", "pselect"}
-			if transportUsesPtrace(transport) {
+			if transportTracerCountsHotpathSyscalls(transport) {
 				out, stats := runWrappedTargetWithStats(t, art, httpSock, transport, art.stub, args,
 					wrapperRunOptions{timeout: 60 * time.Second})
 				if normalizedOutput(out) != "tcp-pselect" {
@@ -380,18 +380,21 @@ func TestUWGWrapperSelectAcrossTransports(t *testing.T) {
 	for _, transport := range []string{"preload", "preload-and-ptrace", "ptrace", "ptrace-seccomp", "ptrace-only"} {
 		t.Run(transport, func(t *testing.T) {
 			args := []string{"100.64.94.1", "18080", "tcp-select", "tcp", "select"}
-			if transportUsesPtrace(transport) {
+			if transportTracerCountsHotpathSyscalls(transport) {
 				out, stats := runWrappedTargetWithStats(t, art, httpSock, transport, art.stub, args,
 					wrapperRunOptions{timeout: 60 * time.Second})
 				if normalizedOutput(out) != "tcp-select" {
 					t.Fatalf("unexpected select output %q", out)
 				}
-				// On amd64 libc reaches the kernel through the native
-				// select(2) syscall; arm64 has no native select and
-				// rewrites it onto pselect6 inside libc, which is why
-				// this assertion is amd64-only.
-				if runtime.GOARCH == "amd64" {
-					assertSyscallAtLeast(t, stats, "select", 1)
+				// libc may reach the kernel via either the native
+				// select(2) syscall or pselect6(2). amd64 has both;
+				// arm64 has only pselect6; glibc 2.43 maps select()
+				// onto pselect6 even on amd64. Accept either —
+				// what we're pinning is "the libc call reached the
+				// tracer", not which syscall number was used.
+				got := stats.Syscalls["select"] + stats.Syscalls["pselect6"]
+				if got < 1 {
+					t.Fatalf("expected at least one of select/pselect6, got 0 (all=%v)", stats.Syscalls)
 				}
 				return
 			}
@@ -456,7 +459,7 @@ func TestUWGWrapperSocketSyscallSurfaceExtra(t *testing.T) {
 	args := []string{"100.64.94.1", "18080", "syscall-surface-extra", "tcp", "syscall-surface-extra"}
 	for _, transport := range []string{"preload", "preload-and-ptrace", "ptrace", "ptrace-seccomp", "ptrace-only"} {
 		t.Run(transport, func(t *testing.T) {
-			if transportUsesPtrace(transport) {
+			if transportTracerCountsHotpathSyscalls(transport) {
 				out, stats := runWrappedTargetWithStats(t, art, httpSock, transport, art.stub, args,
 					wrapperRunOptions{timeout: 60 * time.Second})
 				if normalizedOutput(out) != "syscall-surface-extra" {
@@ -1204,6 +1207,22 @@ func transportUsesPreload(transport string) bool {
 func transportUsesPtrace(transport string) bool {
 	switch transport {
 	case "ptrace", "ptrace-only", "ptrace-seccomp", "preload-and-ptrace":
+		return true
+	default:
+		return false
+	}
+}
+
+// transportTracerCountsHotpathSyscalls reports whether the tracer's
+// per-syscall counter is expected to see hot-path syscalls (send,
+// recv, read, write, poll, etc.). preload-and-ptrace deliberately
+// bypasses the tracer for those via the passthrough secret — that's
+// the whole point of the optimization — so counter assertions for
+// hot-path syscalls would be wrong there. The bypass is validated
+// separately by TestUWGWrapperBothMixedInterop's delta=0 assertions.
+func transportTracerCountsHotpathSyscalls(transport string) bool {
+	switch transport {
+	case "ptrace", "ptrace-only", "ptrace-seccomp":
 		return true
 	default:
 		return false
