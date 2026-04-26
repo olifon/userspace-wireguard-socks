@@ -40,6 +40,35 @@ Status terms used below:
 - Host-TUN, mesh, ACLs, reverse forwards, and transport modes are all part of
   the normal exercised surface.
 
+#### `uwgwrapper` libc compatibility matrix
+
+`uwgpreload.so` is the load-bearing piece for the wrapper — if it can't link
+against the host's libc cleanly, the whole wrapper subsystem fails to start.
+The matrix below was validated by building the `.so` inside each container
+against its native libc, loading it via `LD_PRELOAD`, and running a
+socket+close probe under the loaded library. The script lives in
+[`scripts/docker-libc-matrix/`](../../scripts/docker-libc-matrix/) — re-run
+it on any Linux Docker host with `bash scripts/docker-libc-matrix/run-matrix.sh`.
+
+| Distribution | libc fingerprint | amd64 | arm64 |
+| --- | --- | :---: | :---: |
+| Ubuntu 18.04 (Bionic) | glibc 2.27 | PASS | PASS |
+| Ubuntu 20.04 (Focal) | glibc 2.31 | PASS | PASS |
+| Ubuntu 22.04 (Jammy) | glibc 2.35 | PASS | PASS |
+| Ubuntu 24.04 (Noble) | glibc 2.39 | PASS | PASS |
+| Ubuntu 25.10 | glibc 2.42 | PASS | PASS |
+| Debian 11 (Bullseye) | glibc 2.31 | PASS | PASS |
+| Debian 13 (Trixie) | glibc 2.41 | PASS | PASS |
+| Alpine 3.10 | musl 1.1.22 | PASS | PASS |
+| Alpine 3.16 | musl 1.2.3 | PASS | PASS |
+| Alpine 3.20 | musl 1.2.5-r3 | PASS | PASS |
+| Alpine 3.22 | musl 1.2.5-r12 | PASS | PASS |
+
+Coverage spans every glibc release shipped by Ubuntu since 2018 (2.27 → 2.42)
+and every musl in current Alpine releases (1.1.22 → 1.2.5). Both 32-bit-only
+historical libc quirks (Alpine 3.10's musl 1.1) and the very latest glibc
+quirks (e.g., the 2.43+ `select(2)` → `pselect6(2)` mapping) are exercised.
+
 ### macOS
 
 - Core `uwgsocks` functionality is exercised in CI.
