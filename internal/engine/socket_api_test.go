@@ -408,7 +408,13 @@ func TestSocketAPIUDPBindWithoutBindPrivilegeIsEstablishedOnly(t *testing.T) {
 	if _, err := udpPC.WriteTo([]byte("unsolicited"), net.UDPAddrFromAddrPort(netip.MustParseAddrPort("100.64.95.2:19091"))); err != nil {
 		t.Fatal(err)
 	}
-	_ = apiConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	// Drain any frames that arrive within 500ms (was 200ms — too
+	// tight under -race on macOS). bind=false means the engine
+	// MUST drop unsolicited datagrams, so a frame here is the bug.
+	// The longer deadline accounts for race-detector overhead and
+	// macOS scheduler quirks; if a frame appears at all it's still
+	// the same fatal failure shape.
+	_ = apiConn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 	if frame, err := socketproto.ReadFrame(apiConn, socketproto.DefaultMaxPayload); err == nil {
 		t.Fatalf("UDP bind delivered unsolicited datagram with bind=false: action %d payload %q", frame.Action, frame.Payload)
 	}
