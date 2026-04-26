@@ -137,6 +137,9 @@ static FILE *(*real_fdopen_fn)(int, const char *);
 
 static int fill_sockaddr_from_text(int family, const char *ip, uint16_t port,
                                    struct sockaddr *addr, socklen_t *addrlen);
+static _Atomic int g_state_poisoned;
+static int state_poisoned(void);
+static void mark_state_poisoned(void);
 static int tracked_rdlock(void);
 static int tracked_wrlock(void);
 static void tracked_rdunlock(void);
@@ -909,8 +912,14 @@ static void tracked_reconcile_current_process(void) {
   if (!shared_state || pid <= 0 || reconciled_pid == pid)
     return;
   lock = &shared_state->lock;
-  if (uwg_rwlock_wrlock(lock, current_tid()) != 0)
-    return;
+  {
+    int rc = uwg_rwlock_wrlock(lock, current_tid());
+    if (rc != UWG_LOCK_OK) {
+      if (rc == UWG_LOCK_POISONED)
+        mark_state_poisoned();
+      return;
+    }
+  }
   for (size_t i = 0; i < MAX_TRACKED_SLOTS; i++) {
     struct tracked_slot *slot = &shared_state->tracked[i];
     int *next = NULL;
@@ -931,8 +940,14 @@ static void tracked_reconcile_current_process(void) {
     size_t idx = 0;
     if (syscall(SYS_fcntl, fds[i], F_GETFD) >= 0 || errno != EBADF)
       continue;
-    if (uwg_rwlock_wrlock(lock, current_tid()) != 0)
-      break;
+    {
+      int rc = uwg_rwlock_wrlock(lock, current_tid());
+      if (rc != UWG_LOCK_OK) {
+        if (rc == UWG_LOCK_POISONED)
+          mark_state_poisoned();
+        break;
+      }
+    }
     if (tracked_find_slot_locked(pid, fds[i], 0, &idx) == 0) {
       shared_state->tracked[idx].owner_pid = -1;
       shared_state->tracked[idx].fd = -1;
@@ -961,8 +976,11 @@ static void hot_path_rdlock(void) {
     hot_path_read_depth++;
     return;
   }
-  if (hot_path_read_depth++ == 0)
-    uwg_guard_rdlock(hot_path_guard(), current_tid());
+  if (hot_path_read_depth++ == 0) {
+    int rc = uwg_guard_rdlock(hot_path_guard(), current_tid());
+    if (rc == UWG_LOCK_POISONED)
+      mark_state_poisoned();
+  }
 }
 
 static void hot_path_rdunlock(void) {
@@ -975,8 +993,11 @@ static void hot_path_rdunlock(void) {
 }
 
 static void hot_path_wrlock(void) {
-  if (hot_path_write_depth++ == 0)
-    uwg_guard_wrlock(hot_path_guard(), current_tid());
+  if (hot_path_write_depth++ == 0) {
+    int rc = uwg_guard_wrlock(hot_path_guard(), current_tid());
+    if (rc == UWG_LOCK_POISONED)
+      mark_state_poisoned();
+  }
 }
 
 static void hot_path_wrunlock(void) {
@@ -1032,25 +1053,58 @@ static void tracked_test_delay(void) {
   usleep(usec);
 }
 
+/* g_state_poisoned is forward-declared above; defined here.
+ * Set whenever any of our shared/local rwlocks detect EOWNERDEAD or
+ * a reader-drain timeout. Once set, the preload stops trying to track
+ * per-fd state and falls back to plain pass-through behavior — the
+ * wrapped app keeps working at native speed but loses tunnel routing
+ * for any *new* sockets, and any already-tracked sockets will start
+ * getting EBADF/ECONNRESET on their next syscall as the per-fd shadow
+ * state goes unmaintained.
+ *
+ * The user-visible contract: a process or thread that segfaults inside
+ * the preload no longer hangs every other thread; the affected sockets
+ * just die. */
+
+static int state_poisoned(void) {
+  return atomic_load_explicit(&g_state_poisoned, memory_order_acquire);
+}
+
+static void mark_state_poisoned(void) {
+  atomic_store_explicit(&g_state_poisoned, 1, memory_order_release);
+}
+
 static int tracked_rdlock(void) {
   tracked_map_if_needed();
+  if (state_poisoned())
+    return -1;
   if (tracked_write_depth > 0)
     return -1;
   if (tracked_read_depth++ > 0)
     return 0;
-  if (uwg_rwlock_rdlock(tracked_lock(), current_tid()) == 0)
+  int rc = uwg_rwlock_rdlock(tracked_lock(), current_tid());
+  if (rc == UWG_LOCK_OK)
     return 0;
+  if (rc == UWG_LOCK_POISONED)
+    mark_state_poisoned();
   tracked_read_depth--;
   return -1;
 }
 
 static int tracked_wrlock(void) {
   tracked_map_if_needed();
+  if (state_poisoned()) {
+    errno = EDEADLK;
+    return -1;
+  }
   if (tracked_read_depth > 0 || tracked_write_depth > 0) {
     errno = EDEADLK;
     return -1;
   }
-  if (uwg_rwlock_wrlock(tracked_lock(), current_tid()) != 0) {
+  int rc = uwg_rwlock_wrlock(tracked_lock(), current_tid());
+  if (rc != UWG_LOCK_OK) {
+    if (rc == UWG_LOCK_POISONED)
+      mark_state_poisoned();
     errno = EDEADLK;
     return -1;
   }
