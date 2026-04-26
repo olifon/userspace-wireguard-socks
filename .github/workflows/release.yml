@@ -164,12 +164,16 @@ jobs:
       # model deadlocks after the first few seconds (workers hit 0
       # execs/sec and never recover, eventually hitting context
       # deadline). Reproduced on both runner OSes in v0.1.0-beta.{25,26}.
-      # Linux fuzzes the same corpus identically and PASSes — that's
-      # the coverage we keep. The Go fuzz IPC implementation appears
-      # to be Linux-first; the worker handshake on macOS/Windows
-      # stalls under the GitHub-hosted runner load.
+      # Also skipped on linux-arm64 — same Go-fuzz worker IPC stall
+      # reproduces on the GH arm64 runner (v0.1.0-beta.40, FuzzACLParseRule
+      # froze at 0 execs/sec for 22s and exited with context deadline).
+      # The fuzz corpus already runs as a regular non-fuzz test on every
+      # PR push across all platforms — what's lost here is the ~30s of
+      # extra random exploration on arm64, not the corpus coverage
+      # itself. The Go fuzz IPC implementation is effectively linux/amd64
+      # only at GH-runner load levels.
       - name: Fuzz untrusted-input parsers
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && runner.arch == 'X64'
         shell: bash
         run: |
           set -euo pipefail

@@ -3277,12 +3277,34 @@ func addrPortFromNetAddrTest(addr net.Addr) netip.AddrPort {
 
 func freeUDPPort(t *testing.T) int {
 	t.Helper()
-	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	// TOCTOU is unavoidable here — the kernel hands us an ephemeral
+	// port, we close it, then later WireGuard binds it. Between close
+	// and rebind, the port can be reassigned (parallel test, stray
+	// daemon, or a TIME_WAIT-tainted assignment on macOS). We can't
+	// eliminate this race without holding the socket through the
+	// caller's WireGuard bind, but we can dramatically reduce its
+	// frequency by re-binding immediately after the kernel's
+	// assignment. If the verify-bind succeeds, the port is at least
+	// momentarily free; the caller still races, but the assignment
+	// step itself filters out the worst offenders (especially the
+	// macOS-specific TIME_WAIT replay where the kernel hands you a
+	// port that flat-out refuses subsequent binds).
+	for attempt := 0; attempt < 16; attempt++ {
+		conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := conn.LocalAddr().(*net.UDPAddr).Port
+		_ = conn.Close()
+		verify, err := net.ListenPacket("udp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			continue
+		}
+		_ = verify.Close()
+		return port
 	}
-	defer conn.Close()
-	return conn.LocalAddr().(*net.UDPAddr).Port
+	t.Fatal("freeUDPPort: could not find a stable port after 16 attempts")
+	return 0
 }
 
 func sendMalformedWireGuard(t *testing.T, port int) {
