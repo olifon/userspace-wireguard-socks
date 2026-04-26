@@ -115,6 +115,45 @@ jobs:
           set -euo pipefail
           UWGS_SOAK=1 UWGS_SOAK_SECONDS=15 go test ./tests/soak -run TestLoopbackImpairedChattySOCKSSoak -count=1
 
+      # Race-detector run on the concurrency-sensitive packages. Only on
+      # Linux because race-detector instrumentation is heavy and these
+      # packages don't have OS-specific concurrency to surface; cross-OS
+      # race coverage from the regular test pass is sufficient.
+      - name: Race-detector run on concurrency-sensitive packages
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -race \
+            ./internal/engine \
+            ./internal/transport \
+            ./internal/fdproxy \
+            ./tests/preload \
+            ./tests/malicious \
+            -count=1 -timeout 900s
+
+      # Stress tests for the fdproxy lock model. Cheap (~2s each) but
+      # gated UWGS_STRESS=1 so they don't run on every PR push; the
+      # release pipeline always exercises them.
+      - name: Stress tests for fdproxy lock model
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          UWGS_STRESS=1 go test -race ./internal/fdproxy -run TestStress -count=1 -timeout 60s
+
+      # Fuzz the strict wg-quick parser and the ACL rule parser for a
+      # short window. The seed corpus already runs as a regular test on
+      # every push; this stretches it for ~30s per target on Linux.
+      - name: Fuzz untrusted-input parsers
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test ./tests/malicious -run '^$' -fuzz '^FuzzMergeWGQuickStrict$' -fuzztime 30s
+          go test ./tests/malicious -run '^$' -fuzz '^FuzzACLParseRule$' -fuzztime 30s
+          go test ./tests/malicious -run '^$' -fuzz '^FuzzConfigParsers$' -fuzztime 30s
+
   release-test-lite:
     name: release lite ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
