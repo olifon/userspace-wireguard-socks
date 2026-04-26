@@ -603,24 +603,30 @@ jobs:
             runner: ubuntu-24.04-arm
             image: golang:1.24-bookworm
             install: 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq gcc libc6-dev git >/dev/null'
-          # musl 1.2.4 — Alpine 3.18.
-          - name: musl-1.2.4-amd64
+          # musl current — golang:1.24-alpine (Alpine 3.20+, musl 1.2.5+)
+          - name: musl-current-amd64
             runner: ubuntu-latest
-            image: golang:1.24-alpine3.19
+            image: golang:1.24-alpine
             install: 'apk add --no-cache gcc musl-dev linux-headers git'
-          - name: musl-1.2.4-arm64
+          - name: musl-current-arm64
             runner: ubuntu-24.04-arm
-            image: golang:1.24-alpine3.19
+            image: golang:1.24-alpine
             install: 'apk add --no-cache gcc musl-dev linux-headers git'
-          # musl 1.2.5 — Alpine 3.20, current stable.
-          - name: musl-1.2.5-amd64
+          # musl older — Alpine 3.16 (musl 1.2.3) with manual Go install
+          - name: musl-1.2.3-amd64
             runner: ubuntu-latest
-            image: golang:1.24-alpine3.20
-            install: 'apk add --no-cache gcc musl-dev linux-headers git'
-          - name: musl-1.2.5-arm64
+            image: alpine:3.16
+            install: |
+              apk add --no-cache gcc musl-dev linux-headers git wget ca-certificates
+              wget -q https://go.dev/dl/go1.24.0.linux-amd64.tar.gz -O /tmp/go.tgz
+              tar -C /usr/local -xzf /tmp/go.tgz
+          - name: musl-1.2.3-arm64
             runner: ubuntu-24.04-arm
-            image: golang:1.24-alpine3.20
-            install: 'apk add --no-cache gcc musl-dev linux-headers git'
+            image: alpine:3.16
+            install: |
+              apk add --no-cache gcc musl-dev linux-headers git wget ca-certificates
+              wget -q https://go.dev/dl/go1.24.0.linux-arm64.tar.gz -O /tmp/go.tgz
+              tar -C /usr/local -xzf /tmp/go.tgz
     steps:
       - uses: actions/checkout@v4
 

@@ -37,16 +37,17 @@ fi
 # Go in repos (Ubuntu 18.04 ships go1.10, Alpine 3.10 ships go1.12),
 # the script downloads the official binary tarball.
 case "$image" in
-  alpine:3.1[0-5]|alpine:3.10|alpine:3.11|alpine:3.12|alpine:3.13|alpine:3.14|alpine:3.15)
-    # Old alpines: musl <1.2.4, no Go in repos new enough; use static Go binary
+  alpine:3.10|alpine:3.11|alpine:3.12|alpine:3.13|alpine:3.14|alpine:3.15)
+    # Old alpines: musl <1.2.4, no Go in repos new enough; use Go binary tarball
     install_cmd='apk add --no-cache --quiet gcc musl-dev linux-headers git wget ca-certificates && \
       ARCH=$(uname -m); GOARCH=amd64; case "$ARCH" in aarch64) GOARCH=arm64 ;; esac; \
       wget -q "https://go.dev/dl/go1.23.10.linux-${GOARCH}.tar.gz" -O /tmp/go.tgz && \
       tar -C /usr/local -xzf /tmp/go.tgz && export PATH=/usr/local/go/bin:$PATH'
     libc_probe='apk info musl 2>/dev/null | head -1 | awk "{print \"musl \" \$1}" | sed "s/^musl musl-/musl /"'
     ;;
-  alpine:*)
-    install_cmd='apk add --no-cache --quiet gcc musl-dev linux-headers git go'
+  alpine:*|*alpine*)
+    # Modern alpine: Go in apk repos OR golang:*-alpine* image
+    install_cmd='apk add --no-cache --quiet gcc musl-dev linux-headers git && (command -v go >/dev/null || apk add --no-cache go)'
     libc_probe='apk info musl 2>/dev/null | head -1 | awk "{print \"musl \" \$1}" | sed "s/^musl musl-/musl /"'
     ;;
   ubuntu:18.04|ubuntu:20.04)
@@ -58,12 +59,17 @@ case "$image" in
       tar -C /usr/local -xzf /tmp/go.tgz && export PATH=/usr/local/go/bin:$PATH'
     libc_probe='ldd --version 2>&1 | head -1'
     ;;
-  debian:bullseye|debian:trixie|ubuntu:*)
+  debian:*|ubuntu:*|*bullseye|*bookworm|*trixie|*jammy|*noble)
+    # Glibc-based image; install gcc + libc6-dev. golang: images already
+    # have Go installed (PATH already includes it); plain debian/ubuntu
+    # variants need it from the tarball.
     install_cmd='DEBIAN_FRONTEND=noninteractive apt-get update -qq && \
       DEBIAN_FRONTEND=noninteractive apt-get install -y -qq gcc libc6-dev git wget ca-certificates >/dev/null && \
-      ARCH=$(uname -m); GOARCH=amd64; case "$ARCH" in aarch64) GOARCH=arm64 ;; esac; \
-      wget -q "https://go.dev/dl/go1.23.10.linux-${GOARCH}.tar.gz" -O /tmp/go.tgz && \
-      tar -C /usr/local -xzf /tmp/go.tgz && export PATH=/usr/local/go/bin:$PATH'
+      if ! command -v go >/dev/null; then \
+        ARCH=$(uname -m); GOARCH=amd64; case "$ARCH" in aarch64) GOARCH=arm64 ;; esac; \
+        wget -q "https://go.dev/dl/go1.23.10.linux-${GOARCH}.tar.gz" -O /tmp/go.tgz && \
+        tar -C /usr/local -xzf /tmp/go.tgz; \
+      fi'
     libc_probe='ldd --version 2>&1 | head -1'
     ;;
   *)
@@ -82,8 +88,9 @@ $install_cmd >/dev/null 2>&1
 export PATH=/usr/local/go/bin:\$PATH
 cd /src
 LIBCVER=\$( ($libc_probe 2>/dev/null | tr -d '\n') || echo unknown )
-# Re-init git so tests that shell out to "git rev-parse" don't hard-fail.
-test -d .git || git init -q .
+# Tests that need a git checkout (resolve_subcommand_test) skip
+# cleanly when .git is missing; we run with a read-only mount so
+# we can't init one even if we wanted to.
 go test -count=1 -timeout 600s ./... 2>&1 | tail -200
 echo "ALL_OK \$LIBCVER"
 EOF
