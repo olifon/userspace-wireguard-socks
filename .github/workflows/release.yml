@@ -720,7 +720,7 @@ jobs:
               -e UWGS_BROWSER_SMOKE_TRANSPORT=$transport \
               ${{ matrix.image }} \
               sh -c '${{ matrix.install }}; \
-                     export PATH=/usr/local/go/bin:$PATH GOTOOLCHAIN=auto; \
+                     export PATH=/usr/local/go/bin:$PATH GOTOOLCHAIN=auto GOFLAGS=-buildvcs=false; \
                      git init -q . 2>/dev/null || true; \
                      go test -buildvcs=false -count=1 -timeout 300s -run TestUWGWrapperNodeHeadlessChromeSmoke -v ./tests/preload/...'
           done
