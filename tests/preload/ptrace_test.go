@@ -270,42 +270,71 @@ func TestUWGWrapperMessageSyscallsAcrossTransports(t *testing.T) {
 		name string
 		args []string
 		want string
+		// syscalls listed here are asserted (≥1) when the transport
+		// spawns the ptrace tracer. Skipped for preload-only — that
+		// path has no per-syscall counter, so the round-trip output
+		// is the only signal there.
+		syscalls []string
 	}{
 		{
-			name: "tcp-sendmsg-recvmsg",
-			args: []string{"100.64.94.1", "18080", "tcp-msg", "tcp", "msg"},
-			want: "tcp-msg",
+			name:     "tcp-sendmsg-recvmsg",
+			args:     []string{"100.64.94.1", "18080", "tcp-msg", "tcp", "msg"},
+			want:     "tcp-msg",
+			syscalls: []string{"sendmsg", "recvmsg"},
 		},
 		{
-			name: "udp-sendmsg-recvmsg",
-			args: []string{"100.64.94.1", "18081", "udp-msg", "udp", "msg"},
-			want: "udp-msg",
+			name:     "udp-sendmsg-recvmsg",
+			args:     []string{"100.64.94.1", "18081", "udp-msg", "udp", "msg"},
+			want:     "udp-msg",
+			syscalls: []string{"sendmsg", "recvmsg"},
 		},
 		{
-			name: "udp-unconnected-sendmsg-recvmsg",
-			args: []string{"100.64.94.1", "18081", "udp-unconnected-msg", "udp-unconnected", "msg"},
-			want: "udp-unconnected-msg",
+			name:     "udp-unconnected-sendmsg-recvmsg",
+			args:     []string{"100.64.94.1", "18081", "udp-unconnected-msg", "udp-unconnected", "msg"},
+			want:     "udp-unconnected-msg",
+			syscalls: []string{"sendmsg", "recvmsg"},
 		},
 		{
-			name: "tcp-readv-writev",
-			args: []string{"100.64.94.1", "18080", "tcp-iov", "tcp", "iov"},
-			want: "tcp-iov",
+			name:     "udp-unconnected-sendto-recvfrom",
+			args:     []string{"100.64.94.1", "18081", "udp-unconnected-sendto", "udp-unconnected"},
+			want:     "udp-unconnected-sendto",
+			syscalls: []string{"sendto", "recvfrom"},
 		},
 		{
-			name: "udp-readv-writev",
-			args: []string{"100.64.94.1", "18081", "udp-iov", "udp", "iov"},
-			want: "udp-iov",
+			name:     "tcp-readv-writev",
+			args:     []string{"100.64.94.1", "18080", "tcp-iov", "tcp", "iov"},
+			want:     "tcp-iov",
+			syscalls: []string{"readv", "writev"},
 		},
 		{
-			name: "udp-sendmmsg-recvmmsg",
-			args: []string{"100.64.94.1", "18081", "udp-mmsg", "udp", "mmsg"},
-			want: "udp-mmsg",
+			name:     "udp-readv-writev",
+			args:     []string{"100.64.94.1", "18081", "udp-iov", "udp", "iov"},
+			want:     "udp-iov",
+			syscalls: []string{"readv", "writev"},
+		},
+		{
+			name:     "udp-sendmmsg-recvmmsg",
+			args:     []string{"100.64.94.1", "18081", "udp-mmsg", "udp", "mmsg"},
+			want:     "udp-mmsg",
+			syscalls: []string{"sendmmsg", "recvmmsg"},
 		},
 	}
 	transports := []string{"preload", "preload-and-ptrace", "ptrace", "ptrace-seccomp", "ptrace-only"}
 	for _, transport := range transports {
 		for _, tc := range cases {
 			t.Run(transport+"/"+tc.name, func(t *testing.T) {
+				if transportUsesPtrace(transport) && len(tc.syscalls) > 0 {
+					out, stats := runWrappedTargetWithStats(t, art, httpSock, transport, art.stub, tc.args, wrapperRunOptions{
+						timeout: 60 * time.Second,
+					})
+					if normalizedOutput(out) != tc.want {
+						t.Fatalf("unexpected %s output %q", tc.name, out)
+					}
+					for _, name := range tc.syscalls {
+						assertSyscallAtLeast(t, stats, name, 1)
+					}
+					return
+				}
 				out := runWrappedTargetWithOptions(t, art, httpSock, transport, art.stub, tc.args, wrapperRunOptions{
 					timeout: 60 * time.Second,
 				})
@@ -324,8 +353,17 @@ func TestUWGWrapperPselectAcrossTransports(t *testing.T) {
 
 	for _, transport := range []string{"preload", "preload-and-ptrace", "ptrace", "ptrace-seccomp", "ptrace-only"} {
 		t.Run(transport, func(t *testing.T) {
-			out := runWrappedTargetWithOptions(t, art, httpSock, transport, art.stub,
-				[]string{"100.64.94.1", "18080", "tcp-pselect", "tcp", "pselect"},
+			args := []string{"100.64.94.1", "18080", "tcp-pselect", "tcp", "pselect"}
+			if transportUsesPtrace(transport) {
+				out, stats := runWrappedTargetWithStats(t, art, httpSock, transport, art.stub, args,
+					wrapperRunOptions{timeout: 60 * time.Second})
+				if normalizedOutput(out) != "tcp-pselect" {
+					t.Fatalf("unexpected pselect output %q", out)
+				}
+				assertSyscallAtLeast(t, stats, "pselect6", 1)
+				return
+			}
+			out := runWrappedTargetWithOptions(t, art, httpSock, transport, art.stub, args,
 				wrapperRunOptions{timeout: 60 * time.Second})
 			if normalizedOutput(out) != "tcp-pselect" {
 				t.Fatalf("unexpected pselect output %q", out)
@@ -341,8 +379,23 @@ func TestUWGWrapperSelectAcrossTransports(t *testing.T) {
 
 	for _, transport := range []string{"preload", "preload-and-ptrace", "ptrace", "ptrace-seccomp", "ptrace-only"} {
 		t.Run(transport, func(t *testing.T) {
-			out := runWrappedTargetWithOptions(t, art, httpSock, transport, art.stub,
-				[]string{"100.64.94.1", "18080", "tcp-select", "tcp", "select"},
+			args := []string{"100.64.94.1", "18080", "tcp-select", "tcp", "select"}
+			if transportUsesPtrace(transport) {
+				out, stats := runWrappedTargetWithStats(t, art, httpSock, transport, art.stub, args,
+					wrapperRunOptions{timeout: 60 * time.Second})
+				if normalizedOutput(out) != "tcp-select" {
+					t.Fatalf("unexpected select output %q", out)
+				}
+				// On amd64 libc reaches the kernel through the native
+				// select(2) syscall; arm64 has no native select and
+				// rewrites it onto pselect6 inside libc, which is why
+				// this assertion is amd64-only.
+				if runtime.GOARCH == "amd64" {
+					assertSyscallAtLeast(t, stats, "select", 1)
+				}
+				return
+			}
+			out := runWrappedTargetWithOptions(t, art, httpSock, transport, art.stub, args,
 				wrapperRunOptions{timeout: 60 * time.Second})
 			if normalizedOutput(out) != "tcp-select" {
 				t.Fatalf("unexpected select output %q", out)
@@ -382,6 +435,209 @@ func TestUWGWrapperPtraceSeccompSocketSyscallSurfaceStats(t *testing.T) {
 	} {
 		assertSyscallAtLeast(t, stats, name, 1)
 	}
+}
+
+// TestUWGWrapperSocketSyscallSurfaceExtra runs the extended
+// syscall-surface walk added alongside the original surface stub.
+// It pins the syscalls that the original walk skipped — send + recv
+// (vs write/read), F_DUPFD_CLOEXEC, multi-fd poll across a socket
+// and a pipe, and shutdown(SHUT_WR) — so a regression in the
+// seccomp filter or preload wrapper can't silently bypass them.
+//
+// The test runs across all wrapper transports so the preload-only
+// path also exercises the round-trip. Counter assertions only fire
+// for transports that spawn the ptrace tracer (preload-only has no
+// per-syscall counter file).
+func TestUWGWrapperSocketSyscallSurfaceExtra(t *testing.T) {
+	requireWrapperToolchain(t)
+	art := buildWrapperArtifacts(t)
+	_, httpSock := setupWrapperNetwork(t)
+
+	args := []string{"100.64.94.1", "18080", "syscall-surface-extra", "tcp", "syscall-surface-extra"}
+	for _, transport := range []string{"preload", "preload-and-ptrace", "ptrace", "ptrace-seccomp", "ptrace-only"} {
+		t.Run(transport, func(t *testing.T) {
+			if transportUsesPtrace(transport) {
+				out, stats := runWrappedTargetWithStats(t, art, httpSock, transport, art.stub, args,
+					wrapperRunOptions{timeout: 60 * time.Second})
+				if normalizedOutput(out) != "syscall-surface-extra" {
+					t.Fatalf("unexpected syscall surface extra output %q", out)
+				}
+				// libc's send/recv map to sendto/recvfrom on Linux,
+				// so the tracer records them under those syscall names.
+				for _, name := range []string{
+					"sendto",
+					"recvfrom",
+					"fcntl",
+					"poll",
+					"shutdown",
+				} {
+					assertSyscallAtLeast(t, stats, name, 1)
+				}
+				// Two shutdowns (SHUT_WR then SHUT_RDWR) — assert both
+				// to catch a partial-shutdown bypass.
+				assertSyscallAtLeast(t, stats, "shutdown", 2)
+				return
+			}
+			out := runWrappedTargetWithOptions(t, art, httpSock, transport, art.stub, args,
+				wrapperRunOptions{timeout: 60 * time.Second})
+			if normalizedOutput(out) != "syscall-surface-extra" {
+				t.Fatalf("unexpected syscall surface extra output %q", out)
+			}
+		})
+	}
+}
+
+// TestUWGWrapperPtraceSeccompTCPListenerStats re-runs the TCP listener
+// flow under ptrace+seccomp and asserts that bind, listen, and accept
+// each show up in the tracer counters. The plain TCPListener test only
+// verifies the round-trip; if seccomp regressed and stopped trapping
+// any of these, a libc-direct bypass would still echo successfully.
+func TestUWGWrapperPtraceSeccompTCPListenerStats(t *testing.T) {
+	requireWrapperToolchain(t)
+	art := buildWrapperArtifacts(t)
+	serverEng, httpSock := setupWrapperNetwork(t)
+
+	stats, err := runWrappedListenerWithStats(t, art, httpSock, "ptrace-seccomp",
+		[]string{"100.64.94.2", "19193", "ptrace-seccomp-listener-stats", "listen-tcp"},
+		serverEng, "100.64.94.2:19193", "ptrace-seccomp-listener-stats")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"bind", "listen", "accept", "close"} {
+		assertSyscallAtLeast(t, stats, name, 1)
+	}
+}
+
+// TestUWGWrapperPtraceSeccompTCPListenerAccept4Stats covers the
+// accept4(2) path. The original listener stub uses 3-arg accept(); no
+// existing test exercised the 4-arg accept4 entry that real apps using
+// SOCK_CLOEXEC/SOCK_NONBLOCK take. The stub here passes SOCK_CLOEXEC
+// and verifies the returned fd has FD_CLOEXEC set — proving the flag
+// argument made it through preload/ptrace correctly.
+func TestUWGWrapperPtraceSeccompTCPListenerAccept4Stats(t *testing.T) {
+	requireWrapperToolchain(t)
+	art := buildWrapperArtifacts(t)
+	serverEng, httpSock := setupWrapperNetwork(t)
+
+	stats, err := runWrappedListenerWithStats(t, art, httpSock, "ptrace-seccomp",
+		[]string{"100.64.94.2", "19194", "ptrace-seccomp-listener-accept4", "listen-tcp-accept4"},
+		serverEng, "100.64.94.2:19194", "ptrace-seccomp-listener-accept4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"bind", "listen", "accept4", "close"} {
+		assertSyscallAtLeast(t, stats, name, 1)
+	}
+}
+
+// TestUWGWrapperPreloadAccept4Listener is the preload-only sibling of
+// the ptrace+seccomp accept4 listener test. Preload has no per-syscall
+// counter file, so this is a round-trip-only check — but it pins the
+// preload accept4() wrapper end-to-end, including the SOCK_CLOEXEC
+// flag handling that the C stub asserts.
+func TestUWGWrapperPreloadAccept4Listener(t *testing.T) {
+	requireWrapperToolchain(t)
+	art := buildWrapperArtifacts(t)
+	serverEng, httpSock := setupWrapperNetwork(t)
+
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		cmd, stderr, done := startWrappedListenerProcess(t, art, httpSock, "preload", art.stub,
+			[]string{"100.64.94.2", "19195", "preload-listener-accept4", "listen-tcp-accept4"}, wrapperRunOptions{})
+
+		runErr := func() error {
+			conn := retryTunnelDial(t, serverEng, "tcp", "100.64.94.2:19195")
+			defer conn.Close()
+			_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+			if _, err := conn.Write([]byte("preload-listener-accept4")); err != nil {
+				return fmt.Errorf("listener write failed: %w\nstderr=%s", err, stderr.String())
+			}
+			buf := make([]byte, len("preload-listener-accept4"))
+			if _, err := io.ReadFull(conn, buf); err != nil {
+				return fmt.Errorf("listener read failed: %w\nstderr=%s", err, stderr.String())
+			}
+			if string(buf) != "preload-listener-accept4" {
+				return fmt.Errorf("listener echo mismatch %q\nstderr=%s", buf, stderr.String())
+			}
+			select {
+			case err := <-done:
+				if err != nil {
+					return fmt.Errorf("listener wrapper failed: %w\nstderr=%s", err, stderr.String())
+				}
+			case <-time.After(10 * time.Second):
+				killProcessGroup(cmd)
+				<-done
+				return fmt.Errorf("listener wrapper did not exit\nstderr=%s", stderr.String())
+			}
+			return nil
+		}()
+		if runErr == nil {
+			return
+		}
+		lastErr = runErr
+		t.Logf("retrying preload accept4 listener test after transient failure: %v", runErr)
+	}
+	t.Fatal(lastErr)
+}
+
+// runWrappedListenerWithStats wires a temp UWGS_TRACE_STATS_PATH into
+// the listener wrapper, drives the echo round-trip, then reads the
+// resulting tracer stats file. It mirrors the retry/teardown logic of
+// startWrappedListenerProcess but is dedicated to stats-asserting
+// tests so the existing listener tests stay byte-identical.
+func runWrappedListenerWithStats(t *testing.T, art wrapperArtifacts, httpSock, transport string, args []string, serverEng *engine.Engine, dialAddr, message string) (traceStats, error) {
+	t.Helper()
+	statsPath := filepath.Join(t.TempDir(), "trace-stats.json")
+	opts := wrapperRunOptions{env: map[string]string{"UWGS_TRACE_STATS_PATH": statsPath}}
+
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		cmd, stderr, done := startWrappedListenerProcess(t, art, httpSock, transport, art.stub, args, opts)
+
+		runErr := func() error {
+			conn := retryTunnelDial(t, serverEng, "tcp", dialAddr)
+			defer conn.Close()
+			_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+			if _, err := conn.Write([]byte(message)); err != nil {
+				return fmt.Errorf("listener write failed: %w\nstderr=%s", err, stderr.String())
+			}
+			buf := make([]byte, len(message))
+			if _, err := io.ReadFull(conn, buf); err != nil {
+				return fmt.Errorf("listener read failed: %w\nstderr=%s", err, stderr.String())
+			}
+			if string(buf) != message {
+				return fmt.Errorf("listener echo mismatch %q\nstderr=%s", buf, stderr.String())
+			}
+			select {
+			case err := <-done:
+				if err != nil {
+					return fmt.Errorf("listener wrapper failed: %w\nstderr=%s", err, stderr.String())
+				}
+			case <-time.After(10 * time.Second):
+				_ = cmd.Process.Kill()
+				<-done
+				return fmt.Errorf("listener wrapper did not exit\nstderr=%s", stderr.String())
+			}
+			return nil
+		}()
+		if runErr == nil {
+			data, err := os.ReadFile(statsPath)
+			if err != nil {
+				return traceStats{}, fmt.Errorf("read trace stats: %w", err)
+			}
+			var stats traceStats
+			if err := json.Unmarshal(data, &stats); err != nil {
+				return traceStats{}, fmt.Errorf("decode trace stats: %w\n%s", err, data)
+			}
+			if stats.Syscalls == nil {
+				stats.Syscalls = make(map[string]uint64)
+			}
+			return stats, nil
+		}
+		lastErr = runErr
+		t.Logf("retrying %s listener stats run after transient failure: %v", transport, runErr)
+	}
+	return traceStats{}, lastErr
 }
 
 func TestUWGWrapperUDPConnectProbeLazy(t *testing.T) {
@@ -885,6 +1141,19 @@ func runWrappedTargetWithStats(t *testing.T, art wrapperArtifacts, httpSock, tra
 func transportUsesPreload(transport string) bool {
 	switch transport {
 	case "preload-and-ptrace", "combo-only", "preload+seccomp", "preload-plus-seccomp", "preload", "preload-only":
+		return true
+	default:
+		return false
+	}
+}
+
+// transportUsesPtrace reports whether a wrapper transport spawns the
+// ptrace tracer. Only those transports populate UWGS_TRACE_STATS_PATH,
+// so syscall-counter assertions are meaningful for them and useless
+// for preload-only mode.
+func transportUsesPtrace(transport string) bool {
+	switch transport {
+	case "ptrace", "ptrace-only", "ptrace-seccomp", "preload-and-ptrace":
 		return true
 	default:
 		return false

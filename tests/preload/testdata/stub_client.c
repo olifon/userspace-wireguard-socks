@@ -541,6 +541,172 @@ static int exercise_socket_syscall_surface(int fd, const char *message) {
     return strcmp(buf, message) == 0 ? 0 : 1;
 }
 
+/*
+ * exercise_socket_syscall_surface_extra hits syscalls that the original
+ * surface walk doesn't: send/recv (vs write/read), F_DUPFD_CLOEXEC,
+ * shutdown(SHUT_WR), multi-fd poll across a socket and a pipe, and
+ * sockopts at non-SOL_SOCKET levels. Counter assertions in the test
+ * harness pin each interception so a regressed seccomp filter or
+ * preload wrapper fails loudly instead of silently bypassing.
+ */
+static int exercise_socket_syscall_surface_extra(int fd, const char *message) {
+    size_t want = strlen(message);
+    if (send(fd, message, want, 0) != (ssize_t)want) {
+        perror("surface_extra send");
+        return 1;
+    }
+    struct pollfd pfd;
+    memset(&pfd, 0, sizeof(pfd));
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+    if (poll(&pfd, 1, 3000) <= 0 || !(pfd.revents & POLLIN)) {
+        perror("surface_extra poll readable");
+        return 1;
+    }
+    char buf[4096];
+    ssize_t n = recv(fd, buf, sizeof(buf) - 1, 0);
+    if (n < 0) {
+        perror("surface_extra recv");
+        return 1;
+    }
+    buf[n] = 0;
+
+    int dup_via_fcntl = fcntl(fd, F_DUPFD_CLOEXEC, 100);
+    if (dup_via_fcntl < 0) {
+        perror("surface_extra fcntl F_DUPFD_CLOEXEC");
+        return 1;
+    }
+    int fdflags = fcntl(dup_via_fcntl, F_GETFD, 0);
+    if (fdflags < 0 || !(fdflags & FD_CLOEXEC)) {
+        fprintf(stderr, "surface_extra F_DUPFD_CLOEXEC missing CLOEXEC (flags=%d)\n", fdflags);
+        close(dup_via_fcntl);
+        return 1;
+    }
+    close(dup_via_fcntl);
+
+    int notify[2];
+    if (pipe(notify) != 0) {
+        perror("surface_extra pipe");
+        return 1;
+    }
+    struct pollfd pfds[2];
+    memset(pfds, 0, sizeof(pfds));
+    pfds[0].fd = fd;
+    pfds[0].events = POLLIN;
+    pfds[1].fd = notify[0];
+    pfds[1].events = POLLIN;
+    char one = 'x';
+    if (write(notify[1], &one, 1) != 1) {
+        perror("surface_extra notify write");
+        close(notify[0]);
+        close(notify[1]);
+        return 1;
+    }
+    int got = poll(pfds, 2, 2000);
+    if (got <= 0 || !(pfds[1].revents & POLLIN)) {
+        fprintf(stderr, "surface_extra multi-fd poll did not see notify pipe (got=%d)\n", got);
+        close(notify[0]);
+        close(notify[1]);
+        return 1;
+    }
+    char drain;
+    if (read(notify[0], &drain, 1) < 0) {
+        /* not fatal — pipe may have been drained earlier on some glibcs */
+    }
+    close(notify[0]);
+    close(notify[1]);
+
+    /* Non-SOL_SOCKET sockopt levels. Tolerate ENOPROTOOPT/EOPNOTSUPP from
+     * the netstack — the point is to make sure the syscall reaches the
+     * tracer/preload, not to assert kernel-vs-netstack semantics. */
+    int ttl = 64;
+    (void)setsockopt(fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
+    int recvbuf = 0;
+    socklen_t recvbuflen = sizeof(recvbuf);
+    (void)getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &recvbuf, &recvbuflen);
+
+    if (shutdown(fd, SHUT_WR) != 0 && errno != ENOTCONN) {
+        perror("surface_extra shutdown SHUT_WR");
+        return 1;
+    }
+    if (shutdown(fd, SHUT_RDWR) != 0 && errno != ENOTCONN) {
+        perror("surface_extra shutdown SHUT_RDWR");
+        return 1;
+    }
+
+    printf("%s", buf);
+    return strcmp(buf, message) == 0 ? 0 : 1;
+}
+
+static int accept4_one(int fd, const char *message) {
+    int c = accept4(fd, NULL, NULL, SOCK_CLOEXEC);
+    if (c < 0) {
+        perror("accept4");
+        return 1;
+    }
+    int fdflags = fcntl(c, F_GETFD, 0);
+    if (fdflags < 0 || !(fdflags & FD_CLOEXEC)) {
+        fprintf(stderr, "accept4 SOCK_CLOEXEC did not set FD_CLOEXEC (flags=%d)\n", fdflags);
+        close(c);
+        return 1;
+    }
+    char buf[4096];
+    ssize_t n = recv(c, buf, sizeof(buf), 0);
+    if (n < 0) {
+        perror("accept4 listener recv");
+        close(c);
+        return 1;
+    }
+    if ((size_t)n != strlen(message) || memcmp(buf, message, (size_t)n) != 0) {
+        fprintf(stderr, "accept4 listener got unexpected payload\n");
+        close(c);
+        return 1;
+    }
+    if (send(c, buf, (size_t)n, 0) != (ssize_t)n) {
+        perror("accept4 listener send");
+        close(c);
+        return 1;
+    }
+    close(c);
+    return 0;
+}
+
+static int run_tcp_listener_accept4(const char *ip, const char *port, const char *message) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        perror("socket");
+        return 1;
+    }
+    if (apply_reuse_from_env(fd) != 0) {
+        close(fd);
+        return 1;
+    }
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((unsigned short)atoi(port));
+    if (inet_pton(AF_INET, ip, &addr.sin_addr) != 1) {
+        perror("inet_pton");
+        close(fd);
+        return 1;
+    }
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        perror("bind");
+        close(fd);
+        return 1;
+    }
+    if (listen(fd, 16) != 0) {
+        perror("listen");
+        close(fd);
+        return 1;
+    }
+    printf("READY\n");
+    fflush(stdout);
+    int rc = accept4_one(fd, message);
+    close(fd);
+    return rc;
+}
+
 static int echo_icmp_connected(int fd, const char *message, int ipv6) {
     unsigned char packet[1500];
     size_t payload_len = strlen(message);
@@ -756,7 +922,7 @@ static int bind_from_env(int fd) {
 
 int main(int argc, char **argv) {
     if (argc < 4) {
-        fprintf(stderr, "usage: %s <ip> <port> <message> [tcp|udp|udp-unconnected|dup|fork|exec|exec-child|listen-tcp|msg|mmsg|iov]\n", argv[0]);
+        fprintf(stderr, "usage: %s <ip> <port> <message> [tcp|udp|udp-unconnected|dup|fork|exec|exec-child|listen-tcp|listen-tcp-accept4|msg|mmsg|iov|syscall-surface|syscall-surface-extra]\n", argv[0]);
         return 2;
     }
     int socktype = SOCK_STREAM;
@@ -777,6 +943,8 @@ int main(int argc, char **argv) {
     int use_mmsg = 0;
     int use_readv_writev = 0;
     int use_syscall_surface = 0;
+    int use_syscall_surface_extra = 0;
+    int listen_tcp_accept4 = 0;
     int use_select = 0;
     int use_pselect = 0;
     for (int i = 4; i < argc; i++) {
@@ -830,6 +998,11 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "syscall-surface") == 0) {
             socktype = SOCK_STREAM;
             use_syscall_surface = 1;
+        } else if (strcmp(argv[i], "syscall-surface-extra") == 0) {
+            socktype = SOCK_STREAM;
+            use_syscall_surface_extra = 1;
+        } else if (strcmp(argv[i], "listen-tcp-accept4") == 0) {
+            listen_tcp_accept4 = 1;
         } else {
             fprintf(stderr, "unknown option: %s\n", argv[i]);
             return 2;
@@ -837,6 +1010,9 @@ int main(int argc, char **argv) {
     }
     if (listen_tcp) {
         return run_tcp_listener(argv[0], argv[1], argv[2], argv[3], use_exec);
+    }
+    if (listen_tcp_accept4) {
+        return run_tcp_listener_accept4(argv[1], argv[2], argv[3]);
     }
     if (listen_udp) {
         return run_udp_listener(argv[1], argv[2], argv[3]);
@@ -940,6 +1116,11 @@ int main(int argc, char **argv) {
     }
     if (use_syscall_surface) {
         int rc = exercise_socket_syscall_surface(fd, argv[3]);
+        close(fd);
+        return rc;
+    }
+    if (use_syscall_surface_extra) {
+        int rc = exercise_socket_syscall_surface_extra(fd, argv[3]);
         close(fd);
         return rc;
     }

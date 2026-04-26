@@ -2758,6 +2758,36 @@ int accept(int fd, struct sockaddr *addr, socklen_t *addrlen) {
   return out;
 }
 
+/* apply_accept4_flags propagates SOCK_CLOEXEC / SOCK_NONBLOCK from the
+ * accept4(2) flag argument onto an fd that managed_accept handed back.
+ * managed_accept always returns a blocking, non-CLOEXEC fd from the
+ * proxy, so without this any caller passing accept4 flags would
+ * silently get the wrong fd disposition (the regression that
+ * TestUWGWrapperPreloadAccept4Listener pinned). */
+static int apply_accept4_flags(int out, int flags) {
+  if (out < 0 || flags == 0 || !real_fcntl_fn)
+    return out;
+  if (flags & SOCK_CLOEXEC) {
+    int cur = real_fcntl_fn(out, F_GETFD, 0);
+    if (cur < 0 || real_fcntl_fn(out, F_SETFD, cur | FD_CLOEXEC) < 0) {
+      int e = errno ? errno : EBADF;
+      real_close_call(out);
+      errno = e;
+      return -1;
+    }
+  }
+  if (flags & SOCK_NONBLOCK) {
+    int cur = real_fcntl_fn(out, F_GETFL, 0);
+    if (cur < 0 || real_fcntl_fn(out, F_SETFL, cur | O_NONBLOCK) < 0) {
+      int e = errno ? errno : EBADF;
+      real_close_call(out);
+      errno = e;
+      return -1;
+    }
+  }
+  return out;
+}
+
 int accept4(int fd, struct sockaddr *addr, socklen_t *addrlen, int flags) {
   init_real();
   if (tracked_reentrant_socket_fd(fd))
@@ -2771,12 +2801,11 @@ int accept4(int fd, struct sockaddr *addr, socklen_t *addrlen, int flags) {
     return (int)cold_syscall(SYS_accept4, fd, (long)addr, (long)addrlen, flags,
                              0, 0);
   if (proxied_listener) {
-    (void)flags;
-    return managed_accept(fd, addr, addrlen);
+    return apply_accept4_flags(managed_accept(fd, addr, addrlen), flags);
   }
   int out = real_accept4_call(fd, addr, addrlen, flags);
   if (out < 0 && errno == EINVAL && is_manager_fd(fd)) {
-    return managed_accept(fd, addr, addrlen);
+    return apply_accept4_flags(managed_accept(fd, addr, addrlen), flags);
   }
   return out;
 }
