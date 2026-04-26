@@ -1434,7 +1434,7 @@ func TestForwardListenFailureIsReported(t *testing.T) {
 	if err := cfg.Normalize(); err != nil {
 		t.Fatal(err)
 	}
-	eng, err := engine.New(cfg, log.New(testLogWriter{t: t}, "", 0))
+	eng, err := engine.New(cfg, log.New(newTestLogWriter(t), "", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1457,7 +1457,7 @@ func TestReverseForwardListenFailureIsReported(t *testing.T) {
 	if err := cfg.Normalize(); err != nil {
 		t.Fatal(err)
 	}
-	eng, err := engine.New(cfg, log.New(testLogWriter{t: t}, "", 0))
+	eng, err := engine.New(cfg, log.New(newTestLogWriter(t), "", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2528,7 +2528,7 @@ func mustStart(t *testing.T, cfg config.Config) *engine.Engine {
 	if err := cfg.Normalize(); err != nil {
 		t.Fatal(err)
 	}
-	eng, err := engine.New(cfg, log.New(testLogWriter{t: t}, "", 0))
+	eng, err := engine.New(cfg, log.New(newTestLogWriter(t), "", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2540,11 +2540,37 @@ func mustStart(t *testing.T, cfg config.Config) *engine.Engine {
 	return eng
 }
 
+// testLogWriter forwards engine logs to t.Log. Engine goroutines (notably the
+// mesh control HTTP server) can outlive the test body — Engine.Close does not
+// currently block until every spawned goroutine has stopped — so a late
+// Write() from one of those goroutines would race with the test framework's
+// own cleanup writes to *testing.T internals. To stay race-free under -race
+// we register a t.Cleanup that flips the writer into discard mode before the
+// test framework's cleanup phase reaches the racing fields. Investigating the
+// underlying engine shutdown order is tracked separately; for the test path
+// this bandage is correct and cheap.
 type testLogWriter struct {
-	t *testing.T
+	mu     sync.Mutex
+	t      *testing.T
+	closed bool
 }
 
-func (w testLogWriter) Write(p []byte) (int, error) {
+func newTestLogWriter(t *testing.T) *testLogWriter {
+	w := &testLogWriter{t: t}
+	t.Cleanup(func() {
+		w.mu.Lock()
+		w.closed = true
+		w.mu.Unlock()
+	})
+	return w
+}
+
+func (w *testLogWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return len(p), nil
+	}
 	w.t.Log(strings.TrimSpace(string(p)))
 	return len(p), nil
 }
