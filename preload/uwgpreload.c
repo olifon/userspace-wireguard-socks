@@ -1085,6 +1085,9 @@ static int tracked_rdlock(void) {
   int rc = uwg_rwlock_rdlock(tracked_lock(), current_tid());
   if (rc == UWG_LOCK_OK)
     return 0;
+  /* Only POISONED triggers the process-wide degrade. TRANSIENT and
+   * REENTRANT just mean "skip this op" — the lock is still healthy
+   * and a future attempt will succeed. */
   if (rc == UWG_LOCK_POISONED)
     mark_state_poisoned();
   tracked_read_depth--;

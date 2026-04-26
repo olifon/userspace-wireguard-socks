@@ -39,10 +39,30 @@
 /* Lock-call return codes. Backward-compatible with the prior "0 ok,
  * non-zero failure" contract — existing call sites that treat any
  * non-zero as "do not proceed" continue to work. New callers can
- * distinguish reentrancy from poison if they care. */
+ * distinguish reentrancy from poison from a transient acquire failure
+ * if they care.
+ *
+ * UWG_LOCK_OK         — lock acquired successfully.
+ * UWG_LOCK_REENTRANT  — same thread is already inside the lock; the
+ *                       call is a no-op for us, the caller should
+ *                       NOT also call unlock.
+ * UWG_LOCK_POISONED   — the lock detected unrecoverable corruption
+ *                       (owner died, or readers failed to drain
+ *                       within the deadline). Subsequent ops on
+ *                       this lock will also return POISONED. The
+ *                       preload uses this to enter passthrough mode
+ *                       for the affected state.
+ * UWG_LOCK_TRANSIENT  — the underlying pthread_mutex_lock returned
+ *                       an error we don't recognize as fatal. The
+ *                       caller should treat this as "could not lock
+ *                       this time" — same as POISONED for the
+ *                       immediate caller, but does NOT trigger the
+ *                       global poison flag. Future attempts may
+ *                       succeed. */
 #define UWG_LOCK_OK 0
 #define UWG_LOCK_REENTRANT (-1)
 #define UWG_LOCK_POISONED (-2)
+#define UWG_LOCK_TRANSIENT (-3)
 
 enum managed_kind {
   KIND_NONE = 0,
@@ -135,22 +155,34 @@ static inline int uwg_guard_writer_owned_by(struct uwg_guardlock *lock,
 }
 
 /* Internal helpers — initialize the underlying pthread_mutex with the
- * "process shared + robust" attributes. Callers should not invoke
- * directly; use uwg_rwlock_ensure_inited / uwg_guard_ensure_inited. */
+ * "process shared + robust" attributes when supported. Falls back to
+ * default attrs if either flag is rejected (very old kernels / unusual
+ * libcs); the lock still works in that case, just without owner-death
+ * recovery. Callers should not invoke directly; use
+ * uwg_rwlock_ensure_inited / uwg_guard_ensure_inited. */
 static inline int uwg_pthread_mutex_init_robust(pthread_mutex_t *m) {
   pthread_mutexattr_t attr;
   if (pthread_mutexattr_init(&attr) != 0)
-    return -1;
+    return pthread_mutex_init(m, NULL);
   /* Process-shared so a mutex stored in mmap'd memory is acquireable
-   * from any process that maps the same file. */
+   * from any process that maps the same file. Best-effort. */
   (void)pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
   /* Robust so the kernel records the owning TID and the next acquirer
-   * gets EOWNERDEAD if the owner died. This is what makes the whole
-   * "fail fast on owner death" story possible. */
+   * gets EOWNERDEAD if the owner died. Best-effort: if the platform
+   * doesn't support robust mutexes the init still proceeds with
+   * whatever defaults the attrs bag holds, and we lose owner-death
+   * recovery (but the lock still functions correctly under normal
+   * acquire/release). */
   (void)pthread_mutexattr_setrobust(&attr, PTHREAD_MUTEX_ROBUST);
   int rc = pthread_mutex_init(m, &attr);
   (void)pthread_mutexattr_destroy(&attr);
-  return rc;
+  if (rc != 0) {
+    /* Last-resort fallback: default mutex. This loses every
+     * recovery property we wanted but keeps the call graph alive
+     * instead of bailing the preload entirely. */
+    return pthread_mutex_init(m, NULL);
+  }
+  return 0;
 }
 
 /* CAS-guarded one-shot init. We can't use pthread_once here because the
@@ -224,15 +256,19 @@ static inline int uwg_rwlock_rdlock(struct uwg_rwlock *lock, int32_t tid) {
     return UWG_LOCK_REENTRANT;
   /* Briefly take the writer mutex so we can be sure no writer is
    * mid-critical-section while we bump the reader count. EOWNERDEAD
-   * here means a previous writer died — poison and bail. */
+   * here means a previous writer died — poison and bail. Any other
+   * non-zero error is treated as a transient acquire failure: the
+   * lock state itself is fine, we just couldn't take it this time. */
   int rc = pthread_mutex_lock(&lock->writer_mutex);
   if (rc == EOWNERDEAD) {
     uwg_lock_poison_after_owner_death(&lock->writer_mutex, &lock->poisoned,
                                       &lock->writer_tid);
     return UWG_LOCK_POISONED;
   }
-  if (rc != 0)
+  if (rc == ENOTRECOVERABLE)
     return UWG_LOCK_POISONED;
+  if (rc != 0)
+    return UWG_LOCK_TRANSIENT;
   if (atomic_load_explicit(&lock->poisoned, memory_order_acquire)) {
     (void)pthread_mutex_unlock(&lock->writer_mutex);
     return UWG_LOCK_POISONED;
@@ -258,8 +294,10 @@ static inline int uwg_rwlock_wrlock(struct uwg_rwlock *lock, int32_t tid) {
                                       &lock->writer_tid);
     return UWG_LOCK_POISONED;
   }
-  if (rc != 0)
+  if (rc == ENOTRECOVERABLE)
     return UWG_LOCK_POISONED;
+  if (rc != 0)
+    return UWG_LOCK_TRANSIENT;
   if (atomic_load_explicit(&lock->poisoned, memory_order_acquire)) {
     (void)pthread_mutex_unlock(&lock->writer_mutex);
     return UWG_LOCK_POISONED;
@@ -344,9 +382,13 @@ static inline int uwg_guard_rdlock(struct uwg_guardlock *lock, int32_t tid) {
     uwg_guard_release_slot(lock, tid);
     return UWG_LOCK_POISONED;
   }
-  if (rc != 0) {
+  if (rc == ENOTRECOVERABLE) {
     uwg_guard_release_slot(lock, tid);
     return UWG_LOCK_POISONED;
+  }
+  if (rc != 0) {
+    uwg_guard_release_slot(lock, tid);
+    return UWG_LOCK_TRANSIENT;
   }
   if (atomic_load_explicit(&lock->poisoned, memory_order_acquire)) {
     (void)pthread_mutex_unlock(&lock->writer_mutex);
@@ -373,8 +415,10 @@ static inline int uwg_guard_wrlock(struct uwg_guardlock *lock, int32_t tid) {
                                       &lock->writer_tid);
     return UWG_LOCK_POISONED;
   }
-  if (rc != 0)
+  if (rc == ENOTRECOVERABLE)
     return UWG_LOCK_POISONED;
+  if (rc != 0)
+    return UWG_LOCK_TRANSIENT;
   if (atomic_load_explicit(&lock->poisoned, memory_order_acquire)) {
     (void)pthread_mutex_unlock(&lock->writer_mutex);
     return UWG_LOCK_POISONED;
