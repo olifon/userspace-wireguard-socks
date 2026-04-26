@@ -19,6 +19,7 @@ there instead.
 |---|---|
 | [`security-conventions.md`](security-conventions.md) | You're touching any network-reachable surface or any auth/credential code. Lists the per-surface invariants and the defense-in-depth conventions that the architecture depends on. |
 | [`lock-map-fdproxy.md`](lock-map-fdproxy.md) | You're changing anything in `internal/fdproxy/` or `preload/`. Maps every mutex, every acquisition site, lock-order rules, and the cross-process / cross-language locking story shared with the preload C code. |
+| [`release-checklist.md`](release-checklist.md) | You're cutting a release. Lists what `release.yml` covers automatically and what needs manual validation (BSD on real hosts, gVisor-skipped paths, 24h+ soak, real-browser wrapper testing). |
 
 More lock maps will land here as they're written; same shape, one per
 package with non-trivial locking (`internal/engine`,

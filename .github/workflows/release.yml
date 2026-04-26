@@ -115,38 +115,42 @@ jobs:
           set -euo pipefail
           UWGS_SOAK=1 UWGS_SOAK_SECONDS=15 go test ./tests/soak -run TestLoopbackImpairedChattySOCKSSoak -count=1
 
-      # Race-detector run on the concurrency-sensitive packages. Only on
-      # Linux because race-detector instrumentation is heavy and these
-      # packages don't have OS-specific concurrency to surface; cross-OS
-      # race coverage from the regular test pass is sufficient.
+      # Race-detector run on the concurrency-sensitive packages.
+      # Runs on every release-CI platform because different runtimes
+      # (sched/M:N mapping, libc/syscall behavior) surface different
+      # races. tests/preload is added to the package list only on
+      # Linux because the preload subsystem itself is Linux-only;
+      # the other packages are portable Go code.
       - name: Race-detector run on concurrency-sensitive packages
-        if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
-          go test -race \
-            ./internal/engine \
-            ./internal/transport \
-            ./internal/fdproxy \
-            ./tests/preload \
-            ./tests/malicious \
-            -count=1 -timeout 900s
+          packages=(
+            ./internal/engine
+            ./internal/transport
+            ./internal/fdproxy
+            ./tests/malicious
+          )
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            packages+=( ./tests/preload )
+          fi
+          go test -race "${packages[@]}" -count=1 -timeout 900s
 
       # Stress tests for the fdproxy lock model. Cheap (~2s each) but
       # gated UWGS_STRESS=1 so they don't run on every PR push; the
-      # release pipeline always exercises them.
+      # release pipeline always exercises them on every platform.
       - name: Stress tests for fdproxy lock model
-        if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
           UWGS_STRESS=1 go test -race ./internal/fdproxy -run TestStress -count=1 -timeout 60s
 
       # Fuzz the strict wg-quick parser and the ACL rule parser for a
-      # short window. The seed corpus already runs as a regular test on
-      # every push; this stretches it for ~30s per target on Linux.
+      # short window on every release-CI platform — different OS file-
+      # IO timing surfaces different fuzzed paths. The seed corpus
+      # already runs as a regular test on every PR push; this
+      # stretches it for ~30s per target.
       - name: Fuzz untrusted-input parsers
-        if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
