@@ -559,18 +559,28 @@ func TestUWGWrapperPreloadAccept4Listener(t *testing.T) {
 			[]string{"100.64.94.2", "19195", "preload-listener-accept4", "listen-tcp-accept4"}, wrapperRunOptions{})
 
 		runErr := func() error {
+			// stderr can only be safely read AFTER cmd.Wait
+			// (i.e. <-done) returns — until then, os/exec's
+			// stderr-copying goroutine is still writing into the
+			// bytes.Buffer and the -race detector will flag any
+			// concurrent .String() call. Defer the read.
+			drainAndDump := func() string {
+				killProcessGroup(cmd)
+				<-done
+				return stderr.String()
+			}
 			conn := retryTunnelDial(t, serverEng, "tcp", "100.64.94.2:19195")
 			defer conn.Close()
 			_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 			if _, err := conn.Write([]byte("preload-listener-accept4")); err != nil {
-				return fmt.Errorf("listener write failed: %w\nstderr=%s", err, stderr.String())
+				return fmt.Errorf("listener write failed: %w\nstderr=%s", err, drainAndDump())
 			}
 			buf := make([]byte, len("preload-listener-accept4"))
 			if _, err := io.ReadFull(conn, buf); err != nil {
-				return fmt.Errorf("listener read failed: %w\nstderr=%s", err, stderr.String())
+				return fmt.Errorf("listener read failed: %w\nstderr=%s", err, drainAndDump())
 			}
 			if string(buf) != "preload-listener-accept4" {
-				return fmt.Errorf("listener echo mismatch %q\nstderr=%s", buf, stderr.String())
+				return fmt.Errorf("listener echo mismatch %q\nstderr=%s", buf, drainAndDump())
 			}
 			select {
 			case err := <-done:
@@ -578,9 +588,7 @@ func TestUWGWrapperPreloadAccept4Listener(t *testing.T) {
 					return fmt.Errorf("listener wrapper failed: %w\nstderr=%s", err, stderr.String())
 				}
 			case <-time.After(10 * time.Second):
-				killProcessGroup(cmd)
-				<-done
-				return fmt.Errorf("listener wrapper did not exit\nstderr=%s", stderr.String())
+				return fmt.Errorf("listener wrapper did not exit\nstderr=%s", drainAndDump())
 			}
 			return nil
 		}()
@@ -608,18 +616,26 @@ func runWrappedListenerWithStats(t *testing.T, art wrapperArtifacts, httpSock, t
 		cmd, stderr, done := startWrappedListenerProcess(t, art, httpSock, transport, art.stub, args, opts)
 
 		runErr := func() error {
+			// stderr can only be safely read AFTER cmd.Wait
+			// (i.e. <-done) returns. See the same pattern in
+			// TestUWGWrapperPreloadAccept4Listener for details.
+			drainAndDump := func() string {
+				killProcessGroup(cmd)
+				<-done
+				return stderr.String()
+			}
 			conn := retryTunnelDial(t, serverEng, "tcp", dialAddr)
 			defer conn.Close()
 			_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 			if _, err := conn.Write([]byte(message)); err != nil {
-				return fmt.Errorf("listener write failed: %w\nstderr=%s", err, stderr.String())
+				return fmt.Errorf("listener write failed: %w\nstderr=%s", err, drainAndDump())
 			}
 			buf := make([]byte, len(message))
 			if _, err := io.ReadFull(conn, buf); err != nil {
-				return fmt.Errorf("listener read failed: %w\nstderr=%s", err, stderr.String())
+				return fmt.Errorf("listener read failed: %w\nstderr=%s", err, drainAndDump())
 			}
 			if string(buf) != message {
-				return fmt.Errorf("listener echo mismatch %q\nstderr=%s", buf, stderr.String())
+				return fmt.Errorf("listener echo mismatch %q\nstderr=%s", buf, drainAndDump())
 			}
 			select {
 			case err := <-done:
@@ -627,9 +643,7 @@ func runWrappedListenerWithStats(t *testing.T, art wrapperArtifacts, httpSock, t
 					return fmt.Errorf("listener wrapper failed: %w\nstderr=%s", err, stderr.String())
 				}
 			case <-time.After(10 * time.Second):
-				_ = cmd.Process.Kill()
-				<-done
-				return fmt.Errorf("listener wrapper did not exit\nstderr=%s", stderr.String())
+				return fmt.Errorf("listener wrapper did not exit\nstderr=%s", drainAndDump())
 			}
 			return nil
 		}()
