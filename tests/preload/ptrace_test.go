@@ -745,18 +745,23 @@ func TestUWGWrapperPtraceSeccompTCPListener(t *testing.T) {
 			[]string{"100.64.94.2", "19190", "ptrace-seccomp-listener", "listen-tcp"}, wrapperRunOptions{})
 
 		runErr := func() error {
+			drainAndDump := func() string {
+				killProcessGroup(cmd)
+				<-done
+				return stderr.String()
+			}
 			conn := retryTunnelDial(t, serverEng, "tcp", "100.64.94.2:19190")
 			defer conn.Close()
 			_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 			if _, err := conn.Write([]byte("ptrace-seccomp-listener")); err != nil {
-				return fmt.Errorf("listener write failed: %w\nstderr=%s", err, stderr.String())
+				return fmt.Errorf("listener write failed: %w\nstderr=%s", err, drainAndDump())
 			}
 			buf := make([]byte, len("ptrace-seccomp-listener"))
 			if _, err := io.ReadFull(conn, buf); err != nil {
-				return fmt.Errorf("listener read failed: %w\nstderr=%s", err, stderr.String())
+				return fmt.Errorf("listener read failed: %w\nstderr=%s", err, drainAndDump())
 			}
 			if string(buf) != "ptrace-seccomp-listener" {
-				return fmt.Errorf("listener echo mismatch %q\nstderr=%s", buf, stderr.String())
+				return fmt.Errorf("listener echo mismatch %q\nstderr=%s", buf, drainAndDump())
 			}
 			select {
 			case err := <-done:
@@ -764,9 +769,7 @@ func TestUWGWrapperPtraceSeccompTCPListener(t *testing.T) {
 					return fmt.Errorf("listener wrapper failed: %w\nstderr=%s", err, stderr.String())
 				}
 			case <-time.After(10 * time.Second):
-				_ = cmd.Process.Kill()
-				<-done
-				return fmt.Errorf("listener wrapper did not exit\nstderr=%s", stderr.String())
+				return fmt.Errorf("listener wrapper did not exit\nstderr=%s", drainAndDump())
 			}
 			return nil
 		}()
@@ -800,18 +803,26 @@ func TestUWGWrapperPreloadOnlyTCPUDPAndListener(t *testing.T) {
 			[]string{"100.64.94.2", "19191", "preload-listener", "listen-tcp"}, wrapperRunOptions{})
 
 		runErr := func() error {
+			// stderr is only safe to read AFTER cmd.Wait (i.e. <-done).
+			// See TestUWGWrapperPreloadAccept4Listener for the
+			// same drain helper + the data-race rationale.
+			drainAndDump := func() string {
+				killProcessGroup(cmd)
+				<-done
+				return stderr.String()
+			}
 			conn := retryTunnelDial(t, serverEng, "tcp", "100.64.94.2:19191")
 			defer conn.Close()
 			_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 			if _, err := conn.Write([]byte("preload-listener")); err != nil {
-				return fmt.Errorf("preload listener write failed: %w\nstderr=%s", err, stderr.String())
+				return fmt.Errorf("preload listener write failed: %w\nstderr=%s", err, drainAndDump())
 			}
 			buf := make([]byte, len("preload-listener"))
 			if _, err := io.ReadFull(conn, buf); err != nil {
-				return fmt.Errorf("preload listener read failed: %w\nstderr=%s", err, stderr.String())
+				return fmt.Errorf("preload listener read failed: %w\nstderr=%s", err, drainAndDump())
 			}
 			if string(buf) != "preload-listener" {
-				return fmt.Errorf("preload listener echo mismatch %q\nstderr=%s", buf, stderr.String())
+				return fmt.Errorf("preload listener echo mismatch %q\nstderr=%s", buf, drainAndDump())
 			}
 			select {
 			case err := <-done:
@@ -819,9 +830,7 @@ func TestUWGWrapperPreloadOnlyTCPUDPAndListener(t *testing.T) {
 					return fmt.Errorf("preload listener wrapper failed: %w\nstderr=%s", err, stderr.String())
 				}
 			case <-time.After(10 * time.Second):
-				killProcessGroup(cmd)
-				<-done
-				return fmt.Errorf("preload listener wrapper did not exit\nstderr=%s", stderr.String())
+				return fmt.Errorf("preload listener wrapper did not exit\nstderr=%s", drainAndDump())
 			}
 			return nil
 		}()
