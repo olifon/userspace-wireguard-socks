@@ -1616,6 +1616,11 @@ type meshControlClient struct {
 	privateKey wgtypes.Key
 }
 
+// testMeshDialContextOverride lets tests inject a lossy / throttled / etc.
+// dialer in place of the regular tunnel dial. nil in production. Set via
+// SetMeshDialContextOverride from a *_test.go file in this package.
+var testMeshDialContextOverride func(ctx context.Context, network, addr string) (net.Conn, error)
+
 func (e *Engine) newMeshControlClient(ctx context.Context, peer config.Peer) (*meshControlClient, error) {
 	if peer.ControlURL == "" {
 		return nil, errors.New("mesh control_url is required")
@@ -1636,6 +1641,9 @@ func (e *Engine) newMeshControlClient(ctx context.Context, peer config.Peer) (*m
 			Timeout: 15 * time.Second,
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					if testMeshDialContextOverride != nil {
+						return testMeshDialContextOverride(ctx, network, addr)
+					}
 					return e.DialTunnelContext(ctx, network, addr)
 				},
 			},
