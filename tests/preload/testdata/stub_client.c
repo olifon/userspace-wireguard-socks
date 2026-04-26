@@ -541,6 +541,117 @@ static int exercise_socket_syscall_surface(int fd, const char *message) {
     return strcmp(buf, message) == 0 ? 0 : 1;
 }
 
+/* echo_recv_peek sends MESSAGE then reads it back twice — first with
+ * recv(MSG_PEEK), then a normal recv. MSG_PEEK MUST NOT consume data,
+ * so the second recv has to return at least as much as the first peek
+ * and the bytes have to match. Pins TCP MSG_PEEK semantics through
+ * the proxy/tracer paths; some custom recv shims (e.g. UDP packet
+ * paths inside preload) silently drop the flag and would consume
+ * data on peek, breaking protocol-detection use cases (TLS sniffers,
+ * SOCKS-after-CONNECT hand-off, etc.). */
+static int echo_recv_peek(int fd, const char *message) {
+    size_t want = strlen(message);
+    if (send(fd, message, want, 0) != (ssize_t)want) {
+        perror("peek send");
+        return 1;
+    }
+    /* poll for readable so a slow tunnel can't make MSG_PEEK race. */
+    struct pollfd pfd;
+    memset(&pfd, 0, sizeof(pfd));
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+    if (poll(&pfd, 1, 5000) <= 0 || !(pfd.revents & POLLIN)) {
+        perror("peek poll readable");
+        return 1;
+    }
+    char peek_buf[4096];
+    ssize_t peek_n = recv(fd, peek_buf, sizeof(peek_buf) - 1, MSG_PEEK);
+    if (peek_n <= 0) {
+        perror("recv MSG_PEEK");
+        return 1;
+    }
+    peek_buf[peek_n] = 0;
+    /* Drain real bytes; loop in case TCP gave us a short read on the
+     * first attempt (the peeked prefix should still be available). */
+    char real_buf[4096];
+    ssize_t total = 0;
+    while (total < (ssize_t)want) {
+        ssize_t n = recv(fd, real_buf + total, sizeof(real_buf) - 1 - total, 0);
+        if (n <= 0) {
+            perror("recv after peek");
+            return 1;
+        }
+        total += n;
+    }
+    real_buf[total] = 0;
+    if (memcmp(peek_buf, real_buf, (size_t)peek_n) != 0) {
+        fprintf(stderr, "peek bytes differ from real bytes (peek=%s real=%s)\n", peek_buf, real_buf);
+        return 1;
+    }
+    if (strcmp(real_buf, message) != 0) {
+        fprintf(stderr, "peek echo mismatch (got=%s want=%s)\n", real_buf, message);
+        return 1;
+    }
+    printf("%s", real_buf);
+    return 0;
+}
+
+/* echo_short_read sends MESSAGE, then deliberately reads it back with
+ * a buffer smaller than the payload to force a short read. The
+ * remaining bytes are pulled via additional read() calls. The proxy
+ * paths in preload/tracer must not lose data when the caller-supplied
+ * buffer is smaller than what arrived from the tunnel. */
+static int echo_short_read(int fd, const char *message) {
+    size_t want = strlen(message);
+    if (want < 8) {
+        fprintf(stderr, "short_read needs >=8 byte message (got %zu)\n", want);
+        return 1;
+    }
+    if (send(fd, message, want, 0) != (ssize_t)want) {
+        perror("short_read send");
+        return 1;
+    }
+    struct pollfd pfd;
+    memset(&pfd, 0, sizeof(pfd));
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+    if (poll(&pfd, 1, 5000) <= 0 || !(pfd.revents & POLLIN)) {
+        perror("short_read poll readable");
+        return 1;
+    }
+    char combined[4096];
+    if (want >= sizeof(combined)) {
+        fprintf(stderr, "short_read message too large for buffer\n");
+        return 1;
+    }
+    ssize_t total = 0;
+    /* First read intentionally tiny — 4 bytes — then drain the rest
+     * with progressively larger reads. */
+    ssize_t budgets[] = {4, 16, (ssize_t)sizeof(combined) - 1};
+    for (size_t i = 0; i < sizeof(budgets) / sizeof(budgets[0]) && total < (ssize_t)want; i++) {
+        ssize_t cap = budgets[i];
+        if (cap > (ssize_t)sizeof(combined) - 1 - total) {
+            cap = (ssize_t)sizeof(combined) - 1 - total;
+        }
+        ssize_t n = read(fd, combined + total, (size_t)cap);
+        if (n < 0) {
+            perror("short_read read");
+            return 1;
+        }
+        if (n == 0) {
+            break;
+        }
+        total += n;
+    }
+    combined[total] = 0;
+    if (total != (ssize_t)want || strcmp(combined, message) != 0) {
+        fprintf(stderr, "short_read echo mismatch (got=%s want=%s total=%zd)\n", combined, message, total);
+        return 1;
+    }
+    printf("%s", combined);
+    return 0;
+}
+
 /*
  * exercise_socket_syscall_surface_extra hits syscalls that the original
  * surface walk doesn't: send/recv (vs write/read), F_DUPFD_CLOEXEC,
@@ -945,6 +1056,8 @@ int main(int argc, char **argv) {
     int use_syscall_surface = 0;
     int use_syscall_surface_extra = 0;
     int listen_tcp_accept4 = 0;
+    int use_recv_peek = 0;
+    int use_short_read = 0;
     int use_select = 0;
     int use_pselect = 0;
     for (int i = 4; i < argc; i++) {
@@ -1003,6 +1116,10 @@ int main(int argc, char **argv) {
             use_syscall_surface_extra = 1;
         } else if (strcmp(argv[i], "listen-tcp-accept4") == 0) {
             listen_tcp_accept4 = 1;
+        } else if (strcmp(argv[i], "recv-peek") == 0) {
+            use_recv_peek = 1;
+        } else if (strcmp(argv[i], "short-read") == 0) {
+            use_short_read = 1;
         } else {
             fprintf(stderr, "unknown option: %s\n", argv[i]);
             return 2;
@@ -1121,6 +1238,16 @@ int main(int argc, char **argv) {
     }
     if (use_syscall_surface_extra) {
         int rc = exercise_socket_syscall_surface_extra(fd, argv[3]);
+        close(fd);
+        return rc;
+    }
+    if (use_recv_peek) {
+        int rc = echo_recv_peek(fd, argv[3]);
+        close(fd);
+        return rc;
+    }
+    if (use_short_read) {
+        int rc = echo_short_read(fd, argv[3]);
         close(fd);
         return rc;
     }

@@ -640,6 +640,56 @@ func runWrappedListenerWithStats(t *testing.T, art wrapperArtifacts, httpSock, t
 	return traceStats{}, lastErr
 }
 
+// TestUWGWrapperRecvPeekAcrossTransports asserts that recv(MSG_PEEK)
+// does not consume data on a TCP stream, across every wrapper
+// transport. Protocol-detection code (TLS sniffers, SOCKS hand-off,
+// HTTP/2 detection) relies on this. A custom recv shim that silently
+// drops the flags argument would still echo the message back on the
+// first recv but would mismatch the peeked prefix vs. the second
+// real recv, which the C stub asserts.
+func TestUWGWrapperRecvPeekAcrossTransports(t *testing.T) {
+	requireWrapperToolchain(t)
+	art := buildWrapperArtifacts(t)
+	_, httpSock := setupWrapperNetwork(t)
+
+	args := []string{"100.64.94.1", "18080", "recv-peek-msg", "tcp", "recv-peek"}
+	for _, transport := range []string{"preload", "preload-and-ptrace", "ptrace", "ptrace-seccomp", "ptrace-only"} {
+		t.Run(transport, func(t *testing.T) {
+			out := runWrappedTargetWithOptions(t, art, httpSock, transport, art.stub, args,
+				wrapperRunOptions{timeout: 60 * time.Second})
+			if normalizedOutput(out) != "recv-peek-msg" {
+				t.Fatalf("unexpected recv-peek output %q", out)
+			}
+		})
+	}
+}
+
+// TestUWGWrapperShortReadAcrossTransports forces a small read buffer
+// against a longer payload, then drains the rest with subsequent
+// reads. The proxy/tracer paths must not lose bytes when the
+// caller-supplied buffer is smaller than what arrived from the
+// tunnel (a class of bug where buffered "extra" bytes can be silently
+// dropped on the next recv call).
+func TestUWGWrapperShortReadAcrossTransports(t *testing.T) {
+	requireWrapperToolchain(t)
+	art := buildWrapperArtifacts(t)
+	_, httpSock := setupWrapperNetwork(t)
+
+	// Message must be ≥8 bytes; the stub progressively reads with
+	// budgets of 4, 16, then full so the first read is genuinely
+	// shorter than the payload.
+	args := []string{"100.64.94.1", "18080", "short-read-payload-message", "tcp", "short-read"}
+	for _, transport := range []string{"preload", "preload-and-ptrace", "ptrace", "ptrace-seccomp", "ptrace-only"} {
+		t.Run(transport, func(t *testing.T) {
+			out := runWrappedTargetWithOptions(t, art, httpSock, transport, art.stub, args,
+				wrapperRunOptions{timeout: 60 * time.Second})
+			if normalizedOutput(out) != "short-read-payload-message" {
+				t.Fatalf("unexpected short-read output %q", out)
+			}
+		})
+	}
+}
+
 func TestUWGWrapperUDPConnectProbeLazy(t *testing.T) {
 	requireWrapperToolchain(t)
 	art := buildWrapperArtifacts(t)
