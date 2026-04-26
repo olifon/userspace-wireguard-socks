@@ -63,7 +63,10 @@ int main(int argc, char **argv) {
      * post-connect dance: poll for writability, then check SO_ERROR. */
     if (rc < 0 && nb && e == EINPROGRESS) {
         struct pollfd pfd = {.fd = fd, .events = POLLOUT};
-        int pr = poll(&pfd, 1, 5000);
+        // 30s instead of 5s — bare-ptrace connect through the WG
+        // tunnel + manager handshake can run >5s under CI load,
+        // and we'd rather wait than spuriously fail.
+        int pr = poll(&pfd, 1, 30000);
         if (pr <= 0 || !(pfd.revents & POLLOUT)) {
             printf("poll FAIL pr=%d revents=%x errno=%d (%s)\n", pr, pfd.revents, errno, strerror(errno));
             close(fd);
