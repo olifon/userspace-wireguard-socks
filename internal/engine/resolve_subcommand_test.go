@@ -22,9 +22,15 @@ func TestUwgsocksResolveSubcommandWorksOnBothListeners(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go toolchain unavailable")
 	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git unavailable; this test needs the repo root to build the CLI")
+	}
 	repoRoot, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
 	if err != nil {
-		t.Fatal(err)
+		// Not in a git checkout (e.g., source synced without .git for
+		// remote test runs). The test plumbing requires repo root for
+		// "go build ./cmd/uwgsocks"; skip cleanly rather than fail.
+		t.Skipf("not in a git checkout, skipping CLI build (%v)", err)
 	}
 	repo := strings.TrimSpace(string(repoRoot))
 
