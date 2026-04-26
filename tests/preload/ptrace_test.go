@@ -1412,6 +1412,13 @@ func buildWithEnv(t *testing.T, dir string, env map[string]string, name string, 
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
 	cmd.Env = append([]string{}, os.Environ()...)
+	// Always set GOFLAGS=-buildvcs=false for go invocations so the
+	// test works in containers without a .git checkout. Per-command
+	// env overrides parent so this doesn't conflict with whatever
+	// the caller set.
+	if name == "go" {
+		cmd.Env = append(cmd.Env, "GOFLAGS=-buildvcs=false")
+	}
 	for key, value := range env {
 		cmd.Env = append(cmd.Env, key+"="+value)
 	}
