@@ -59,27 +59,18 @@ func TestPhase1HeadlessChromeSmoke(t *testing.T) {
 	serverScript := filepath.Join(repo, "tests/preload/testdata/node_http_server.js")
 	markFile := filepath.Join(t.TempDir(), "phase1-chrome-post.txt")
 
-	// Run in shim-only mode (UWGS_DISABLE_SECCOMP=1) for chromium-class
-	// workloads. Chromium fork+execs heavily; the kernel-side seccomp
-	// filter is preserved across exec but the SIGSYS handler is process-
-	// local and reset, so child processes hit the default SIGSYS handler
-	// (terminate) before our constructor can re-install. Phase 1.5's
-	// bootstrap supervisor closes this gap; for Phase 1, shim_libc alone
-	// covers the libc-routed surface cleanly.
+	// The trimmed trap list (network syscalls only — no read/write/
+	// close/dup/fcntl) makes the post-execve window safe: libc-init
+	// only uses non-network syscalls so the SIGSYS-handler-reset
+	// problem doesn't fire. seccomp can stay enabled.
 	//
-	// The default DNS_MODE=full path through fdproxy's DNS endpoint is
-	// flaky under chromium's parallel DNS load on this branch — typically
-	// passes in 5-10s but occasionally takes 40+s when chromium retries
-	// resolutions. Legacy preload doesn't show this variance, so it's a
-	// real perf regression that's tracked as a Phase 1 followup. For now
-	// the test sets UWGS_DNS_MODE=libc to bypass our DNS forcing and let
-	// chromium use its own resolver (the test URL is an IP literal so DNS
-	// success isn't load-bearing for the assertion).
+	// UWGS_DNS_MODE=libc still preferred — our DNS forcing has a
+	// timing race under chromium's parallel DNS load; libc resolver
+	// gives consistent passes. Test URL is an IP literal anyway.
 	disableSeccomp := wrapperRunOptions{
 		timeout: 360 * time.Second,
 		env: map[string]string{
-			"UWGS_DISABLE_SECCOMP": "1",
-			"UWGS_DNS_MODE":        "libc",
+			"UWGS_DNS_MODE": "libc",
 		},
 	}
 	serverCmd, serverStderr, serverDone := startWrappedListenerProcess(t, art, pair.serverHTTPSock, transport, "node",

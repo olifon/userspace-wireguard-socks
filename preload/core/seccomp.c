@@ -57,11 +57,30 @@
  * Trap list. These are syscalls the core dispatchers handle.
  * Kept as a static const so callers can introspect for tests.
  */
+/*
+ * Trap list scope — Phase 1 trade-off.
+ *
+ * The full surface (read/write/close/dup/fcntl + network) is what
+ * shim_libc covers; trapping in the kernel too is the belt-and-
+ * braces safety net for raw asm. BUT: trapping read/write/close
+ * makes the libc-init window after execve fatal — those are
+ * heavy-use syscalls during init, and the SIGSYS handler is
+ * process-local and reset on exec, so the kernel's default
+ * disposition (terminate) fires before our constructor reinstalls
+ * the handler. That's the chromium-fork+exec problem.
+ *
+ * Trim the trap list to network-only syscalls. libc-init doesn't
+ * touch socket/connect/bind/listen/accept/sendmsg/recvmsg, so the
+ * post-exec window is safe. Raw asm read/write/close/dup/fcntl on
+ * tunnel-managed fds will bypass our interception — accepted as a
+ * Phase 1 trade-off; shim_libc still catches the libc-routed
+ * common case. The full trap list returns when Phase 1.5's execve
+ * supervisor lands.
+ */
 static const int uwg_trapped_syscalls[] = {
-    /* control-plane */
+    /* control-plane — socket creation, connection, listener setup */
     SYS_socket,
     SYS_socketpair,
-    SYS_close,
     SYS_connect,
     SYS_bind,
     SYS_listen,
@@ -71,15 +90,9 @@ static const int uwg_trapped_syscalls[] = {
     SYS_getsockopt,
     SYS_getsockname,
     SYS_getpeername,
-    SYS_dup,
-#ifdef SYS_dup2
-    SYS_dup2,           /* x86_64 has it; arm64 only has dup3 */
-#endif
-    SYS_dup3,
-    SYS_fcntl,
     SYS_shutdown,
 
-    /* message-style */
+    /* message-style — explicit network IO */
     SYS_recvfrom,
     SYS_recvmsg,
     SYS_recvmmsg,
@@ -87,13 +100,11 @@ static const int uwg_trapped_syscalls[] = {
     SYS_sendmsg,
     SYS_sendmmsg,
 
-    /* stream-style — core fast-paths TCP, intercepts UDP-connected */
-    SYS_read,
-    SYS_write,
-    SYS_readv,
-    SYS_writev,
-    SYS_pread64,
-    SYS_pwrite64,
+    /* read / write / close / dup / fcntl deliberately NOT trapped:
+     * libc-init uses them heavily, post-exec window would die. The
+     * shim_libc layer catches these at the libc level for tunnel
+     * fds. Raw-asm uses leak — Phase 1.5 supervisor closes the
+     * gap by re-arming the SIGSYS handler before libc-init runs. */
 };
 
 /* execve / execveat → RET_TRACE for Phase 2 bootstrap supervisor.
