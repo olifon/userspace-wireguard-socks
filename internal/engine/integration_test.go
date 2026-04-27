@@ -1050,9 +1050,9 @@ func TestIPv6TunnelTrafficAndIPv6OuterEndpoint(t *testing.T) {
 	}
 	defer uconn.Close()
 	udpRoundTrip(t, uconn, []byte("ipv6-udp"))
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second*testDeadlineScale)
 	defer cancel()
-	ping, err := clientEng.Ping(ctx, serverAddr.String(), 1, time.Second)
+	ping, err := clientEng.Ping(ctx, serverAddr.String(), 1, time.Second*testDeadlineScale)
 	if err != nil {
 		t.Fatal(err)
 	}
