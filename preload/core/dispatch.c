@@ -83,12 +83,9 @@ long uwg_dispatch(long nr, long a1, long a2, long a3,
 #define STUB return ENOSYS_RET;
 
 /* uwg_socket, uwg_socketpair, uwg_close — implemented in socket_ops.c */
+/* uwg_connect — implemented in connect_ops.c */
 
-long uwg_connect(int fd, const struct sockaddr *a, uint32_t l)            { (void)fd; (void)a; (void)l; STUB }
-long uwg_bind(int fd, const struct sockaddr *a, uint32_t l)               { (void)fd; (void)a; (void)l; STUB }
-long uwg_listen(int fd, int b)                                             { (void)fd; (void)b; STUB }
-long uwg_accept(int fd, struct sockaddr *a, uint32_t *l)                  { (void)fd; (void)a; (void)l; STUB }
-long uwg_accept4(int fd, struct sockaddr *a, uint32_t *l, int f)          { (void)fd; (void)a; (void)l; (void)f; STUB }
+/* uwg_bind / uwg_listen / uwg_accept / uwg_accept4 — implemented in bind_ops.c */
 long uwg_setsockopt(int fd, int lvl, int o, const void *v, uint32_t vl)   { (void)fd; (void)lvl; (void)o; (void)v; (void)vl; STUB }
 long uwg_getsockopt(int fd, int lvl, int o, void *v, uint32_t *vl)        { (void)fd; (void)lvl; (void)o; (void)v; (void)vl; STUB }
 long uwg_getsockname(int fd, struct sockaddr *a, uint32_t *l)             { (void)fd; (void)a; (void)l; STUB }
@@ -104,11 +101,6 @@ long uwg_recvmsg (int fd, struct msghdr *m, int f)                         { (vo
 long uwg_sendmsg (int fd, const struct msghdr *m, int f)                   { (void)fd; (void)m; (void)f; STUB }
 long uwg_recvmmsg(int fd, struct mmsghdr *v, unsigned int vl, int f, struct timespec *to) { (void)fd; (void)v; (void)vl; (void)f; (void)to; STUB }
 long uwg_sendmmsg(int fd, struct mmsghdr *v, unsigned int vl, int f)       { (void)fd; (void)v; (void)vl; (void)f; STUB }
-long uwg_read   (int fd, void *b, size_t n)                                { (void)fd; (void)b; (void)n; STUB }
-long uwg_write  (int fd, const void *b, size_t n)                          { (void)fd; (void)b; (void)n; STUB }
-long uwg_readv  (int fd, const struct iovec *iv, int c)                    { (void)fd; (void)iv; (void)c; STUB }
-long uwg_writev (int fd, const struct iovec *iv, int c)                    { (void)fd; (void)iv; (void)c; STUB }
-long uwg_pread  (int fd, void *b, size_t n, int64_t off)                   { (void)fd; (void)b; (void)n; (void)off; STUB }
-long uwg_pwrite (int fd, const void *b, size_t n, int64_t off)             { (void)fd; (void)b; (void)n; (void)off; STUB }
+/* uwg_read / write / readv / writev / pread / pwrite — implemented in stream_ops.c */
 
 #undef STUB
