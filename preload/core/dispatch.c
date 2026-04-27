@@ -86,21 +86,10 @@ long uwg_dispatch(long nr, long a1, long a2, long a3,
 /* uwg_connect — implemented in connect_ops.c */
 
 /* uwg_bind / uwg_listen / uwg_accept / uwg_accept4 — implemented in bind_ops.c */
-long uwg_setsockopt(int fd, int lvl, int o, const void *v, uint32_t vl)   { (void)fd; (void)lvl; (void)o; (void)v; (void)vl; STUB }
-long uwg_getsockopt(int fd, int lvl, int o, void *v, uint32_t *vl)        { (void)fd; (void)lvl; (void)o; (void)v; (void)vl; STUB }
-long uwg_getsockname(int fd, struct sockaddr *a, uint32_t *l)             { (void)fd; (void)a; (void)l; STUB }
-long uwg_getpeername(int fd, struct sockaddr *a, uint32_t *l)             { (void)fd; (void)a; (void)l; STUB }
-long uwg_dup(int fd)                                                       { (void)fd; STUB }
-long uwg_dup2(int o, int n)                                                { (void)o; (void)n; STUB }
-long uwg_dup3(int o, int n, int f)                                         { (void)o; (void)n; (void)f; STUB }
-long uwg_fcntl(int fd, int cmd, long a)                                    { (void)fd; (void)cmd; (void)a; STUB }
-long uwg_shutdown(int fd, int h)                                           { (void)fd; (void)h; STUB }
-long uwg_recvfrom(int fd, void *b, size_t l, int f, struct sockaddr *s, uint32_t *sl) { (void)fd; (void)b; (void)l; (void)f; (void)s; (void)sl; STUB }
-long uwg_sendto  (int fd, const void *b, size_t l, int f, const struct sockaddr *d, uint32_t dl) { (void)fd; (void)b; (void)l; (void)f; (void)d; (void)dl; STUB }
-long uwg_recvmsg (int fd, struct msghdr *m, int f)                         { (void)fd; (void)m; (void)f; STUB }
-long uwg_sendmsg (int fd, const struct msghdr *m, int f)                   { (void)fd; (void)m; (void)f; STUB }
-long uwg_recvmmsg(int fd, struct mmsghdr *v, unsigned int vl, int f, struct timespec *to) { (void)fd; (void)v; (void)vl; (void)f; (void)to; STUB }
-long uwg_sendmmsg(int fd, struct mmsghdr *v, unsigned int vl, int f)       { (void)fd; (void)v; (void)vl; (void)f; STUB }
+/* uwg_setsockopt / getsockopt / getsockname / getpeername / dup /
+ * dup2 / dup3 / fcntl / shutdown — implemented in fd_ops.c */
+/* uwg_recvfrom / sendto / recvmsg / sendmsg / recvmmsg / sendmmsg —
+ * implemented in msg_ops.c */
 /* uwg_read / write / readv / writev / pread / pwrite — implemented in stream_ops.c */
 
 #undef STUB
