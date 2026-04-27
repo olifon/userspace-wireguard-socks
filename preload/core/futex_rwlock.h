@@ -72,15 +72,17 @@ struct uwg_fxlock {
 #define UWG_FXLOCK_REENTRANT (-35)  /* -EDEADLK */
 #define UWG_FXLOCK_TRYFAIL   (-11)  /* -EAGAIN */
 
-/* Raw futex syscall — no libc, no errno. */
+/* Raw futex syscall — no libc, no errno. SYS_futex isn't in our trap
+ * list so we use the non-bypass-secret syscall variant; the kernel
+ * processes it directly. */
 static inline long uwg_fxlock_futex(_Atomic uint32_t *uaddr, int op,
                                     uint32_t val) {
-    return uwg_passthrough_syscall6(SYS_futex, (long)uaddr, op,
-                                    (long)val, 0, 0, 0);
+    return uwg_syscall6(SYS_futex, (long)uaddr, op,
+                        (long)val, 0, 0, 0);
 }
 
 static inline int32_t uwg_fxlock_gettid(void) {
-    return (int32_t)uwg_passthrough_syscall0(SYS_gettid);
+    return (int32_t)uwg_syscall0(SYS_gettid);
 }
 
 /*
@@ -117,8 +119,19 @@ static inline int uwg_fxlock_rdlock(struct uwg_fxlock *lk) {
         if (w == 0) {
             return UWG_FXLOCK_OK;
         }
-        atomic_fetch_sub_explicit(&lk->readers, 1,
-                                  memory_order_acq_rel);
+        uint32_t prev = atomic_fetch_sub_explicit(&lk->readers, 1,
+                                                  memory_order_acq_rel);
+        /* If we just dropped readers to zero, wake any writer that
+         * was sleeping in FUTEX_WAIT(readers, prev_val). Without
+         * this wake, the writer parks on a value that will never
+         * change again — deadlock. (User-spotted race in the
+         * tight retry loop.) */
+        if (prev == 1) {
+            if (atomic_load_explicit(&lk->futex_waiters_read,
+                                     memory_order_acquire) > 0) {
+                uwg_fxlock_futex(&lk->readers, FUTEX_WAKE, 0x7fffffff);
+            }
+        }
         /* loop */
     }
 }

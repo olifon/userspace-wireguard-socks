@@ -6,12 +6,18 @@
 package preload_test
 
 import (
+	"bufio"
 	"context"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -170,5 +176,137 @@ func TestPhase2StaticGoBinaryEchoTCP(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "phase2-go-static-tcp") {
 		t.Fatalf("expected sentinel in output; got %q", out)
+	}
+}
+
+// TestPhase2StaticGoConcurrencyStress runs a Go-static HTTP server
+// under transport=preload-static, listening on a tunnel address, and
+// hammers it with N concurrent clients dispatched from the WireGuard
+// server-side engine. Validates:
+//   - listener flow (uwg_listen + uwg_accept + uwg_managed_accept)
+//   - per-fd cache scaling under thousands of accept'd KIND_TCP_STREAM fds
+//   - rt_sigaction-protect under Go's runtime spawning many M's
+//   - end-to-end tunnel round-trip per request
+func TestPhase2StaticGoConcurrencyStress(t *testing.T) {
+	requirePhase1Toolchain(t)
+	if runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64" {
+		t.Skipf("phase2 only on amd64+arm64 (got %s)", runtime.GOARCH)
+	}
+	repo := filepath.Clean(filepath.Join("..", ".."))
+	tmp := t.TempDir()
+
+	build := exec.Command("bash", filepath.Join("preload", "build_static.sh"), tmp)
+	build.Dir = repo
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build_static.sh: %v\n%s", err, out)
+	}
+
+	server := filepath.Join(tmp, "static_http_server")
+	gobuild := exec.Command("go", "build", "-tags=netgo,osusergo",
+		"-ldflags=-extldflags=-static",
+		"-o", server,
+		filepath.Join(repo, "tests", "preload", "testdata", "static_http_server.go"))
+	gobuild.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := gobuild.CombinedOutput(); err != nil {
+		t.Fatalf("go build static server: %v\n%s", err, out)
+	}
+
+	art := buildPhase1Artifacts(t)
+	serverEng, httpSock := setupWrapperNetwork(t)
+
+	const (
+		concurrent = 100
+		perWorker  = 10
+	)
+	totalReq := concurrent * perWorker
+
+	wrapperArgs := []string{
+		"--transport=preload-static",
+		"--listen", filepath.Join(tmp, "fdproxy.sock"),
+		"--api", "unix:" + httpSock,
+		"--socket-path", "/uwg/socket",
+		"--", server, "100.64.94.2", "19500", fmt.Sprintf("%d", totalReq),
+	}
+
+	cmd := exec.Command(art.wrapper, wrapperArgs...)
+	cmd.Env = append(os.Environ(), "UWGS_STATIC_BLOB="+filepath.Join(tmp, "uwgpreload-static-"+runtime.GOARCH+".so"))
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start wrapped server: %v", err)
+	}
+	defer killProcessGroup(cmd)
+
+	// Wait for "READY <ip>:<port>" line.
+	br := bufio.NewReader(stdout)
+	readyLine, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read READY: %v", err)
+	}
+	t.Logf("server: %s", strings.TrimSpace(readyLine))
+	if !strings.HasPrefix(readyLine, "READY ") {
+		t.Fatalf("unexpected first line: %q", readyLine)
+	}
+
+	// Tunnel-side HTTP client that dials via serverEng.
+	tr := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return serverEng.DialTunnelContext(ctx, "tcp", "100.64.94.2:19500")
+		},
+	}
+	client := &http.Client{Transport: tr, Timeout: 10 * time.Second}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, totalReq)
+	for w := 0; w < concurrent; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for j := 0; j < perWorker; j++ {
+				path := fmt.Sprintf("/w%d-r%d", workerID, j)
+				resp, err := client.Get("http://stress" + path)
+				if err != nil {
+					errs <- fmt.Errorf("w%d r%d: %w", workerID, j, err)
+					return
+				}
+				body, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if string(body) != path {
+					errs <- fmt.Errorf("w%d r%d: body=%q want=%q", workerID, j, body, path)
+					return
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(errs)
+	failed := 0
+	for e := range errs {
+		failed++
+		if failed <= 5 {
+			t.Logf("err: %v", e)
+		}
+	}
+	if failed > 0 {
+		t.Fatalf("%d/%d requests failed", failed, totalReq)
+	}
+	t.Logf("%d concurrent workers × %d requests = %d req successful",
+		concurrent, perWorker, totalReq)
+
+	// Wait for server to exit cleanly.
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Logf("server exit: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		killProcessGroup(cmd)
+		t.Fatalf("server didn't exit after %d responses", totalReq)
 	}
 }
