@@ -114,22 +114,61 @@ The supervisor picks the right blob from auxv.
 | Static binaries | ❌ falls back to legacy ptracer | ❌ same | ✅ blob injection |
 | Setuid binaries | ❌ kernel drops env/ptrace | ❌ same | ❌ Phase 3 |
 
-## Implementation order
+## Implementation status (as of commit `c9d6f48`)
 
-1. **Freestanding refactor of `core/`** (this commit) — replace libc
-   deps, verify still builds via `build_phase1.sh`.
-2. **Blob build target** — new `preload/build_static.sh` produces
-   `uwgpreload-static.{amd64,arm64}.bin`.
-3. **Supervisor skeleton in `cmd/uwgwrapper/`** — fork+attach,
-   PTRACE_EVENT_EXEC, read auxv, find a hole.
-4. **Remote mmap** — PTRACE_SETREGS to invoke mmap from inside the
-   tracee.
-5. **Blob copy** — PTRACE_POKEDATA loop.
-6. **Init entry handoff** — set RIP to blob entry, push saved_start
-   on stack.
-7. **Detach + verify** — small static-binary smoke test.
-8. **Validate against `transport=preload-static`** in
-   `tests/preload/phase2_static_test.go`.
+✅ **Step 1: Freestanding refactor of `core/`** — `freestanding.h`
+shim, custom `uwg_parse_ipv6`, `uwg_environ` global, TID-keyed
+sigaltstack table. Zero undefined externs in the freestanding build.
+
+✅ **Step 2: Blob build target** — `preload/build_static.sh` produces
+`uwgpreload-static-{amd64,arm64}.so` with `-Wl,-Bsymbolic` to bind
+intra-blob references at link time. Two exported entry symbols:
+`uwg_static_init` (the function the supervisor jumps to) and
+`uwg_static_trap` (4× int3 / brk #0 the supervisor sets as the
+return target).
+
+✅ **Step 3: ELF parser scaffold** — `cmd/uwgwrapper/inject_static.go`
+opens the blob, finds the entry/trap symbols, enumerates `PT_LOAD`
+segments, computes the (low, high) vaddr span.
+
+✅ **Step 4: Remote-syscall primitive** —
+`cmd/uwgwrapper/inject_remote_syscall.go` (with per-arch ABI files)
+executes any syscall inside a stopped tracee by saving regs +
+overlaying the syscall instruction at PC + `PTRACE_SINGLESTEP` +
+restoring. Validated with `getpid` and `mmap+munmap`.
+
+✅ **Step 5: Blob load + relocations** —
+`cmd/uwgwrapper/inject_load.go` does remote `mmap` of the contiguous
+load span, `PTRACE_POKEDATA`s each segment to its right offset, and
+applies `R_*_RELATIVE` entries from `.rela.dyn`. (Other relocation
+types are rejected so a build-config regression fails loudly.)
+
+✅ **Step 6: RIP handoff** — `cmd/uwgwrapper/inject_handoff.go` sets
+RIP/PC to entry, the ABI argument registers to (0, 0, 0), and the
+return target to `uwg_static_trap` inside the blob's executable
+text segment. After `PTRACE_CONT` the function returns to the trap,
+SIGTRAP fires, supervisor reads RAX/X0 (sign-extended) for the
+result, and restores the original tracee state.
+
+⏳ **Step 7: validation suite** — `tests/preload/phase2_static_test.go`
+will wrap a `CGO_ENABLED=0` Go binary that opens a TCP connection
+to a tunnel address and assert the bytes flow through fdproxy.
+
+⏳ **Step 8: integrate into uwgwrapper main flow** — add
+`transport=preload-static`. On exec, detect static-binary
+(`PT_INTERP` absent), inject the blob, detach. For dynamic binaries
+keep the existing preload path.
+
+⏳ **Step 9: per-arch blob embed** — `//go:embed assets/uwgpreload-
+static-${arch}.bin` so uwgwrapper is self-contained.
+
+The hard mechanism work (finding the syscall instruction in the
+tracee, segment loading, relocation handling, return-trap design)
+all works as of `c9d6f48`. Validated end-to-end on linux/amd64 and
+linux/arm64: a freshly-spawned `/bin/sleep` tracee gets the whole
+~10MB freestanding blob loaded into its address space and runs
+`uwg_static_init`, returning the expected `-EINVAL` (no
+`UWGS_TRACE_SECRET` in the env) cleanly.
 
 ## Open questions for later
 
