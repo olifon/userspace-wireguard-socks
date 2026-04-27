@@ -89,10 +89,61 @@ becomes its tracer. From there:
 - Stability: 20×20 (20 wrapped processes × 20 fork+exec cycles each)
   on amd64 and arm64, race-clean.
 
-## Open question — slow-path investigation
+## Slow-path investigation — RESOLVED
 
-The phase1 chromium smoke shows bimodal timing (6s fast / 23-49s slow)
-even WITHOUT seccomp. That's a separate concern — likely
-`uwg_state_lookup` rwlock contention under high call rates from
-chromium's recvmsg-heavy IPC paths. Tracking as a Phase 1 follow-up
-distinct from Phase 1.5.
+The phase1 chromium smoke previously showed bimodal timing
+(6s fast / 23-49s slow) even WITHOUT seccomp — `uwg_state_lookup`
+rwlock contention under chromium's recvmsg-heavy IPC paths. Fixed
+in `phase1: per-process direct-indexed fd cache for fast lookups`
+(commit `be94931`):
+
+- Hash-table early-out distinguishes truly-empty slots (lookup
+  terminator under linear probing) from tombstones (continue scan).
+  Untracked-fd lookups now break at the first empty slot instead of
+  walking all 65536.
+- Per-process direct-indexed cache: 4096-entry table (configurable
+  via `UWG_FD_CACHE_SIZE`), one 16-byte atomic entry per fd. Stores
+  positive AND negative entries so both "tracked" and "not tracked"
+  hit a single atomic load instead of the global rwlock.
+
+Chromium 5/5 pass post-fix on the Scaleway box (44-78s); pre-fix
+was 4/5 with high variance. The remaining time is chromium's own
+init cost, not our dispatcher overhead.
+
+## Why Phase 1.5 still matters
+
+With the trimmed trap list (network-only) chromium-class apps work
+WITHOUT the supervisor. So Phase 1.5 is no longer load-bearing for
+chromium alone. **It is still required for:**
+
+1. **read/write/close coverage on raw-asm callers.** Real apps DO
+   use raw asm read/write on connected UDP sockets (some C++/Rust
+   network code; some Go runtime paths). Without the trap, those
+   bytes bypass our framing → fdproxy sees malformed packets.
+2. **Tunnel state cleanup on raw-asm close.** A close() that bypasses
+   shim_libc leaks the tracked_fd entry in shared_state until the
+   slot is evicted by a future store. With many such closes the
+   table fills up with stale entries.
+3. **Static binaries (Phase 2 prerequisite).** Static binaries can't
+   use shim_libc (no LD_PRELOAD). The kernel-level filter is the
+   ONLY interception they get. The filter must include the full
+   trap list, AND the supervisor must inject a SIGSYS handler before
+   libc-init runs.
+
+So Phase 1.5's actual deliverable now is the **ptrace machinery
+shared with Phase 2**:
+
+- Same supervisor process that catches PTRACE_EVENT_EXEC.
+- For dynamic targets (Phase 1.5): suppress SIGSYS during the
+  post-exec libc-init window, simulating each trapped syscall via
+  `ptrace(SETREGS)`. Stop suppressing once the constructor has
+  installed the real SIGSYS handler (detection: a marker syscall
+  emitted at the end of `uwg_core_init`).
+- For static targets (Phase 2): allocate an mmap region in the
+  tracee, copy `uwgpreload-static` into it, jump to its init entry,
+  let it install the SIGSYS handler + seccomp filter, then return
+  to original `_start`.
+
+Both paths share: ptrace attach + `PTRACE_EVENT_EXEC` handling +
+remote syscall execution machinery + auxv reading. Implementing
+Phase 1.5 first creates the foundation Phase 2 builds on.
