@@ -1,0 +1,145 @@
+/*
+ * Copyright (c) 2026 Reindert Pelsma
+ * SPDX-License-Identifier: ISC
+ *
+ * Core init: wire the bypass-secret, install sigaltstack, install
+ * the SIGSYS handler, install the seccomp filter — in that exact
+ * order. Wrong order bricks the process.
+ *
+ * Called from:
+ *   - preload/shim_libc/shim_init.c constructor (the .so build)
+ *   - preload/static/start.S → __uwg_init (the static-binary build,
+ *     Phase 2)
+ *
+ * Async-signal-safe within the init function itself (we can't easily
+ * tell if the caller is in a signal context — they shouldn't be, but
+ * defensively we use only inline-asm syscalls).
+ */
+
+#include <stdint.h>
+#include <signal.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+
+#include "dispatch.h"
+#include "syscall.h"
+
+/* The bypass secret. Read once at init from UWGS_TRACE_SECRET env.
+ * Written by uwg_core_init; read by uwg_passthrough_syscall* (in
+ * syscall.h, declared extern there). */
+uint64_t uwg_bypass_secret;
+
+/* Per-thread alternate signal stack — must be allocated and
+ * registered before SIGSYS can fire on this thread. The .so build
+ * calls uwg_core_init_thread() from the libc shim's first hooked
+ * call on a new thread (cheap if already done, expensive once per
+ * thread). The static build wires it up at __uwg_init for the main
+ * thread and via a clone() shim for spawned threads (Phase 2).
+ *
+ * 64 KiB is comfortable for the dispatcher's stack frames; we never
+ * recurse and the heaviest path is a fdproxy round-trip plus one
+ * call into a uwg_* op. */
+#define UWG_SIGALTSTACK_SIZE (64 * 1024)
+
+static __thread void *uwg_thread_sigaltstack;
+
+/*
+ * Parse a uint64 from a NUL-terminated string. Async-signal-safe
+ * replacement for strtoull. Returns 0 on parse failure (which the
+ * filter installer treats as -EINVAL, fail-closed).
+ */
+static uint64_t parse_u64(const char *s) {
+    if (!s) return 0;
+    uint64_t v = 0;
+    for (; *s; s++) {
+        if (*s < '0' || *s > '9') return 0;
+        uint64_t d = (uint64_t)(*s - '0');
+        if (v > (UINT64_MAX - d) / 10) return 0; /* overflow */
+        v = v * 10 + d;
+    }
+    return v;
+}
+
+/* getenv replacement that walks **environ from libc's symbol if
+ * present; for the static build a different mechanism (auxv +
+ * argc/argv/envp setup) handles this. For Phase 1 we use libc's
+ * getenv via dlsym at first call — but we want NO libc on the hot
+ * path. So we take the env value once at init time, before any
+ * trapped syscall could fire. */
+extern char **environ;
+
+static const char *uwg_getenv(const char *name) {
+    if (!environ) return NULL;
+    /* Compare name to each env entry up to '='. */
+    size_t nlen = 0;
+    while (name[nlen]) nlen++;
+    for (char **e = environ; *e; e++) {
+        const char *p = *e;
+        size_t i = 0;
+        while (i < nlen && p[i] && p[i] == name[i]) i++;
+        if (i == nlen && p[i] == '=') {
+            return p + i + 1;
+        }
+    }
+    return NULL;
+}
+
+int uwg_core_init_thread(void) {
+    if (uwg_thread_sigaltstack) {
+        return 0; /* already done */
+    }
+
+    /* Allocate via mmap — never malloc (async-signal-safety). */
+    long mm = uwg_syscall6(SYS_mmap, 0, UWG_SIGALTSTACK_SIZE,
+                           PROT_READ | PROT_WRITE,
+                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (mm < 0) return (int)mm;
+
+    void *stack = (void *)mm;
+
+    stack_t ss = {
+        .ss_sp = stack,
+        .ss_size = UWG_SIGALTSTACK_SIZE,
+        .ss_flags = 0,
+    };
+
+    long rc = uwg_syscall2(SYS_sigaltstack, (long)&ss, 0);
+    if (rc < 0) {
+        /* Free the stack we just allocated. */
+        (void)uwg_syscall2(SYS_munmap, (long)stack, UWG_SIGALTSTACK_SIZE);
+        return (int)rc;
+    }
+    uwg_thread_sigaltstack = stack;
+    return 0;
+}
+
+int uwg_core_init(void) {
+    /* (1) bypass secret */
+    const char *secret_env = uwg_getenv("UWGS_TRACE_SECRET");
+    uwg_bypass_secret = parse_u64(secret_env);
+    if (uwg_bypass_secret == 0) {
+        /* No secret → can't install a working filter. Fail closed. */
+        return -22; /* -EINVAL */
+    }
+
+    /* (2) shared state — TODO Phase 1 commit B (extract from
+     * uwgpreload.c::tracked_table_*). For now leave it un-mapped;
+     * the stub dispatchers don't consult it. */
+
+    /* (3) per-thread arena — main thread first */
+    int rc = uwg_core_init_thread();
+    if (rc < 0) return rc;
+
+    /* (4) SIGSYS handler — must be installed BEFORE the filter,
+     * otherwise the kernel could deliver a SIGSYS that lands on the
+     * default handler and kills the process. */
+    rc = uwg_install_sigsys_handler();
+    if (rc < 0) return rc;
+
+    /* (5) seccomp filter — last; once this is in place we can't
+     * undo it. */
+    rc = uwg_install_seccomp_filter(uwg_bypass_secret);
+    if (rc < 0) return rc;
+
+    return 0;
+}
