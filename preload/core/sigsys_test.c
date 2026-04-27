@@ -61,12 +61,25 @@ static void uwg_print(const char *s) {
     (void)uwg_passthrough_syscall3(SYS_write, 2, (long)s, (long)n);
 }
 
+/* Format an unsigned long into a fixed buffer (decimal). */
+static char *uwg_fmt_u(char *buf, size_t buflen, unsigned long v) {
+    char tmp[32];
+    size_t i = 0;
+    if (v == 0) tmp[i++] = '0';
+    while (v) { tmp[i++] = '0' + (v % 10); v /= 10; }
+    size_t out = 0;
+    while (i && out < buflen - 1) buf[out++] = tmp[--i];
+    buf[out] = 0;
+    return buf;
+}
+
 static int fail(const char *what) {
-    /* Pre-filter: use libc. Post-filter: use uwg_print. We don't
-     * always know which side we're on, so try libc first and fall
-     * back to passthrough for the trailing newline. */
-    fprintf(stderr, "FAIL: %s (errno=%d %s)\n", what, errno, strerror(errno));
-    uwg_print("FAIL\n");
+    char nbuf[32];
+    uwg_print("FAIL: ");
+    uwg_print(what);
+    uwg_print(" (errno=");
+    uwg_print(uwg_fmt_u(nbuf, sizeof(nbuf), (unsigned long)errno));
+    uwg_print(")\n");
     return 1;
 }
 
@@ -103,15 +116,19 @@ int main(void) {
         return fail("uwg_install_seccomp_filter");
     }
 
-    /* Step 5: trapped syscall via libc → goes through SIGSYS path. */
+    /* Step 5: trapped syscall via libc → goes through SIGSYS path
+     * → uwg_dispatch → uwg_socket (REAL impl in socket_ops.c) →
+     * passthrough_syscall to kernel → real fd back. The fd must be
+     * a positive integer; libc errno must NOT be set. */
     uint64_t calls_before = 0, unh_before = 0;
     uwg_sigsys_stats(&calls_before, &unh_before);
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd != -1 || errno != ENOSYS) {
-        fprintf(stderr,
-                "FAIL: trapped socket() returned fd=%d errno=%d (want -1/ENOSYS)\n",
-                fd, errno);
+    if (fd < 0) {
+        char nbuf[32];
+        uwg_print("FAIL: trapped socket() returned -1, errno=");
+        uwg_print(uwg_fmt_u(nbuf, sizeof(nbuf), (unsigned long)errno));
+        uwg_print(" (want a real fd; check uwg_socket impl reaches kernel)\n");
         return 1;
     }
 
@@ -119,26 +136,38 @@ int main(void) {
     uwg_sigsys_stats(&calls_after, &unh_after);
 
     if (calls_after <= calls_before) {
-        fprintf(stderr,
-                "FAIL: SIGSYS handler counter did not increase "
-                "(before=%lu after=%lu) — handler not invoked\n",
-                (unsigned long)calls_before, (unsigned long)calls_after);
+        uwg_print("FAIL: SIGSYS counter didn't increase\n");
         return 1;
     }
-    /* Stub dispatcher returns -ENOSYS, which counts as "unhandled" by
-     * design — Phase 1 stubs are deliberately unfinished. */
-    if (unh_after <= unh_before) {
-        fprintf(stderr,
-                "FAIL: SIGSYS unhandled counter did not increase "
-                "(before=%lu after=%lu)\n",
-                (unsigned long)unh_before, (unsigned long)unh_after);
+    if (unh_after != unh_before) {
+        uwg_print("FAIL: dispatcher didn't reach uwg_socket impl\n");
+        return 1;
+    }
+    /* Close should also work via dispatch. */
+    uint64_t calls_pre_close = calls_after;
+    int cr = close(fd);
+    if (cr != 0) {
+        char nbuf[32];
+        uwg_print("FAIL: close returned ");
+        uwg_print(uwg_fmt_u(nbuf, sizeof(nbuf), (unsigned long)cr));
+        uwg_print(" errno=");
+        uwg_print(uwg_fmt_u(nbuf, sizeof(nbuf), (unsigned long)errno));
+        uwg_print("\n");
+        return 1;
+    }
+    uint64_t calls_post_close = 0;
+    uwg_sigsys_stats(&calls_post_close, NULL);
+    if (calls_post_close <= calls_pre_close) {
+        uwg_print("FAIL: close() did not go through SIGSYS handler\n");
         return 1;
     }
 
     /* Step 6: bypass-secret path — issue socket() with secret in arg6.
      * Filter must allow this directly to the kernel; we should get a
-     * real fd back without bumping the SIGSYS counter. */
-    uint64_t calls_pre_bypass = calls_after;
+     * real fd back without bumping the SIGSYS counter.
+     * Snapshot the counter NOW (after the close above also bumped it). */
+    uint64_t calls_pre_bypass = 0;
+    uwg_sigsys_stats(&calls_pre_bypass, NULL);
 
     long bypass_fd = uwg_passthrough_syscall3(SYS_socket,
                                               AF_INET, SOCK_DGRAM, 0);

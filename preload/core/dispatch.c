@@ -82,9 +82,8 @@ long uwg_dispatch(long nr, long a1, long a2, long a3,
 
 #define STUB return ENOSYS_RET;
 
-long uwg_socket(int d, int t, int p)                                      { (void)d; (void)t; (void)p; STUB }
-long uwg_socketpair(int d, int t, int p, int sv[2])                       { (void)d; (void)t; (void)p; (void)sv; STUB }
-long uwg_close(int fd)                                                     { (void)fd; STUB }
+/* uwg_socket, uwg_socketpair, uwg_close — implemented in socket_ops.c */
+
 long uwg_connect(int fd, const struct sockaddr *a, uint32_t l)            { (void)fd; (void)a; (void)l; STUB }
 long uwg_bind(int fd, const struct sockaddr *a, uint32_t l)               { (void)fd; (void)a; (void)l; STUB }
 long uwg_listen(int fd, int b)                                             { (void)fd; (void)b; STUB }

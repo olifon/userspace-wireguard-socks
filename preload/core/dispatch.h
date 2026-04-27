@@ -126,4 +126,19 @@ int uwg_install_sigsys_handler(void);
 const int *uwg_seccomp_trapped_list(size_t *n);
 const int *uwg_seccomp_traced_list(size_t *n);
 
+/* Shared state operations — see shared_state.c. */
+struct tracked_fd; /* defined in preload/shared_state.h */
+int uwg_state_init(void);
+struct tracked_fd uwg_state_lookup(int fd);
+int uwg_state_store(int fd, const struct tracked_fd *state);
+void uwg_state_clear(int fd);
+uint64_t uwg_state_secret(void);
+
+/* fdproxy unix-socket protocol — see fdproxy_sock.c. */
+void uwg_fdproxy_init(void);
+int  uwg_fdproxy_connect(void);
+int  uwg_fdproxy_request(const char *line, char *reply, size_t reply_len);
+int  uwg_fdproxy_write_request(int fd, const char *line);
+long uwg_fdproxy_read_reply(int fd, char *reply, size_t reply_len);
+
 #endif /* UWG_PRELOAD_CORE_DISPATCH_H */

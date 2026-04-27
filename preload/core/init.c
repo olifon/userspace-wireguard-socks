@@ -122,9 +122,23 @@ int uwg_core_init(void) {
         return -22; /* -EINVAL */
     }
 
-    /* (2) shared state — TODO Phase 1 commit B (extract from
-     * uwgpreload.c::tracked_table_*). For now leave it un-mapped;
-     * the stub dispatchers don't consult it. */
+    /* (2) shared state mmap.
+     * Best-effort: if UWGS_SHARED_STATE_PATH isn't set or the file
+     * doesn't validate, dispatchers fall back to "treat fd as
+     * non-tunnel and pass through". Correctness preserved; the
+     * tunnel functionality just won't engage. */
+    (void)uwg_state_init();
+    /* If the shared state provided a secret, prefer that one over
+     * what we read from env. The Go side is the authoritative source
+     * for the secret value when both are available. */
+    uint64_t shared_secret = uwg_state_secret();
+    if (shared_secret != 0) {
+        uwg_bypass_secret = shared_secret;
+    }
+
+    /* (2b) initialize fdproxy path lookup (env read at init time so
+     * the SIGSYS handler doesn't have to walk environ later). */
+    uwg_fdproxy_init();
 
     /* (3) per-thread arena — main thread first */
     int rc = uwg_core_init_thread();
