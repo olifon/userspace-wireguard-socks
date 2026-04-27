@@ -139,16 +139,21 @@ long uwg_connect(int fd, const struct sockaddr *addr, uint32_t alen) {
     if (line_len < 0) return line_len;
 
     /* Talk to fdproxy. */
+    uwg_tracef("connect.fdproxy_connect.begin fd=%d", fd);
     int mgr = uwg_fdproxy_connect();
+    uwg_tracef("connect.fdproxy_connect.end fd=%d mgr=%d", fd, mgr);
     if (mgr < 0) return mgr;
 
     if (uwg_fdproxy_write_request(mgr, line) < 0) {
+        uwg_tracef("connect.write_request.fail fd=%d", fd);
         (void)uwg_passthrough_syscall1(SYS_close, mgr);
         return -111; /* -ECONNREFUSED */
     }
+    uwg_tracef("connect.write_request.ok fd=%d line=%s", fd, line);
 
     char reply[128];
     long rd = uwg_fdproxy_read_reply(mgr, reply, sizeof(reply));
+    uwg_tracef("connect.read_reply fd=%d rc=%ld reply=%s", fd, rd, reply);
     if (rd <= 0) {
         (void)uwg_passthrough_syscall1(SYS_close, mgr);
         return -111;

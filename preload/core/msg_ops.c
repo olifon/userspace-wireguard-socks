@@ -321,6 +321,7 @@ long uwg_recvmsg(int fd, struct msghdr *msg, int flags) {
     long lz = maybe_lazy_udp_listener_recv(fd, &state);
     if (lz < 0) return lz;
 
+    uwg_tracef("recvmsg fd=%d kind=%d proxied=%d flags=%x", fd, state.kind, state.proxied, flags);
     if (state.proxied && (state.kind == KIND_UDP_CONNECTED ||
                           state.kind == KIND_UDP_LISTENER)) {
         if (!msg) return -22;
@@ -354,6 +355,7 @@ long uwg_sendmsg(int fd, const struct msghdr *msg, int flags) {
         if (lz < 0) return lz;
     }
 
+    uwg_tracef("sendmsg fd=%d kind=%d proxied=%d flags=%x", fd, state.kind, state.proxied, flags);
     if (state.proxied && (state.kind == KIND_UDP_CONNECTED ||
                           state.kind == KIND_UDP_LISTENER)) {
         if (!msg) return -22;

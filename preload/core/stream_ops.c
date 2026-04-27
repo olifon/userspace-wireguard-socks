@@ -107,18 +107,32 @@ long uwg_read(int fd, void *buf, size_t n) {
     struct tracked_fd state = uwg_state_lookup(fd);
     if (state.proxied && (state.kind == KIND_UDP_CONNECTED ||
                           state.kind == KIND_UDP_LISTENER)) {
-        return udp_read_into(fd, &state, state.kind, buf, n);
+        long rc = udp_read_into(fd, &state, state.kind, buf, n);
+        uwg_tracef("read fd=%d kind=%d n=%ld -> %ld", fd, state.kind, (long)n, rc);
+        return rc;
     }
-    return uwg_passthrough_syscall3(SYS_read, fd, (long)buf, (long)n);
+    long rc = uwg_passthrough_syscall3(SYS_read, fd, (long)buf, (long)n);
+    if (state.proxied || state.active) {
+        uwg_tracef("read.passthrough fd=%d kind=%d n=%ld -> %ld",
+                   fd, state.kind, (long)n, rc);
+    }
+    return rc;
 }
 
 long uwg_write(int fd, const void *buf, size_t n) {
     struct tracked_fd state = uwg_state_lookup(fd);
     if (state.proxied && (state.kind == KIND_UDP_CONNECTED ||
                           state.kind == KIND_UDP_LISTENER)) {
-        return udp_write_from(fd, state.kind, buf, n);
+        long rc = udp_write_from(fd, state.kind, buf, n);
+        uwg_tracef("write fd=%d kind=%d n=%ld -> %ld", fd, state.kind, (long)n, rc);
+        return rc;
     }
-    return uwg_passthrough_syscall3(SYS_write, fd, (long)buf, (long)n);
+    long rc = uwg_passthrough_syscall3(SYS_write, fd, (long)buf, (long)n);
+    if (state.proxied || state.active) {
+        uwg_tracef("write.passthrough fd=%d kind=%d n=%ld -> %ld",
+                   fd, state.kind, (long)n, rc);
+    }
+    return rc;
 }
 
 long uwg_readv(int fd, const struct iovec *iov, int iovcnt) {
