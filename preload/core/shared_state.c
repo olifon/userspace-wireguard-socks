@@ -66,6 +66,96 @@ static struct uwg_shared_state uwg_state_local;
 static struct uwg_shared_state *uwg_state = &uwg_state_local;
 static _Atomic int uwg_state_local_inited;
 
+/*
+ * Per-process direct-indexed fast cache.
+ *
+ * The hash table in uwg_shared_state.tracked[] requires a global
+ * rwlock acquire + linear probe per lookup. Under chromium-class
+ * call rates (thousands of recvmsg/sec across many threads), that
+ * locking is the dominant cost — and 99% of fds aren't tunnel-
+ * managed (chromium has many internal pipes / eventfds / IPC
+ * sockets), so almost every lookup is wasted work.
+ *
+ * The cache is a per-fd compact entry indexed by fd number directly
+ * — instant lookup, no probing, no shared-state lock. For fds in
+ * range, the hot fields (proxied, kind, saved_fl) come straight
+ * from a one-byte atomic read. Cache misses (fd >= UWG_FD_CACHE_SIZE
+ * or owner_pid mismatch) fall through to the existing slow path.
+ *
+ * Per-process: each process gets its own BSS-allocated cache. No
+ * cross-process synchronization needed. Atomic stores ensure the
+ * lock-free reads see consistent state.
+ *
+ * Configurable size: UWG_FD_CACHE_SIZE compile-time. Default 4096
+ * covers the typical ulimit -n=1024 with headroom; cost is ~64KB
+ * BSS per process. Bumping to 65536 costs ~1MB per process —
+ * acceptable for low-process-count workloads, expensive for
+ * chromium-class fork-heavy ones.
+ */
+#ifndef UWG_FD_CACHE_SIZE
+#define UWG_FD_CACHE_SIZE 4096
+#endif
+
+/* Compact 16-byte cache entry — the hot fields needed by every
+ * dispatcher inlined for one-load lookups. Cold-path fields
+ * (bind_ip, remote_ip text) require a fall-through to the full
+ * shared-state hash lookup. */
+struct uwg_fd_cache_entry {
+    _Atomic int32_t  owner_pid;     /* 0 = empty/invalid; pid = valid */
+    _Atomic uint16_t flags;         /* bit0=tracked, bit1=proxied, bit2-4=kind, bit5=hot_ready */
+    _Atomic uint16_t saved_fl;      /* O_NONBLOCK = 04000 etc, raw libc value */
+    _Atomic uint32_t generation;    /* bumped on store/clear so readers can detect a stale entry */
+    uint32_t reserved;
+};
+_Static_assert(sizeof(struct uwg_fd_cache_entry) == 16,
+               "fd cache entry must stay compact");
+
+#define UWG_CACHE_F_TRACKED   0x0001u
+#define UWG_CACHE_F_PROXIED   0x0002u
+#define UWG_CACHE_F_HOT_READY 0x0020u
+#define UWG_CACHE_KIND_SHIFT  2
+#define UWG_CACHE_KIND_MASK   0x001Cu  /* bits 2-4 */
+
+static struct uwg_fd_cache_entry uwg_fd_cache[UWG_FD_CACHE_SIZE];
+
+static inline void uwg_fd_cache_invalidate(int fd) {
+    if (fd < 0 || fd >= UWG_FD_CACHE_SIZE) return;
+    atomic_store_explicit(&uwg_fd_cache[fd].owner_pid, 0,
+                          memory_order_release);
+    atomic_fetch_add_explicit(&uwg_fd_cache[fd].generation, 1,
+                              memory_order_release);
+}
+
+static inline void uwg_fd_cache_store(int fd, int32_t pid,
+                                      const struct tracked_fd *s) {
+    if (fd < 0 || fd >= UWG_FD_CACHE_SIZE) return;
+    uint16_t flags = UWG_CACHE_F_TRACKED;
+    if (s->proxied)   flags |= UWG_CACHE_F_PROXIED;
+    if (s->hot_ready) flags |= UWG_CACHE_F_HOT_READY;
+    flags |= (uint16_t)((s->kind & 0x7) << UWG_CACHE_KIND_SHIFT);
+    atomic_fetch_add_explicit(&uwg_fd_cache[fd].generation, 1,
+                              memory_order_release);
+    atomic_store_explicit(&uwg_fd_cache[fd].flags, flags,
+                          memory_order_release);
+    atomic_store_explicit(&uwg_fd_cache[fd].saved_fl,
+                          (uint16_t)(s->saved_fl & 0xFFFF),
+                          memory_order_release);
+    atomic_store_explicit(&uwg_fd_cache[fd].owner_pid, pid,
+                          memory_order_release);
+}
+
+/* Fast-path test: returns 1 if fd is DEFINITELY not tracked (cached
+ * negative), 0 if we need to fall through to the full lookup. */
+static inline int uwg_fd_cache_negative(int fd, int32_t pid) {
+    if (fd < 0 || fd >= UWG_FD_CACHE_SIZE) return 0;
+    int32_t cached_pid = atomic_load_explicit(&uwg_fd_cache[fd].owner_pid,
+                                              memory_order_acquire);
+    if (cached_pid != pid) return 0; /* miss — could be tracked */
+    uint16_t flags = atomic_load_explicit(&uwg_fd_cache[fd].flags,
+                                          memory_order_acquire);
+    return (flags & UWG_CACHE_F_TRACKED) ? 0 : 1;
+}
+
 static void lazy_local_init(void) {
     int expected = 0;
     if (atomic_compare_exchange_strong_explicit(
@@ -107,6 +197,25 @@ static int uwg_state_find_slot_locked(int32_t pid, int fd, int create,
     if (!uwg_state) return -1;
     uint32_t start = uwg_state_hash(pid, fd);
     int free_idx = -1;
+    /* Distinguish three slot states for proper open-addressing semantics:
+     *
+     *   TRULY EMPTY (owner == 0 && fd == 0)
+     *     The initial state of every slot in zero-filled BSS / mmap.
+     *     Under linear probing this is the lookup terminator: any matching
+     *     entry would have been placed at or before this slot, so a
+     *     lookup can break immediately. This is the fast-path for
+     *     untracked fds (most chromium recvmsg targets) — without this,
+     *     every lookup walked the full 65k-slot table.
+     *
+     *   TOMBSTONE (owner == -1 || fd == -1)
+     *     Set by uwg_state_clear(). A lookup must continue scanning past
+     *     a tombstone (the original entry might have collided and been
+     *     placed later in the chain). An insert can reuse the first
+     *     tombstone it finds.
+     *
+     *   OCCUPIED (owner > 0 && fd >= 0)
+     *     Match by (pid, fd) pair.
+     */
     for (size_t step = 0; step < MAX_TRACKED_SLOTS; step++) {
         size_t idx = (start + step) % MAX_TRACKED_SLOTS;
         struct tracked_slot *slot = &uwg_state->tracked[idx];
@@ -116,9 +225,16 @@ static int uwg_state_find_slot_locked(int32_t pid, int fd, int create,
             if (out_idx) *out_idx = idx;
             return 0;
         }
-        if (owner == 0 || owner == -1 || slot_fd == -1) {
+        int truly_empty = (owner == 0 && slot_fd == 0);
+        int tombstone   = (owner == -1 || slot_fd == -1);
+        if (truly_empty || tombstone) {
             if (free_idx < 0) free_idx = (int)idx;
-            /* Don't break — keep searching for an existing entry. */
+        }
+        if (truly_empty) {
+            /* Lookup terminator under linear probing — no matching entry
+             * can exist past this point. Break for both lookup AND
+             * create paths (create reuses the empty slot via free_idx). */
+            break;
         }
     }
     if (create && free_idx >= 0) {
@@ -203,13 +319,36 @@ int uwg_state_init(void) {
  * struct (all fields 0 → caller will see active=0, proxied=0,
  * kind=KIND_NONE → "not a tunnel fd, pass through").
  */
+/* Populate the per-process cache with a negative entry — "looked up,
+ * not tracked". Subsequent lookups for the same (pid, fd) hit the
+ * fast path. Called from uwg_state_lookup whenever the slow hash
+ * lookup returns no entry. */
+static inline void uwg_fd_cache_store_negative(int fd, int32_t pid) {
+    if (fd < 0 || fd >= UWG_FD_CACHE_SIZE) return;
+    atomic_fetch_add_explicit(&uwg_fd_cache[fd].generation, 1,
+                              memory_order_release);
+    atomic_store_explicit(&uwg_fd_cache[fd].flags, 0,
+                          memory_order_release);
+    atomic_store_explicit(&uwg_fd_cache[fd].saved_fl, 0,
+                          memory_order_release);
+    atomic_store_explicit(&uwg_fd_cache[fd].owner_pid, pid,
+                          memory_order_release);
+}
+
 struct tracked_fd uwg_state_lookup(int fd) {
     struct tracked_fd out;
     memset(&out, 0, sizeof(out));
     if (!uwg_state || fd < 0) return out;
 
     int32_t pid = (int32_t)uwg_syscall0(SYS_getpid);
+
+    /* Fast-path negative cache: most chromium fds aren't tunnel-managed
+     * (internal pipes / eventfds / IPC sockets). The cache lets us
+     * skip the global rwlock acquire + linear probe entirely. */
+    if (uwg_fd_cache_negative(fd, pid)) return out;
+
     int32_t tid = uwg_current_tid();
+    int found = 0;
 
     if (uwg_rwlock_rdlock(&uwg_state->lock, tid) != 0) {
         /* We already hold it as writer — read without re-entering
@@ -217,14 +356,23 @@ struct tracked_fd uwg_state_lookup(int fd) {
         size_t idx;
         if (uwg_state_find_slot_locked(pid, fd, 0, &idx) == 0) {
             out = uwg_state->tracked[idx].state;
+            found = 1;
         }
-        return out;
+    } else {
+        size_t idx;
+        if (uwg_state_find_slot_locked(pid, fd, 0, &idx) == 0) {
+            out = uwg_state->tracked[idx].state;
+            found = 1;
+        }
+        uwg_rwlock_rdunlock(&uwg_state->lock);
     }
-    size_t idx;
-    if (uwg_state_find_slot_locked(pid, fd, 0, &idx) == 0) {
-        out = uwg_state->tracked[idx].state;
+
+    /* Populate the cache so future lookups skip the slow path. */
+    if (found) {
+        uwg_fd_cache_store(fd, pid, &out);
+    } else {
+        uwg_fd_cache_store_negative(fd, pid);
     }
-    uwg_rwlock_rdunlock(&uwg_state->lock);
     return out;
 }
 
@@ -251,6 +399,9 @@ int uwg_state_store(int fd, const struct tracked_fd *state) {
     }
 
     if (!reentrant) uwg_rwlock_wrunlock(&uwg_state->lock);
+    /* Populate the per-process fast cache so subsequent lookups can
+     * skip the global rwlock acquire. */
+    if (rc == 0) uwg_fd_cache_store(fd, pid, state);
     return (rc == 0) ? 0 : -12; /* -ENOMEM */
 }
 
@@ -263,6 +414,9 @@ void uwg_state_clear(int fd) {
     int32_t pid = (int32_t)uwg_syscall0(SYS_getpid);
     int32_t tid = uwg_current_tid();
 
+    /* Cache invalidate first so concurrent readers don't see a stale
+     * "tracked" entry after we've cleared the shared slot. */
+    uwg_fd_cache_invalidate(fd);
     int reentrant = uwg_rwlock_wrlock(&uwg_state->lock, tid) != 0;
     size_t idx;
     if (uwg_state_find_slot_locked(pid, fd, 0, &idx) == 0) {
