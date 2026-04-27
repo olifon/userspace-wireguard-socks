@@ -150,25 +150,64 @@ text segment. After `PTRACE_CONT` the function returns to the trap,
 SIGTRAP fires, supervisor reads RAX/X0 (sign-extended) for the
 result, and restores the original tracee state.
 
-⏳ **Step 7: validation suite** — `tests/preload/phase2_static_test.go`
-will wrap a `CGO_ENABLED=0` Go binary that opens a TCP connection
-to a tunnel address and assert the bytes flow through fdproxy.
+✅ **Step 7: validation suite** — `tests/preload/phase2_static_test.go`
+covers three scenarios end-to-end on amd64 and arm64:
+1. `TestPhase2StaticBinaryEchoTCP` — glibc-static C client:
+   connect → write → read → echo sentinel through the tunnel.
+2. `TestPhase2StaticGoBinaryEchoTCP` — `CGO_ENABLED=0` Go client:
+   same flow, validates Go runtime + SIGSYS coexistence.
+3. `TestPhase2StaticGoConcurrencyStress` — Go static HTTP server
+   under load: 100 goroutines × 10 requests each = 1000 reqs,
+   per-fd futex_rwlock + `rt_sigaction`-protect under a real Go
+   M-spawning workload. Validated 5.5s end-to-end.
 
-⏳ **Step 8: integrate into uwgwrapper main flow** — add
-`transport=preload-static`. On exec, detect static-binary
-(`PT_INTERP` absent), inject the blob, detach. For dynamic binaries
-keep the existing preload path.
+✅ **Step 8: `transport=preload-static`** — `cmd/uwgwrapper/main.go`
+gates on `--transport=preload-static`. The orchestrator
+(`cmd/uwgwrapper/inject_run.go`) does fork+`PTRACE_TRACEME`+execve,
+reads envp from the post-execve stack, parses the blob, loads it,
+runs `uwg_static_init(0, NULL, envp)` via the handoff trap, and
+detaches.
 
-⏳ **Step 9: per-arch blob embed** — `//go:embed assets/uwgpreload-
-static-${arch}.bin` so uwgwrapper is self-contained.
+⏳ **Step 9: per-arch blob embed** — currently the blob is loaded
+from disk via `UWGS_STATIC_BLOB` or the sibling
+`assets/uwgpreload-static-${arch}.so`. `//go:embed` was deferred
+to keep binary-churn out of git; a placeholder strategy is TBD.
 
-The hard mechanism work (finding the syscall instruction in the
-tracee, segment loading, relocation handling, return-trap design)
-all works as of `c9d6f48`. Validated end-to-end on linux/amd64 and
-linux/arm64: a freshly-spawned `/bin/sleep` tracee gets the whole
-~10MB freestanding blob loaded into its address space and runs
-`uwg_static_init`, returning the expected `-EINVAL` (no
-`UWGS_TRACE_SECRET` in the env) cleanly.
+## Validation status (as of commit `265c88b`)
+
+End-to-end on **amd64 and arm64**:
+- All 3 Phase 2 stress tests pass.
+- All Phase 1 lock-stress tests pass: `TestPhase1FxlockStress` (3.2M
+  ops, 32 threads × 1 lock), `TestPhase1FxlockContentionStress`
+  (3.2M ops, 16 threads × 8 locks at ~6.7M ops/sec), and
+  `TestPhase1FxlockContentionStressMean` (9.6M ops at 8:1 thread:lock
+  contention, 0 invariant violations).
+- `TestPhase1CacheRaceStress`: 80k ops, 0 torn reads.
+- Full preload-test suite (`go test ./tests/preload/`): green in
+  ~62s on arm64, ~181s on amd64.
+
+The lock primitive's correctness has been negative-tested: a copy
+with the rdlock retry-path step-3 re-check intentionally removed
+produces 745+ invariant violations and `RESULT FAIL`, confirming
+the contention harness has teeth for the exact race class found in
+the user-spotted retry-path deadlock.
+
+## Known limitations
+
+**Natural-exit hang under `transport=preload-static`** (diagnosed,
+workaround documented). When a Go static binary's `main` returns
+naturally (defer→runtime.exit→exit_group), if the Go `Server.Serve`
+goroutine is parked in `accept4` (trapped) inside our SIGSYS
+handler's fdproxy control read, `close(listenerFd)` (not trapped)
+can't abort the in-flight accept; the fdproxy reply never comes,
+and from Go's runtime view the M is still running user code so
+`runtime.exit`'s bookkeeping can't drain. Workaround in stress
+harnesses: explicit `os.Exit(0)` at end of main bypasses both. Real
+fixes (deferred): non-blocking fdproxy control with timeouts, OR
+trap `close()` and signal in-flight ops to abort on listener close.
+See `tests/preload/phase2_natural_exit_diag_test.go` for the
+diagnostic + per-thread `/proc` dumper (gated by
+`UWG_PHASE2_DIAG=1`).
 
 ## Open questions for later
 
@@ -181,3 +220,6 @@ linux/arm64: a freshly-spawned `/bin/sleep` tracee gets the whole
   can put it wherever mmap returns.
 - Stack alignment after the saved_start jump — must respect the
   ABI's 16-byte stack alignment on amd64, etc.
+- `//go:embed` placeholder strategy: how to embed the blob into the
+  wrapper without polluting git with a binary that changes every
+  build.
