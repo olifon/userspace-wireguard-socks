@@ -21,24 +21,38 @@
 
 #ifdef UWG_FREESTANDING
 
-/* Minimal memcpy — the compiler may also synthesize __builtin_memcpy
- * inline; the symbol stub here is for the rare cases where it doesn't
- * (large copies, volatile, etc.). */
-static inline void *uwg_memcpy(void *dst, const void *src, size_t n) {
+/* Freestanding build path. Use __builtin_* intrinsics so the compiler
+ * inlines small fixed-size cases and falls back to a call for large
+ * copies. The fallback symbols (memcpy/memset/strncmp) need to exist
+ * at link time — we provide them as weak strong symbols below to
+ * avoid pulling in libc.
+ *
+ * The names match libc exactly so source files that #include
+ * <string.h> (or have it pulled in transitively via system headers)
+ * see consistent extern declarations, and our weak definitions
+ * satisfy the link without conflict. */
+
+void *memcpy(void *dst, const void *src, __SIZE_TYPE__ n);
+void *memset(void *dst, int c, __SIZE_TYPE__ n);
+int   strncmp(const char *a, const char *b, __SIZE_TYPE__ n);
+
+/* When the compiler decides to emit a call instead of inlining, it
+ * calls these symbols. Static inline so each TU has its own copy
+ * (no link-step duplicate-symbol issue). The compiler usually optimizes
+ * the call away for small constant sizes. */
+static inline void *uwg_memcpy_impl(void *dst, const void *src, __SIZE_TYPE__ n) {
     unsigned char *d = (unsigned char *)dst;
     const unsigned char *s = (const unsigned char *)src;
-    for (size_t i = 0; i < n; i++) d[i] = s[i];
+    for (__SIZE_TYPE__ i = 0; i < n; i++) d[i] = s[i];
     return dst;
 }
-
-static inline void *uwg_memset(void *dst, int c, size_t n) {
+static inline void *uwg_memset_impl(void *dst, int c, __SIZE_TYPE__ n) {
     unsigned char *d = (unsigned char *)dst;
-    for (size_t i = 0; i < n; i++) d[i] = (unsigned char)c;
+    for (__SIZE_TYPE__ i = 0; i < n; i++) d[i] = (unsigned char)c;
     return dst;
 }
-
-static inline int uwg_strncmp(const char *a, const char *b, size_t n) {
-    for (size_t i = 0; i < n; i++) {
+static inline int uwg_strncmp_impl(const char *a, const char *b, __SIZE_TYPE__ n) {
+    for (__SIZE_TYPE__ i = 0; i < n; i++) {
         unsigned char ca = (unsigned char)a[i];
         unsigned char cb = (unsigned char)b[i];
         if (ca != cb) return (int)ca - (int)cb;
@@ -46,10 +60,6 @@ static inline int uwg_strncmp(const char *a, const char *b, size_t n) {
     }
     return 0;
 }
-
-#define memcpy  uwg_memcpy
-#define memset  uwg_memset
-#define strncmp uwg_strncmp
 
 #else
 /* Phase 1 .so build — keep using libc's memcpy/memset/strncmp so we

@@ -250,6 +250,8 @@ void uwg_sigsys_handler(int sig, siginfo_t *si, void *uctx_void) {
  */
 #ifdef UWG_FREESTANDING
 
+extern void uwg_sigreturn_trampoline(void);
+
 int uwg_install_sigsys_handler(void) {
     struct kernel_sigaction {
         void     (*k_sa_handler)(int, siginfo_t *, void *);
