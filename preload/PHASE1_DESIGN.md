@@ -276,6 +276,28 @@ falls into one of the three layers above. The migration is mechanical:
   commit 5b5a520 fixed SYS_dup2 absence on arm64 by routing uwg_dup2
   through SYS_dup3 with flags=0
 
+### Race-safety + perf result
+
+Per-fd futex_rwlock cache (commit `4c4f1ca`) replaced the original
+`_Atomic`-per-field cache. Key wins:
+
+- Eliminates torn-read class of races (writer mutating one field
+  between two atomic loads in the reader).
+- Per-fd lock means cross-fd dispatch traffic doesn't contend on a
+  shared global lock — chromium's per-fd recvmsg storm scales
+  linearly with cores instead of serializing.
+
+Chromium smoke 10/10 passes at 4.85-5.14s (var < 6%). Compare:
+- Legacy preload: 10/10 at 11-13s
+- `_Atomic` torn-read cache: 8/10 bimodal 6-78s
+- **Per-fd locked cache: 10/10 at ~5s** ← phase1 now beats legacy
+
+The `race_close` flag is in place for the deferred-cleanup pattern
+(close-during-locked-syscall); current implementation uses blocking
+wrlock which suffices for the common case. A try-wrlock-with-defer
+path lights up if SIGSYS-handler re-entrant close becomes a real
+workload pattern.
+
 ### Phase 1 followup (still TODO)
 
 - ✅ uwg_listen / uwg_accept / uwg_accept4 for tunnel fds —
