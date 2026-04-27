@@ -72,6 +72,43 @@ jobs:
           set -euo pipefail
           go test ./tests/preload/... || go test ./tests/preload/...
 
+      - name: Install chromium for real-internet smoke
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Headless chromium-style binary; chromium-browser pulls in
+          # the snap on some runners, so we use the apt package.
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends chromium chromium-driver \
+            || sudo apt-get install -y --no-install-recommends chromium-browser \
+            || true
+          if command -v chromium >/dev/null 2>&1; then
+            echo "UWGS_CHROME_BIN=$(command -v chromium)" >> "$GITHUB_ENV"
+          elif command -v chromium-browser >/dev/null 2>&1; then
+            echo "UWGS_CHROME_BIN=$(command -v chromium-browser)" >> "$GITHUB_ENV"
+          fi
+
+      - name: Run chromium real-internet smoke
+        if: runner.os == 'Linux'
+        # GH-runner-environment quirks (snap-confined chromium, dbus,
+        # GCM probes hitting deprecated Google endpoints) historically
+        # produce flakes unrelated to the wrapper. Continue-on-error so
+        # CI signal stays useful even when the runner env misbehaves;
+        # local + self-hosted runs surface real regressions.
+        continue-on-error: true
+        env:
+          UWGS_RUN_CHROMIUM_REAL_INTERNET: "1"
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${UWGS_CHROME_BIN:-}" ]; then
+            echo "no chromium binary detected; skipping smoke"
+            exit 0
+          fi
+          go test -count=1 -timeout 240s -run TestChromiumRealInternetSmoke -v ./tests/preload/
+
       - name: Run standalone TURN tests
         shell: bash
         run: |
