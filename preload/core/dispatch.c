@@ -46,7 +46,9 @@ long uwg_dispatch(long nr, long a1, long a2, long a3,
     case SYS_getsockname: return uwg_getsockname((int)a1, (struct sockaddr *)a2, (uint32_t *)a3);
     case SYS_getpeername: return uwg_getpeername((int)a1, (struct sockaddr *)a2, (uint32_t *)a3);
     case SYS_dup:         return uwg_dup((int)a1);
+#ifdef SYS_dup2
     case SYS_dup2:        return uwg_dup2((int)a1, (int)a2);
+#endif
     case SYS_dup3:        return uwg_dup3((int)a1, (int)a2, (int)a3);
     case SYS_fcntl:       return uwg_fcntl((int)a1, (int)a2, (long)a3);
     case SYS_shutdown:    return uwg_shutdown((int)a1, (int)a2);
@@ -74,22 +76,17 @@ long uwg_dispatch(long nr, long a1, long a2, long a3,
     }
 }
 
-/* ============================================================
- * Stub implementations. Every uwg_* returns -ENOSYS in Phase 1.
- * Phase 1's mechanical migration commits replace these one by one
- * with implementations lifted from preload/uwgpreload.c.
- * ============================================================ */
-
-#define STUB return ENOSYS_RET;
-
-/* uwg_socket, uwg_socketpair, uwg_close — implemented in socket_ops.c */
-/* uwg_connect — implemented in connect_ops.c */
-
-/* uwg_bind / uwg_listen / uwg_accept / uwg_accept4 — implemented in bind_ops.c */
-/* uwg_setsockopt / getsockopt / getsockname / getpeername / dup /
- * dup2 / dup3 / fcntl / shutdown — implemented in fd_ops.c */
-/* uwg_recvfrom / sendto / recvmsg / sendmsg / recvmmsg / sendmmsg —
- * implemented in msg_ops.c */
-/* uwg_read / write / readv / writev / pread / pwrite — implemented in stream_ops.c */
-
-#undef STUB
+/* All uwg_* dispatchers are implemented across the per-op .c files:
+ *   socket_ops.c   — socket, socketpair, close
+ *   connect_ops.c  — connect
+ *   bind_ops.c     — bind (real); listen / accept / accept4
+ *                    (passthrough for non-tunnel; -ENOSYS for tunnel
+ *                    until the listener migration commit)
+ *   stream_ops.c   — read, write, readv, writev, pread64, pwrite64
+ *   msg_ops.c      — recvfrom, sendto, recvmsg, sendmsg, recvmmsg,
+ *                    sendmmsg (all with MSG_DONTWAIT propagation;
+ *                    UDP-non-stream cases -ENOSYS until framing
+ *                    helpers land)
+ *   fd_ops.c       — dup, dup2, dup3, fcntl, setsockopt, getsockopt,
+ *                    getsockname, getpeername, shutdown
+ */

@@ -72,7 +72,9 @@ static const int uwg_trapped_syscalls[] = {
     SYS_getsockname,
     SYS_getpeername,
     SYS_dup,
-    SYS_dup2,
+#ifdef SYS_dup2
+    SYS_dup2,           /* x86_64 has it; arm64 only has dup3 */
+#endif
     SYS_dup3,
     SYS_fcntl,
     SYS_shutdown,

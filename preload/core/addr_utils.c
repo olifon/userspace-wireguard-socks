@@ -43,11 +43,15 @@ int uwg_addr_is_loopback(const struct sockaddr *addr) {
  * digits + NUL — but we don't write NUL here). */
 static int uwg_fmt_uint(char *buf, unsigned int v) {
     if (v == 0) { buf[0] = '0'; return 1; }
-    char tmp[16];
+    /* unsigned int is at most 32 bits → max 10 decimal digits.
+     * Sized to 12 with a small margin; this lets gcc 15+ prove the
+     * caller's tmp[12] is large enough and silences -Wstringop-
+     * overflow for the macro-inlined call sites. */
+    char tmp[12];
     int i = 0;
-    while (v) { tmp[i++] = (char)('0' + v % 10); v /= 10; }
+    while (v && i < (int)sizeof(tmp)) { tmp[i++] = (char)('0' + v % 10); v /= 10; }
     int n = i;
-    while (i) buf[n - i] = tmp[i - 1], i--;
+    for (int k = 0; k < n; k++) buf[k] = tmp[n - 1 - k];
     return n;
 }
 

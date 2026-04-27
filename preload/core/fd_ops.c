@@ -54,10 +54,15 @@ long uwg_dup(int fd) {
 long uwg_dup2(int oldfd, int newfd) {
     /* dup2 atomically closes newfd if open. We need to clear our
      * table entry for newfd FIRST so a concurrent lookup never sees
-     * the about-to-be-replaced state. */
+     * the about-to-be-replaced state.
+     *
+     * arm64 has no SYS_dup2; it provides only SYS_dup3 with flags=0
+     * for the dup2-equivalent. We dispatch through dup3 unconditionally
+     * because it's available on every arch we target and produces
+     * identical semantics for flags=0. */
     struct tracked_fd state = uwg_state_lookup(oldfd);
     uwg_state_clear(newfd);
-    long rc = uwg_passthrough_syscall2(SYS_dup2, oldfd, newfd);
+    long rc = uwg_passthrough_syscall3(SYS_dup3, oldfd, newfd, 0);
     if (rc < 0) return rc;
     if (state.active || state.proxied) {
         (void)uwg_state_store((int)rc, &state);
