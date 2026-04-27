@@ -51,4 +51,17 @@ int strncmp(const char *a, const char *b, size_t n) {
     return 0;
 }
 
+/*
+ * sched_yield wrapper — shared_state.h's rwlock primitives call
+ * sched_yield() to back off under contention. The .so build resolves
+ * this via libc; the freestanding build provides it via the inline
+ * syscall machinery.
+ */
+#include <sys/syscall.h>
+#include "syscall.h"
+
+int sched_yield(void) {
+    return (int)uwg_syscall0(SYS_sched_yield);
+}
+
 #endif /* UWG_FREESTANDING */
