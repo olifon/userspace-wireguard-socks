@@ -29,7 +29,15 @@ func getArchName() string                { return "arm64" }
 func setupHandoff(regs *unix.PtraceRegs, entry, retAddr uint64) {
 	regs.Pc = entry
 	regs.Regs[30] = retAddr // LR
-	regs.Regs[0] = 0        // argc
-	regs.Regs[1] = 0        // argv
-	regs.Regs[2] = 0        // envp
+	regs.Regs[0] = 0
+	regs.Regs[1] = 0
+	regs.Regs[2] = 0
+}
+
+func setupHandoffWithEnvp(regs *unix.PtraceRegs, entry, retAddr, envp uint64) {
+	regs.Pc = entry
+	regs.Regs[30] = retAddr
+	regs.Regs[0] = 0
+	regs.Regs[1] = 0
+	regs.Regs[2] = envp
 }

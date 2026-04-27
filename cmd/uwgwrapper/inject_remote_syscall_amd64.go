@@ -36,13 +36,17 @@ func getArchName() string                { return "amd64" }
 // return address before call; we simulate that by writing return_addr
 // at *(rsp) and decrementing rsp by 8.
 func setupHandoff(regs *unix.PtraceRegs, entry, retAddr uint64) {
-	// Stack already aligned at sp; reserve 8 bytes for return addr,
-	// then push it.
 	regs.Rsp -= 8
-	// We can't write to *rsp here directly — caller (runStaticInit)
-	// must do that via writeMem. We just signal where via the regs.
 	regs.Rip = entry
 	regs.Rdi = 0 // argc
 	regs.Rsi = 0 // argv
 	regs.Rdx = 0 // envp
+}
+
+func setupHandoffWithEnvp(regs *unix.PtraceRegs, entry, retAddr, envp uint64) {
+	regs.Rsp -= 8
+	regs.Rip = entry
+	regs.Rdi = 0    // argc
+	regs.Rsi = 0    // argv
+	regs.Rdx = envp // envp
 }
