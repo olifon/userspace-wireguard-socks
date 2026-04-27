@@ -91,13 +91,20 @@ static int uwg_fmt_ipv6(char *buf, const uint8_t *a) {
 
     int off = 0;
     int i = 0;
+    int just_emitted_dcolon = 0;
     while (i < 8) {
         if (i == best_start) {
             buf[off++] = ':'; buf[off++] = ':';
             i += best_len;
+            just_emitted_dcolon = 1;
             continue;
         }
-        if (i > 0) buf[off++] = ':';
+        /* Leading colon for non-first group, BUT not when the previous
+         * iteration just emitted "::" (that already provides the
+         * separator — a third colon would yield "2001:4860:4860:::8888"
+         * instead of the canonical "2001:4860:4860::8888"). */
+        if (i > 0 && !just_emitted_dcolon) buf[off++] = ':';
+        just_emitted_dcolon = 0;
         /* hex format the group, no leading zeros */
         uint16_t v = g[i];
         char tmp[5];

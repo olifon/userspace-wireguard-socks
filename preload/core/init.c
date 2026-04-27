@@ -117,8 +117,22 @@ int uwg_core_init(void) {
     /* (1) bypass secret */
     const char *secret_env = uwg_getenv("UWGS_TRACE_SECRET");
     uwg_bypass_secret = parse_u64(secret_env);
-    if (uwg_bypass_secret == 0) {
-        /* No secret → can't install a working filter. Fail closed. */
+
+    /* UWGS_DISABLE_SECCOMP=1 forces shim-only mode even when a
+     * secret is provided. Useful for workloads that fork+exec a lot
+     * (chromium-class apps) — the kernel-side filter is preserved
+     * across exec, but the SIGSYS handler is process-local and
+     * gets reset, so child processes die on the first trapped
+     * syscall before our constructor can re-install the handler.
+     * The shim_libc layer alone covers libc-routed calls, which
+     * is what these apps use almost exclusively. Phase 2's
+     * bootstrap supervisor closes the exec gap. */
+    const char *disable = uwg_getenv("UWGS_DISABLE_SECCOMP");
+    int seccomp_disabled = disable && (*disable == '1');
+
+    if (uwg_bypass_secret == 0 && !seccomp_disabled) {
+        /* No secret → can't install a working filter. Fail closed
+         * unless explicitly opted out. */
         return -22; /* -EINVAL */
     }
 
@@ -143,6 +157,16 @@ int uwg_core_init(void) {
     /* (3) per-thread arena — main thread first */
     int rc = uwg_core_init_thread();
     if (rc < 0) return rc;
+
+    /* If we're in shim-only mode (no seccomp filter), there's no
+     * SIGSYS to handle and no filter to install. The shim_libc
+     * symbol layer alone provides interception for the libc-routed
+     * surface, which is sufficient for drop-in legacy compat and
+     * for apps like chromium that fork+exec frequently. Return
+     * success so the constructor doesn't print an error. */
+    if (seccomp_disabled || uwg_bypass_secret == 0) {
+        return 0;
+    }
 
     /* (4) SIGSYS handler — must be installed BEFORE the filter,
      * otherwise the kernel could deliver a SIGSYS that lands on the

@@ -6,10 +6,12 @@
 package preload_test
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -57,29 +59,88 @@ func TestPhase1HeadlessChromeSmoke(t *testing.T) {
 	serverScript := filepath.Join(repo, "tests/preload/testdata/node_http_server.js")
 	markFile := filepath.Join(t.TempDir(), "phase1-chrome-post.txt")
 
+	// Run in shim-only mode (UWGS_DISABLE_SECCOMP=1) for chromium-class
+	// workloads. Chromium fork+execs heavily; the kernel-side seccomp
+	// filter is preserved across exec but the SIGSYS handler is process-
+	// local and reset, so child processes hit the default SIGSYS handler
+	// (terminate) before our constructor can re-install. Phase 2's
+	// bootstrap supervisor closes this gap; for Phase 1, shim_libc alone
+	// covers the libc-routed surface cleanly.
+	disableSeccomp := wrapperRunOptions{
+		timeout: 360 * time.Second,
+		env:     map[string]string{"UWGS_DISABLE_SECCOMP": "1"},
+	}
 	serverCmd, serverStderr, serverDone := startWrappedListenerProcess(t, art, pair.serverHTTPSock, transport, "node",
 		[]string{serverScript, "100.64.94.1", "18090", markFile},
-		wrapperRunOptions{timeout: 360 * time.Second})
+		disableSeccomp)
 	defer func() {
 		killProcessGroup(serverCmd)
 		<-serverDone
 	}()
 
-	out, stderr := runWrappedTargetBrowser(t, art, pair.clientHTTPSock, transport, chromeBin,
-		[]string{
-			"--headless",
-			"--no-sandbox",
-			"--disable-gpu",
-			"--disable-features=DBus,VizDisplayCompositor",
-			"--disable-software-rasterizer",
-			"--disable-dev-shm-usage",
-			"--no-zygote",
-			"--virtual-time-budget=5000",
-			"--dump-dom",
-			"http://100.64.94.1:18090/",
-		})
+	browserArgs := []string{
+		"--headless",
+		"--no-sandbox",
+		"--disable-gpu",
+		"--disable-features=DBus,VizDisplayCompositor",
+		"--disable-software-rasterizer",
+		"--disable-dev-shm-usage",
+		"--no-zygote",
+		"--virtual-time-budget=5000",
+		"--dump-dom",
+		"http://100.64.94.1:18090/",
+	}
+	out, stderr := runPhase1WrappedBrowser(t, art, pair.clientHTTPSock, transport, chromeBin, browserArgs, disableSeccomp)
 	if !strings.Contains(string(out), "script-ok:204") {
 		t.Fatalf("phase1 headless chrome smoke failed\nout=%s\nbrowser stderr=%s\nserver stderr=%s", out, stderr, serverStderr.String())
 	}
 	waitForFileContent(t, markFile, "chrome-post-ok")
+}
+
+// runPhase1WrappedBrowser is the env-aware variant of runWrappedTargetBrowser
+// — it threads opts (specifically UWGS_DISABLE_SECCOMP) through to the
+// wrapped child so chromium-class workloads can run in shim-only mode.
+func runPhase1WrappedBrowser(t *testing.T, art wrapperArtifacts, httpSock, transport, target string,
+	args []string, opts wrapperRunOptions) ([]byte, []byte) {
+	t.Helper()
+	if opts.timeout == 0 {
+		opts.timeout = 300 * time.Second
+	}
+	base := wrappedCommand(t, art, httpSock, transport, target, args, opts)
+	ctx, cancel := context.WithTimeout(context.Background(), opts.timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, base.Path, base.Args[1:]...)
+	cmd.Env = append([]string{}, base.Env...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	stdoutPath := filepath.Join(t.TempDir(), "browser.out")
+	stderrPath := filepath.Join(t.TempDir(), "browser.err")
+	stdoutFile, err := os.Create(stdoutPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdoutFile.Close()
+	stderrFile, err := os.Create(stderrPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stderrFile.Close()
+	cmd.Stdout = stdoutFile
+	cmd.Stderr = stderrFile
+
+	runErr := cmd.Run()
+	_ = stdoutFile.Close()
+	_ = stderrFile.Close()
+	stdout, _ := os.ReadFile(stdoutPath)
+	stderrBytes, _ := os.ReadFile(stderrPath)
+	killProcessGroup(cmd)
+
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("wrapped browser %s %v timed out\n%s", target, args, stderrBytes)
+	}
+	if runErr != nil {
+		t.Fatalf("wrapped browser %s %v failed: %v\nstdout=%s\nstderr=%s", target, args, runErr, stdout, stderrBytes)
+	}
+	return stdout, stderrBytes
 }
