@@ -17,6 +17,7 @@
 
 #include <stdarg.h>
 #include <stdint.h>
+#include "freestanding_runtime.h"
 #include <stddef.h>
 #include <fcntl.h>
 #include <sys/syscall.h>
@@ -27,11 +28,10 @@ static int uwg_trace_fd = -1;
 static int uwg_trace_inited;
 
 static const char *uwg_trace_getenv(const char *name) {
-    extern char **environ;
-    if (!environ) return NULL;
+    if (!uwg_environ) return NULL;
     size_t nlen = 0;
     while (name[nlen]) nlen++;
-    for (char **e = environ; *e; e++) {
+    for (char **e = uwg_environ; *e; e++) {
         const char *p = *e;
         size_t i = 0;
         while (i < nlen && p[i] && p[i] == name[i]) i++;

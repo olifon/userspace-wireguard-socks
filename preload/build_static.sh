@@ -37,6 +37,13 @@ CFLAGS_BASE="-O2 -fPIC -shared -D_GNU_SOURCE -DUWG_FREESTANDING -I preload/core 
 CFLAGS_FREESTANDING="-ffreestanding -nostdlib -fno-stack-protector"
 CFLAGS_WARN="-Wall -Wextra -Wno-unused-parameter -Wno-stringop-overflow"
 
+# arm64 (aarch64) GCC defaults to outline-atomics — generates calls to
+# __aarch64_ldadd4_rel etc. from libgcc.a. The freestanding link can't
+# satisfy those, so disable outline atomics and let GCC inline LL/SC.
+if [ "$ARCH" = "arm64" ]; then
+    CFLAGS_BASE="$CFLAGS_BASE -mno-outline-atomics"
+fi
+
 CORE_SRCS=(
     preload/core/sigsys.c
     preload/core/seccomp.c
@@ -57,6 +64,7 @@ CORE_SRCS=(
     preload/core/trace.c
     preload/core/freestanding_impl.c
     preload/core/sigreturn_trampoline.c
+    preload/core/freestanding_runtime.c
 )
 
 OUT_DIR="${1:-preload}"

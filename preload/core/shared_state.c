@@ -48,6 +48,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "freestanding.h"
+#include "freestanding_runtime.h"
 #include <sys/mman.h>
 #include <sys/syscall.h>
 
@@ -264,9 +265,8 @@ int uwg_state_init(void) {
     }
 
     /* We're the initializer. Find the path. */
-    extern char **environ;
     const char *path = NULL;
-    for (char **e = environ; e && *e; e++) {
+    for (char **e = uwg_environ; e && *e; e++) {
         const char *s = *e;
         if (strncmp(s, "UWGS_SHARED_STATE_PATH=", 23) == 0) {
             path = s + 23;

@@ -39,9 +39,9 @@ uint64_t uwg_bypass_secret;
  * 64 KiB is comfortable for the dispatcher's stack frames; we never
  * recurse and the heaviest path is a fdproxy round-trip plus one
  * call into a uwg_* op. */
-#define UWG_SIGALTSTACK_SIZE (64 * 1024)
+#include "freestanding_runtime.h"
 
-static __thread void *uwg_thread_sigaltstack;
+#define UWG_SIGALTSTACK_SIZE (64 * 1024)
 
 /*
  * Parse a uint64 from a NUL-terminated string. Async-signal-safe
@@ -60,20 +60,17 @@ static uint64_t parse_u64(const char *s) {
     return v;
 }
 
-/* getenv replacement that walks **environ from libc's symbol if
- * present; for the static build a different mechanism (auxv +
- * argc/argv/envp setup) handles this. For Phase 1 we use libc's
- * getenv via dlsym at first call — but we want NO libc on the hot
- * path. So we take the env value once at init time, before any
- * trapped syscall could fire. */
+/* getenv replacement that walks the env vector. Both builds populate
+ * uwg_environ at init: the .so build copies libc's `environ`; the
+ * freestanding build parses envp from auxv at uwg_static_init time. */
 extern char **environ;
 
 static const char *uwg_getenv(const char *name) {
-    if (!environ) return NULL;
+    if (!uwg_environ) return NULL;
     /* Compare name to each env entry up to '='. */
     size_t nlen = 0;
     while (name[nlen]) nlen++;
-    for (char **e = environ; *e; e++) {
+    for (char **e = uwg_environ; *e; e++) {
         const char *p = *e;
         size_t i = 0;
         while (i < nlen && p[i] && p[i] == name[i]) i++;
@@ -85,7 +82,7 @@ static const char *uwg_getenv(const char *name) {
 }
 
 int uwg_core_init_thread(void) {
-    if (uwg_thread_sigaltstack) {
+    if (uwg_get_thread_sigaltstack() != NULL) {
         return 0; /* already done */
     }
 
@@ -109,11 +106,18 @@ int uwg_core_init_thread(void) {
         (void)uwg_syscall2(SYS_munmap, (long)stack, UWG_SIGALTSTACK_SIZE);
         return (int)rc;
     }
-    uwg_thread_sigaltstack = stack;
+    uwg_set_thread_sigaltstack(stack);
     return 0;
 }
 
 int uwg_core_init(void) {
+    /* (0) bind libc's environ to our process-wide pointer. The
+     * freestanding build sets uwg_environ from auxv before calling
+     * uwg_core_init(), in which case this NULL-check leaves it alone. */
+#ifndef UWG_FREESTANDING
+    if (!uwg_environ) uwg_environ = environ;
+#endif
+
     /* (1) bypass secret */
     const char *secret_env = uwg_getenv("UWGS_TRACE_SECRET");
     uwg_bypass_secret = parse_u64(secret_env);

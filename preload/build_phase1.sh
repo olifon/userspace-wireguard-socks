@@ -33,6 +33,7 @@ CORE_SRCS=(
     preload/core/udp_frame.c
     preload/core/dns_force.c
     preload/core/trace.c
+    preload/core/freestanding_runtime.c
 )
 
 SHIM_SRCS=(

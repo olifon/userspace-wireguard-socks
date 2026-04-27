@@ -33,6 +33,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "freestanding.h"
+#include "freestanding_runtime.h"
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <netinet/in.h>
@@ -43,11 +44,10 @@
 
 /* Walk environ for the named var. Returns NULL if not set. */
 static const char *uwg_dns_getenv(const char *name) {
-    extern char **environ;
-    if (!environ) return NULL;
+    if (!uwg_environ) return NULL;
     size_t nlen = 0;
     while (name[nlen]) nlen++;
-    for (char **e = environ; *e; e++) {
+    for (char **e = uwg_environ; *e; e++) {
         const char *p = *e;
         size_t i = 0;
         while (i < nlen && p[i] && p[i] == name[i]) i++;

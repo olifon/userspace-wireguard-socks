@@ -31,6 +31,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "freestanding.h"
+#include "freestanding_runtime.h"
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/un.h>
@@ -56,9 +57,8 @@ static size_t uwg_strlen(const char *s) {
 void uwg_fdproxy_init(void) {
     if (uwg_fdproxy_path_set) return;
 
-    extern char **environ;
     const char *path = NULL;
-    for (char **e = environ; e && *e; e++) {
+    for (char **e = uwg_environ; e && *e; e++) {
         const char *s = *e;
         if (strncmp(s, "UWGS_FDPROXY=", 13) == 0) {
             path = s + 13;
