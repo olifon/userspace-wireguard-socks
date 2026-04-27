@@ -27,3 +27,22 @@ func readSyscallResult(regs *unix.PtraceRegs) uintptr {
 }
 
 func getPC(regs *unix.PtraceRegs) uint64 { return regs.Rip }
+func getSP(regs *unix.PtraceRegs) uint64 { return regs.Rsp }
+func setSP(regs *unix.PtraceRegs, sp uint64) { regs.Rsp = sp }
+func getArchName() string                { return "amd64" }
+
+// setupHandoff: set RIP=entry, push return_addr on stack, set arg regs
+// rdi/rsi/rdx = (0, 0, 0). amd64 calling convention: caller pushes
+// return address before call; we simulate that by writing return_addr
+// at *(rsp) and decrementing rsp by 8.
+func setupHandoff(regs *unix.PtraceRegs, entry, retAddr uint64) {
+	// Stack already aligned at sp; reserve 8 bytes for return addr,
+	// then push it.
+	regs.Rsp -= 8
+	// We can't write to *rsp here directly — caller (runStaticInit)
+	// must do that via writeMem. We just signal where via the regs.
+	regs.Rip = entry
+	regs.Rdi = 0 // argc
+	regs.Rsi = 0 // argv
+	regs.Rdx = 0 // envp
+}

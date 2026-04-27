@@ -35,6 +35,13 @@ esac
 
 CFLAGS_BASE="-O2 -fPIC -shared -D_GNU_SOURCE -DUWG_FREESTANDING -I preload/core -I preload"
 CFLAGS_FREESTANDING="-ffreestanding -nostdlib -fno-stack-protector"
+# -Wl,-Bsymbolic: bind global symbol references to the blob's own
+#   definitions at link time, eliminating R_X86_64_GLOB_DAT relocations
+#   we'd otherwise have to resolve at injection time.
+# -Wl,-z,nodynamic-undefined-weak: same idea for weak refs.
+# -fvisibility=hidden via linker script would be cleaner but Bsymbolic
+#   handles all the cases we hit.
+CFLAGS_LDFLAGS="-Wl,-Bsymbolic"
 CFLAGS_WARN="-Wall -Wextra -Wno-unused-parameter -Wno-stringop-overflow"
 
 # arm64 (aarch64) GCC defaults to outline-atomics — generates calls to
@@ -72,7 +79,7 @@ OUT_DIR="${1:-preload}"
 OUT_SO="$OUT_DIR/uwgpreload-static-${ARCH}.so"
 
 # First sanity check: does core/ compile freestanding (no libc)?
-gcc $CFLAGS_BASE $CFLAGS_FREESTANDING $CFLAGS_WARN \
+gcc $CFLAGS_BASE $CFLAGS_FREESTANDING $CFLAGS_WARN $CFLAGS_LDFLAGS \
     "${CORE_SRCS[@]}" \
     -o "$OUT_SO" 2>&1 | tail -20
 

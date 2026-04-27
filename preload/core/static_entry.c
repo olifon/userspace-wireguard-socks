@@ -29,6 +29,24 @@
 #include "freestanding_runtime.h"
 #include "dispatch.h"
 
+/* Trap landing pad — used by the supervisor as the return address
+ * when handoff'ing into uwg_static_init. When the function returns,
+ * it pops the saved return address and jumps here, hitting an
+ * int3 (x86_64) / brk #0 (arm64) which raises SIGTRAP. The
+ * supervisor catches SIGTRAP, reads RAX/X0 for the result, then
+ * restores the original tracee state. */
+#if defined(__x86_64__)
+__attribute__((naked, noreturn))
+void uwg_static_trap(void) {
+    __asm__ volatile ("int3\n\tint3\n\tint3\n\tint3");
+}
+#elif defined(__aarch64__)
+__attribute__((naked, noreturn))
+void uwg_static_trap(void) {
+    __asm__ volatile ("brk #0\n\tbrk #0\n\tbrk #0\n\tbrk #0");
+}
+#endif
+
 int uwg_static_init(int argc, char **argv, char **envp) {
     (void)argc;
     (void)argv;

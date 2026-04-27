@@ -20,3 +20,16 @@ func readSyscallResult(regs *unix.PtraceRegs) uintptr {
 }
 
 func getPC(regs *unix.PtraceRegs) uint64 { return regs.Pc }
+func getSP(regs *unix.PtraceRegs) uint64 { return regs.Sp }
+func setSP(regs *unix.PtraceRegs, sp uint64) { regs.Sp = sp }
+func getArchName() string                { return "arm64" }
+
+// arm64 ABI: function call sets x30 (LR) to return addr, no stack push.
+// Args go in x0..x7.
+func setupHandoff(regs *unix.PtraceRegs, entry, retAddr uint64) {
+	regs.Pc = entry
+	regs.Regs[30] = retAddr // LR
+	regs.Regs[0] = 0        // argc
+	regs.Regs[1] = 0        // argv
+	regs.Regs[2] = 0        // envp
+}

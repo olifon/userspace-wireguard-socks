@@ -49,6 +49,12 @@ type staticBlobSpec struct {
 	// load base. Set by parseStaticBlob.
 	EntryOffset uint64
 
+	// TrapOffset is uwg_static_trap's offset relative to the blob's
+	// load base. The supervisor uses this as the return address when
+	// handoffing into uwg_static_init, so the function's return
+	// raises SIGTRAP and the supervisor regains control.
+	TrapOffset uint64
+
 	// Loads is the ordered list of PT_LOAD segments. The supervisor
 	// allocates a single contiguous mapping of (HighVaddr-LowVaddr)
 	// in the tracee and copies each segment to (base + p.Vaddr -
@@ -111,13 +117,18 @@ func parseStaticBlob(path string) (*staticBlobSpec, error) {
 		return nil, fmt.Errorf("read dynamic symbols: %w", err)
 	}
 	for _, s := range syms {
-		if s.Name == "uwg_static_init" {
+		switch s.Name {
+		case "uwg_static_init":
 			spec.EntryOffset = s.Value
-			break
+		case "uwg_static_trap":
+			spec.TrapOffset = s.Value
 		}
 	}
 	if spec.EntryOffset == 0 {
 		return nil, errors.New("uwg_static_init not exported by blob — build_static.sh produced a broken artifact")
+	}
+	if spec.TrapOffset == 0 {
+		return nil, errors.New("uwg_static_trap not exported by blob — build_static.sh produced a broken artifact")
 	}
 
 	// Collect PT_LOAD segments and the address span they cover.
