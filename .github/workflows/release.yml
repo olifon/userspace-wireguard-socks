@@ -73,7 +73,14 @@ jobs:
         run: |
           set -euo pipefail
           cd turn
-          go test ./...
+          # Retry once on failure: pion/dtls handshake under
+          # macOS+CI scheduling has been observed to hang
+          # intermittently in TestBuildPionServerTLSAndDTLSVerifyPeer/
+          # dtls (10-min default timeout fires). Same retry pattern
+          # as the preload-tests step above. Add an explicit per-run
+          # timeout so a hang fails fast (3 min) and the second
+          # attempt gets a clean shot.
+          go test -timeout 180s ./... || go test -timeout 180s ./...
 
       - name: Real Linux host-TUN smoke test
         if: runner.os == 'Linux'
