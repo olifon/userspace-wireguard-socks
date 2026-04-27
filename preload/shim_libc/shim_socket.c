@@ -178,6 +178,11 @@ ssize_t sendmsg(int fd, const struct msghdr *msg, int flags) {
     return errno_from_ssize(uwg_sendmsg(fd, msg, flags));
 }
 
+/* glibc declares the flags arg of recvmmsg/sendmmsg as `int`; musl
+ * declares it as `unsigned int`. The kernel ABI accepts both — the
+ * value is a bitfield. Match each libc to avoid "conflicting types"
+ * errors in the shim. */
+#ifdef __GLIBC__
 int recvmmsg(int fd, struct mmsghdr *vec, unsigned int vlen, int flags,
              struct timespec *to) {
     return errno_from(uwg_recvmmsg(fd, vec, vlen, flags, to));
@@ -186,6 +191,16 @@ int recvmmsg(int fd, struct mmsghdr *vec, unsigned int vlen, int flags,
 int sendmmsg(int fd, struct mmsghdr *vec, unsigned int vlen, int flags) {
     return errno_from(uwg_sendmmsg(fd, vec, vlen, flags));
 }
+#else
+int recvmmsg(int fd, struct mmsghdr *vec, unsigned int vlen, unsigned int flags,
+             struct timespec *to) {
+    return errno_from(uwg_recvmmsg(fd, vec, vlen, (int)flags, to));
+}
+
+int sendmmsg(int fd, struct mmsghdr *vec, unsigned int vlen, unsigned int flags) {
+    return errno_from(uwg_sendmmsg(fd, vec, vlen, (int)flags));
+}
+#endif
 
 ssize_t read(int fd, void *buf, size_t n) {
     return errno_from_ssize(uwg_read(fd, buf, n));
