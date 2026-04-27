@@ -229,21 +229,94 @@ falls into one of the three layers above. The migration is mechanical:
    "this file exists for backward compatibility" stub or is deleted
    entirely.
 
-## What lands in this initial commit
+## Status (as of commit 5b5a520, 2026-04-27)
 
-This commit lays the foundation only — no migration of existing code.
+### Foundation (committed in 1895ffe)
 
-- `preload/core/seccomp.c` — BPF filter generator (standalone, ~150 LOC)
-- `preload/core/sigsys.c` — SIGSYS handler shell (decode ucontext,
-  call dispatch stub which currently returns -ENOSYS)
-- `preload/core/dispatch.c` — stub dispatch table
-- `preload/core/dispatch.h` — function signatures (above)
-- `preload/core/syscall.h` — inline-asm syscall wrappers
-- `preload/PHASE1_DESIGN.md` — this doc
+- ✅ `preload/core/syscall.h` — inline-asm syscall0..6 + bypass_syscall0..5
+- ✅ `preload/core/seccomp.c` — cBPF filter generator (~150 LOC)
+- ✅ `preload/core/sigsys.c` — handler decodes ucontext per arch
+- ✅ `preload/core/dispatch.[ch]` — switch from NR to uwg_<op>
+- ✅ `preload/core/init.c` — load-bearing init order
+- ✅ `preload/core/sigsys_test.c` — end-to-end smoke harness
 
-Tomorrow's commits will mechanically extract from existing
-uwgpreload.c into core/ files. Build glue ensures both old and new
-artifacts compile cleanly during migration.
+### Layer adapters (committed in df42533)
+
+- ✅ `preload/core/shared_state.c` — async-signal-safe consumer of
+  the mmap'd uwgshared.Table; no malloc, only mmap + atomics
+- ✅ `preload/core/fdproxy_sock.c` — raw protocol over
+  /tmp/uwgfdproxy.sock; pure inline-asm syscalls
+
+### Real syscall implementations
+
+- ✅ `preload/core/socket_ops.c` (df42533) — socket / socketpair / close
+- ✅ `preload/core/addr_utils.c` (2b2d4c6) — sockaddr ↔ printable IP,
+  CONNECT line builder, OK-reply parser
+- ✅ `preload/core/connect_ops.c` (2b2d4c6) — full fdproxy round-trip
+  + dup3-over-original-fd
+- ✅ `preload/core/bind_ops.c` (2b2d4c6) — bind (real); listen/accept
+  (passthrough for non-tunnel; -ENOSYS tunnel = Phase 1 followup)
+- ✅ `preload/core/stream_ops.c` (2b2d4c6) — read/write/readv/writev/
+  pread/pwrite with TCP-stream FAST PATH (chromium architectural win)
+- ✅ `preload/core/msg_ops.c` (506f132) — recvfrom/sendto/recvmsg/
+  sendmsg/recvmmsg/sendmmsg with the v0.1.0-beta.46 MSG_DONTWAIT
+  propagation re-applied at the C layer; 6-arg recvfrom/sendto
+  rewritten as 3-arg recvmsg/sendmsg to leave arg6 free for the
+  bypass-secret
+- ✅ `preload/core/fd_ops.c` (506f132) — dup/dup2/dup3 (state propagate),
+  fcntl (F_SETFL/F_GETFL track O_NONBLOCK), setsockopt (track
+  SO_REUSEADDR/SO_REUSEPORT), getsockopt/getsockname/getpeername/
+  shutdown (passthrough)
+
+### Cross-arch portability
+
+- ✅ amd64 (validated on the developer gVisor container + on
+  root@51.159.237.61, the amd64 VPS)
+- ✅ arm64 (validated on root@51.15.66.128, the arm64 VPS) —
+  commit 5b5a520 fixed SYS_dup2 absence on arm64 by routing uwg_dup2
+  through SYS_dup3 with flags=0
+
+### Phase 1 followup (still TODO)
+
+- ⏳ uwg_listen / uwg_accept / uwg_accept4 for tunnel fds — needs
+  start_tcp_listener + UDP-listener flow lifted from legacy
+  uwgpreload.c. Includes the 0.0.0.0-bind-multiplexes-real-loopback-
+  AND-tunnel behavior (fdproxy multiplex, preload sees only the
+  manager fd).
+- ⏳ Read/write on UDP-connected fds — needs framed datagram helpers
+  (4-byte big-endian length prefix per packet on manager-stream side).
+- ⏳ Send/recv*msg on UDP-listener fds — needs sockaddr-tagged
+  datagram framing.
+- ⏳ DNS-on-:53 forcing (force_dns_stream_fd / force_dns_dgram_fd
+  legacy paths) for connected UDP/TCP sockets to port 53 when DNS
+  interception enabled.
+- ⏳ getsockname / getpeername synthesis (lie to tracee about local/
+  remote addrs being tunnel-side, since the kernel sees a unix
+  socketpair).
+- ⏳ shim_libc/ — replace existing uwgpreload.c hooks with one-liners
+  that call uwg_<op> and wrap -errno → errno+(-1).
+- ⏳ shim_dns/ — migrate existing preload/dns/ unchanged.
+- ⏳ Build integration — make compile.sh produce the new uwgpreload.so
+  built from core + shim_libc + shim_dns instead of the legacy
+  monolithic uwgpreload.c.
+- ⏳ Real integration tests — run tests/preload's stub_client,
+  mixed_client, raw_client, DNS, curl tests under the new wrapper.
+
+### Phase 2 (deferred)
+
+- Static-binary build: `uwgpreload-static` linked freestanding from
+  core only; injection from uwgwrapper via PTRACE_TRACEME-and-mmap
+  trick.
+- Bootstrap supervisor in Go uwgwrapper: thin ptracer that handles
+  PTRACE_EVENT_SECCOMP for execve only and re-arms preload (dynamic)
+  or injects -static (static) into the new image.
+
+### Phase 3 (long tail)
+
+- sendfile / splice / vmsplice / tee / copy_file_range — return
+  -EINVAL for managed-datagram fds.
+- prctl(PR_SET_NO_NEW_PRIVS, 0) / seccomp(2) interception.
+- setuid execve handling.
 
 ## What's NOT in Phase 1
 
