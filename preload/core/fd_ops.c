@@ -155,22 +155,67 @@ long uwg_getsockopt(int fd, int level, int optname, void *val,
                                     (long)val, (long)vlen);
 }
 
+/*
+ * getsockname / getpeername synthesize tunnel-side answers for
+ * proxied fds. The underlying fd is a unix socketpair (the manager-
+ * stream end), so the raw kernel call would return AF_UNIX with
+ * an empty path — useless to the app. Mirror legacy preload:
+ *   getsockname returns AF_INET[6] from state.bind_ip / bind_port
+ *     (or 0.0.0.0 if not yet bound).
+ *   getpeername returns AF_INET[6] from state.remote_ip / remote_port
+ *     for connected/stream kinds; ENOTCONN otherwise.
+ */
 long uwg_getsockname(int fd, struct sockaddr *addr, uint32_t *alen) {
-    /* TODO Phase 1 followup: synthesize tunnel-side bind from
-     * shared state for proxied fds. The kernel would return the
-     * unix-socketpair address (not what the app wants).
-     * For now passthrough — apps may see surprising local addrs
-     * for tunnel fds. */
+    struct tracked_fd state = uwg_state_lookup(fd);
+    if (!state.proxied) {
+        return uwg_passthrough_syscall3(SYS_getsockname, fd, (long)addr,
+                                        (long)alen);
+    }
+    if (state.kind == KIND_TCP_STREAM || state.kind == KIND_TCP_LISTENER ||
+        state.kind == KIND_UDP_CONNECTED || state.kind == KIND_UDP_LISTENER) {
+        /* Family preference: explicit bind_family from a real bind(),
+         * else remote_family (set by connect for stream/connected),
+         * else fall back to socket domain. connect_ops.c doesn't set
+         * bind_family today — bind_port/bind_ip are populated from
+         * the fdproxy OK reply, but the family comes from the
+         * destination not the bind. So prefer remote_family when
+         * bind_family is 0. */
+        int family = state.bind_family
+                         ? state.bind_family
+                         : (state.remote_family
+                                ? state.remote_family
+                                : (state.domain == 10 /* AF_INET6 */ ? 10 : 2));
+        const char *ip = (state.bound && state.bind_ip[0])
+                             ? state.bind_ip
+                             : (family == 10 ? "::" : "0.0.0.0");
+        uint16_t port = state.bound ? state.bind_port : 0;
+        if (!addr || !alen) return -22; /* -EINVAL */
+        return uwg_addr_from_text(family, ip, port, addr, alen);
+    }
     return uwg_passthrough_syscall3(SYS_getsockname, fd, (long)addr,
                                     (long)alen);
 }
 
 long uwg_getpeername(int fd, struct sockaddr *addr, uint32_t *alen) {
-    /* TODO Phase 1 followup: synthesize tunnel-side peer address
-     * from shared state for proxied fds (state.remote_ip + remote_port).
-     * For now passthrough. */
-    return uwg_passthrough_syscall3(SYS_getpeername, fd, (long)addr,
-                                    (long)alen);
+    struct tracked_fd state = uwg_state_lookup(fd);
+    if (!state.proxied) {
+        return uwg_passthrough_syscall3(SYS_getpeername, fd, (long)addr,
+                                        (long)alen);
+    }
+    if (state.kind == KIND_TCP_STREAM || state.kind == KIND_UDP_CONNECTED) {
+        if (!state.remote_port || !state.remote_ip[0]) {
+            return -107; /* -ENOTCONN */
+        }
+        if (!addr || !alen) return -22;
+        int family = state.remote_family
+                         ? state.remote_family
+                         : (state.domain == 10 ? 10 : 2);
+        return uwg_addr_from_text(family, state.remote_ip,
+                                  state.remote_port, addr, alen);
+    }
+    /* Listeners and other unconnected kinds → ENOTCONN, matching
+     * Linux semantics for an unbound TCP listener queried for peer. */
+    return -107; /* -ENOTCONN */
 }
 
 long uwg_shutdown(int fd, int how) {
