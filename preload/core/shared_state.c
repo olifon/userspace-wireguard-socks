@@ -54,11 +54,21 @@
 #include "../shared_state.h"
 #include "syscall.h"
 
-/* Set by uwg_state_init(); read by every dispatcher. NULL until
- * init succeeds. A NULL state means "no shared mmap available" —
- * dispatchers should fall back to "treat fd as non-tunnel and pass
- * through to kernel" (correctness preserved; perf bonus lost). */
-static struct uwg_shared_state *uwg_state;
+/* Set by uwg_state_init(); read by every dispatcher. Points to either
+ * an mmap'd shared file (when UWGS_SHARED_STATE_PATH is set), or to
+ * the in-memory fallback below if init couldn't open the file. The
+ * fallback is what makes phase1.so work as a drop-in replacement for
+ * the legacy preload — no external state-file dependency.
+ *
+ * Static init: magic + version are populated below so dispatchers see
+ * a valid table even before uwg_state_init runs (during early
+ * constructor work, libc init, etc.). The init code transparently
+ * promotes to the shared mmap if the file is available. */
+static struct uwg_shared_state uwg_state_local = {
+    .magic = UWG_SHARED_MAGIC,
+    .version = UWG_SHARED_VERSION,
+};
+static struct uwg_shared_state *uwg_state = &uwg_state_local;
 
 /* Initialization guard. CAS-based — async-signal-safe. */
 static _Atomic int uwg_state_init_state; /* 0=unstarted, 1=in-progress, 2=done */
@@ -142,8 +152,11 @@ int uwg_state_init(void) {
         }
     }
     if (!path || !*path) {
+        /* No shared file → keep the static fallback (uwg_state already
+         * points at uwg_state_local). Dispatchers see a valid table
+         * with magic/version set; everything stays in-process. */
         atomic_store_explicit(&uwg_state_init_state, 2, memory_order_release);
-        return -2; /* -ENOENT — no shared state available */
+        return 0;
     }
 
     long fd = uwg_syscall3(SYS_openat, -100 /* AT_FDCWD */,

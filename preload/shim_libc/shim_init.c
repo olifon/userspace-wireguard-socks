@@ -43,12 +43,16 @@ static void uwg_preload_init(void) {
     if (rc < 0) {
         /* Init failed — most commonly because UWGS_TRACE_SECRET
          * isn't set, meaning this .so was loaded outside an
-         * uwgwrapper-managed run. Print a diagnostic and let the
-         * program continue WITHOUT the filter installed. The
-         * application will see un-wrapped behavior; that's better
-         * than aborting on a benign LD_PRELOAD into an unrelated
-         * process (e.g. systemd-tmpfiles). */
-        const char *msg = "uwgpreload: core init failed (no UWGS_TRACE_SECRET?); running unwrapped\n";
-        fprintf(stderr, "%s", msg);
+         * uwgwrapper-managed run. The shim_libc layer still
+         * works as a drop-in for the legacy preload; we just lose
+         * the SIGSYS+seccomp belt-and-braces against raw asm
+         * syscalls. Print a diagnostic only if UWGS_PRELOAD_VERBOSE
+         * is set so test runs and benign LD_PRELOAD-into-unrelated-
+         * processes (e.g. systemd-tmpfiles) stay quiet. */
+        if (getenv("UWGS_PRELOAD_VERBOSE")) {
+            fprintf(stderr,
+                    "uwgpreload: core init failed (rc=%d, no UWGS_TRACE_SECRET?); shim-only mode\n",
+                    rc);
+        }
     }
 }

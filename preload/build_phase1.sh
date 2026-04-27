@@ -35,6 +35,7 @@ CORE_SRCS=(
 
 SHIM_SRCS=(
     preload/shim_libc/shim_init.c
+    preload/shim_libc/shim_socket.c
 )
 
 OUT="${1:-preload/uwgpreload-phase1.so}"
