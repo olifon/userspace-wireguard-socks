@@ -168,4 +168,12 @@ long uwg_decode_udp_datagram(const void *frame, size_t frame_len,
 int uwg_addr_from_text(int family, const char *ip, uint16_t port,
                        struct sockaddr *sa, uint32_t *sa_len);
 
+/* DNS-on-:53 forcing. See dns_force.c.
+ * uwg_should_force_dns53 returns 1 if connect() to addr should be
+ * diverted through fdproxy's DNS endpoint per UWGS_DNS_MODE.
+ * uwg_force_dns_fd opens that endpoint and dup3s it over `fd`. */
+int  uwg_addr_is_loopback(const struct sockaddr *addr);
+int  uwg_should_force_dns53(const struct sockaddr *addr);
+long uwg_force_dns_fd(int fd, int sock_type);
+
 #endif /* UWG_PRELOAD_CORE_DISPATCH_H */

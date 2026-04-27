@@ -64,6 +64,31 @@ long uwg_connect(int fd, const struct sockaddr *addr, uint32_t alen) {
         return uwg_passthrough_syscall3(SYS_connect, fd, (long)addr, alen);
     }
 
+    /* DNS-on-:53 forcing — checked BEFORE the loopback shortcut so a
+     * connect to 127.0.0.1:53 (resolv.conf style) gets diverted to
+     * fdproxy's DNS endpoint rather than passing through to the
+     * kernel's loopback resolver. */
+    if (uwg_should_force_dns53(addr)) {
+        int sock_type = state.type & SOCK_TYPE_MASK;
+        long rc = uwg_force_dns_fd(fd, sock_type);
+        if (rc < 0) return rc;
+        /* Update remote state so getpeername returns the original
+         * intended dest, not fdproxy's manager-side address. */
+        struct tracked_fd post = uwg_state_lookup(fd);
+        char ip[46]; uint16_t port = 0; int fam = 0;
+        if (uwg_addr_format(addr, ip, sizeof(ip), &port, &fam) == 0) {
+            post.remote_family = fam;
+            post.remote_port = port;
+            size_t i = 0;
+            while (i < sizeof(post.remote_ip) - 1 && ip[i]) {
+                post.remote_ip[i] = ip[i]; i++;
+            }
+            post.remote_ip[i] = 0;
+            (void)uwg_state_store(fd, &post);
+        }
+        return 0;
+    }
+
     /* Loopback → mark inactive, passthrough. */
     if (uwg_addr_is_loopback(addr)) {
         state.active = 0;
