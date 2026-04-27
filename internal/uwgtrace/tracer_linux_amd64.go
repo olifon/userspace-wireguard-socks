@@ -1408,12 +1408,14 @@ func (t *tracer) handleRecvmmsg(tid int, regs unix.PtraceRegs, seccompStop bool)
 	var received uint64
 	for i := uint64(0); i < vlen; i++ {
 		msgPtr := vecPtr + uintptr(i*tracedMMSghdrSize)
-		// After the FIRST successful packet, force MSG_DONTWAIT for
-		// subsequent ones so we don't block the tracee waiting for a
-		// second packet that may never come — this matches the
-		// kernel's recvmmsg behavior (block at most once).
+		// Per recvmmsg(2): without MSG_WAITFORONE, the syscall
+		// blocks until all requested packets arrive (or error /
+		// timeout). With MSG_WAITFORONE, it blocks for the first
+		// packet then returns immediately on subsequent ones.
+		// Faithfully model that behavior so apps depending on the
+		// blocking-N semantics still work.
 		iterFlags := flags
-		if received > 0 {
+		if received > 0 && flags&unix.MSG_WAITFORONE != 0 {
 			iterFlags |= unix.MSG_DONTWAIT
 		}
 		result, handled, err := t.emulateRecvmsg(tid, fd, msgPtr, iterFlags)

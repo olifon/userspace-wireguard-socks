@@ -1425,11 +1425,11 @@ func (t *tracer) handleRecvmmsg(tid int, regs unix.PtraceRegs, seccompStop bool)
 	var received uint64
 	for i := uint64(0); i < vlen; i++ {
 		msgPtr := vecPtr + uintptr(i*tracedMMSghdrSize)
-		// After the first packet, force MSG_DONTWAIT so we don't
-		// block waiting for a hypothetical second packet — matches
-		// the kernel's recvmmsg semantics.
+		// See amd64 handler — only force MSG_DONTWAIT for second-
+		// and-later packets when MSG_WAITFORONE is set; otherwise
+		// recvmmsg's contract is to block until N packets arrive.
 		iterFlags := flags
-		if received > 0 {
+		if received > 0 && flags&unix.MSG_WAITFORONE != 0 {
 			iterFlags |= unix.MSG_DONTWAIT
 		}
 		result, handled, err := t.emulateRecvmsg(tid, fd, msgPtr, iterFlags)
