@@ -53,6 +53,9 @@ func loadBlobIntoTracee(pid int, spec *staticBlobSpec) (base uintptr, err error)
 	if int64(addr) < 0 && int64(addr) >= -4095 {
 		return 0, fmt.Errorf("remote mmap returned errno %d", -int64(addr))
 	}
+	if addr == 0 {
+		return 0, fmt.Errorf("remote mmap returned 0 — execve stop state may not allow remote syscalls (span=%#x)", span)
+	}
 	base = addr
 
 	// Step 2: open blob file, copy each PT_LOAD into the right offset.

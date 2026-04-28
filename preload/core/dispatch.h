@@ -126,6 +126,14 @@ int uwg_install_sigsys_handler(void);
 const int *uwg_seccomp_trapped_list(size_t *n);
 const int *uwg_seccomp_traced_list(size_t *n);
 
+/* Set by uwg_core_init() before uwg_install_seccomp_filter() based
+ * on UWGS_SUPERVISED=1 in the environment. When 1, the seccomp
+ * filter additionally returns RET_TRACE for execve/execveat so a
+ * parent ptrace supervisor (set up by uwgwrapper --transport=
+ * systrap-supervised) can hook every exec boundary and re-arm
+ * injection per static-vs-dynamic. */
+extern int uwg_seccomp_supervised_flag;
+
 /* Shared state operations — see shared_state.c. */
 struct tracked_fd; /* defined in preload/shared_state.h */
 int uwg_state_init(void);

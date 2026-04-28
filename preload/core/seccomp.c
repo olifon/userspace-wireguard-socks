@@ -115,30 +115,50 @@ static const int uwg_trapped_syscalls[] = {
     SYS_rt_sigaction,
 };
 
-/* execve / execveat → RET_TRACE for Phase 2 bootstrap supervisor.
+/* execve / execveat → RET_TRACE for the systrap-supervised mode.
  *
- * Phase 1 caveat: SECCOMP_RET_TRACE with NO tracer attached makes
- * the kernel fail the syscall with -ENOSYS (man seccomp(2)). The
- * Phase 2 bootstrap supervisor will attach a ptracer that handles
- * PTRACE_EVENT_SECCOMP for execve and re-arms preload in the new
- * image. Until that lands, RET_TRACE is unsafe — it would break
- * execve everywhere.
+ * Behaviour switches at runtime based on whether a supervisor is
+ * attached:
  *
- * For Phase 1 we keep this list EMPTY so execve/execveat fall
- * through to the default RET_ALLOW. The trade-off: a wrapped
- * dynamic process that exec's a static binary loses preload
- * coverage. That's the documented Phase 1 limitation.
+ *   - `systrap` (no supervisor): traced list is empty; execve and
+ *     execveat fall through to the default RET_ALLOW. The wrapped
+ *     binary's exec into a static child loses interception (the
+ *     documented systrap limitation — see PHASE2_DESIGN.md and
+ *     docs/reference/wrapper-modes.md).
  *
- * When Phase 2 lands, populate this list with:
- *     SYS_execve,
- *     SYS_execveat,
+ *   - `systrap-supervised` (UWGS_SUPERVISED=1): traced list is
+ *     {SYS_execve, SYS_execveat}; the wrapper attaches a ptrace
+ *     supervisor that catches PTRACE_EVENT_SECCOMP for these and
+ *     re-arms the appropriate injection (LD_PRELOAD propagation
+ *     for dynamic targets, freestanding-blob inject for static).
+ *
+ * Linux's seccomp filter caveat: RET_TRACE with NO tracer
+ * attached makes the kernel fail the syscall with -ENOSYS
+ * (man seccomp(2)). So we MUST only enable the traced entries
+ * when the wrapper has confirmed it's attached as a tracer.
  */
-static const int uwg_traced_syscalls[] = {0}; /* sentinel — not used */
-#define UWG_N_TRACED_REAL 0  /* override count macro below */
+static const int uwg_traced_syscalls_supervised[] = {
+#ifdef SYS_execve
+    SYS_execve,
+#endif
+#ifdef SYS_execveat
+    SYS_execveat,
+#endif
+};
+#define UWG_N_TRACED_SUPERVISED \
+    (sizeof(uwg_traced_syscalls_supervised) / sizeof(uwg_traced_syscalls_supervised[0]))
+
+/* Compile-time sentinel for the unsupervised case. */
+static const int uwg_traced_syscalls_unsupervised[] = {0};
+#define UWG_N_TRACED_UNSUPERVISED 0
 
 #define UWG_N_TRAPPED  (sizeof(uwg_trapped_syscalls) / sizeof(uwg_trapped_syscalls[0]))
-/* Phase 1: traced list is intentionally empty; see comment above. */
-#define UWG_N_TRACED   UWG_N_TRACED_REAL
+
+/* Supervised flag — set by uwg_core_init() in init.c after it reads
+ * UWGS_SUPERVISED from the environment. The seccomp filter builder
+ * reads this to decide whether to add execve/execveat to the
+ * RET_TRACE list. */
+int uwg_seccomp_supervised_flag = 0;
 
 /*
  * Filter program build buffer. Sized to comfortably hold:
@@ -167,8 +187,15 @@ static void uwg_emit(struct uwg_filter_prog *p, struct sock_filter ins) {
  * insn buffer would overflow. Output is a struct sock_fprog that
  * the caller passes to seccomp(2) directly.
  */
-static int uwg_build_filter(struct uwg_filter_prog *p, uint64_t bypass_secret) {
+static int uwg_build_filter(struct uwg_filter_prog *p, uint64_t bypass_secret,
+                            int supervised) {
     p->n = 0;
+    const int *traced = supervised
+        ? uwg_traced_syscalls_supervised
+        : uwg_traced_syscalls_unsupervised;
+    size_t n_traced = supervised
+        ? UWG_N_TRACED_SUPERVISED
+        : (size_t)UWG_N_TRACED_UNSUPERVISED;
 
     /* (1) architecture check */
     uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, UWG_FILTER_ARCH_OFFSET));
@@ -194,12 +221,12 @@ static int uwg_build_filter(struct uwg_filter_prog *p, uint64_t bypass_secret) {
     /* From here on we test the syscall nr. Load it once. */
     uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, UWG_FILTER_NR_OFFSET));
 
-    /* (3) execve / execveat → RET_TRACE
+    /* (3) execve / execveat → RET_TRACE (only when supervised)
      * We emit one JEQ per syscall; a match returns RET_TRACE
      * immediately, otherwise falls through to the trap list. */
-    for (size_t i = 0; i < UWG_N_TRACED; i++) {
+    for (size_t i = 0; i < n_traced; i++) {
         uwg_emit(p, (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
-                                                 uwg_traced_syscalls[i], 0, 1));
+                                                 traced[i], 0, 1));
         uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRACE));
     }
 
@@ -241,8 +268,9 @@ int uwg_install_seccomp_filter(uint64_t bypass_secret) {
         return -22; /* -EINVAL */
     }
 
+    int supervised = uwg_seccomp_supervised_flag;
     struct uwg_filter_prog prog;
-    int rc = uwg_build_filter(&prog, bypass_secret);
+    int rc = uwg_build_filter(&prog, bypass_secret, supervised);
     if (rc < 0) {
         return rc;
     }
@@ -277,6 +305,12 @@ const int *uwg_seccomp_trapped_list(size_t *n) {
 }
 
 const int *uwg_seccomp_traced_list(size_t *n) {
-    if (n) *n = UWG_N_TRACED;
-    return uwg_traced_syscalls;
+    /* Returns the active traced list based on the supervised flag.
+     * When supervised, includes execve/execveat; otherwise empty. */
+    if (uwg_seccomp_supervised_flag) {
+        if (n) *n = UWG_N_TRACED_SUPERVISED;
+        return uwg_traced_syscalls_supervised;
+    }
+    if (n) *n = UWG_N_TRACED_UNSUPERVISED;
+    return uwg_traced_syscalls_unsupervised;
 }

@@ -182,8 +182,13 @@ int uwg_core_init(void) {
     rc = uwg_install_sigsys_handler();
     if (rc < 0) return rc;
 
-    /* (5) seccomp filter — last; once this is in place we can't
-     * undo it. */
+    /* (5) Seccomp filter — last; once this is in place we can't
+     * undo it. UWGS_SUPERVISED=1 in the env tells the filter
+     * builder to additionally route SYS_execve/SYS_execveat to
+     * RET_TRACE for the systrap-supervised supervisor. The wrapper
+     * sets this env when transport=systrap-supervised. */
+    const char *sup = uwg_getenv("UWGS_SUPERVISED");
+    uwg_seccomp_supervised_flag = (sup && *sup == '1') ? 1 : 0;
     rc = uwg_install_seccomp_filter(uwg_bypass_secret);
     if (rc < 0) return rc;
 

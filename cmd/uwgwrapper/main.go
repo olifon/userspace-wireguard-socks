@@ -251,21 +251,28 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 	// .so constructor installs both. Static-binary descendants of
 	// fork+exec lose interception (no LD_PRELOAD path on static).
 	systrapRun := func() { preloadInner(false) }
-	// systrapSupervisedRun: same as systrapRun today, but
-	// semantically the slot for the Phase 1.5+2 fusion (an execve-
-	// only ptrace supervisor that re-arms across dynamic↔static
-	// boundaries). Until the supervisor lands, this is identical
-	// to systrapRun. The mode name is reserved so users can opt in
-	// once it ships.
+	// systrapSupervisedRun: LD_PRELOAD + seccomp + SIGSYS handler
+	// in-process (same as systrap), PLUS a long-running ptrace
+	// supervisor that catches SECCOMP_RET_TRACE on execve /
+	// execveat and re-arms across dynamic↔static boundaries:
+	//   - dynamic exec child → LD_PRELOAD propagates; supervisor
+	//     watches the exec event but does no injection (the
+	//     constructor will re-arm).
+	//   - static exec child → supervisor injects the freestanding
+	//     blob (same machinery as systrap-static) at the post-exec
+	//     stop and lets uwg_static_init run, then resumes the
+	//     child.
+	// See cmd/uwgwrapper/systrap_supervisor.go for the loop.
 	systrapSupervisedRun := func() {
-		// TODO(phase1.5): attach an execve supervisor here that
-		// catches SECCOMP_RET_TRACE on execve/execveat and
-		// re-arms the appropriate injection (LD_PRELOAD for
-		// dynamic, blob inject for static). For now, runs as
-		// plain systrap; ptrace probe was already done by auto
-		// (or by an explicit user pick — log a hint).
-		log.Println("uwgwrapper: systrap-supervised: execve supervisor not yet implemented; running plain systrap. dynamic↔static execve transitions not yet handled. Track the systrap-supervised feature in PHASE1_5_DESIGN.md.")
-		preloadInner(false)
+		blob := os.Getenv("UWGS_STATIC_BLOB")
+		if blob == "" {
+			blob = staticBlobPath()
+		}
+		_ = shared.Close(false)
+		if err := runSystrapSupervised(target, progArgs, env, preloadPath, blob); err != nil {
+			log.Fatalf("systrap-supervised failed: %v", err)
+		}
+		os.Exit(0)
 	}
 	libcOnlyRun := func() { preloadInner(true) }
 
@@ -429,8 +436,9 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 		ptraceOK := probePtraceAvailable()
 		switch {
 		case seccompOK && ptraceOK:
-			// Slot for systrap-supervised. Today this is plain
-			// systrap with a heads-up log line.
+			// Best correctness + performance: real systrap-
+			// supervised (LD_PRELOAD + seccomp + SIGSYS in-
+			// process + execve-only ptrace supervisor).
 			systrapSupervisedRun()
 		case seccompOK:
 			systrapRun()
