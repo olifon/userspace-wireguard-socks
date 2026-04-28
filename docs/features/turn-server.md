@@ -245,9 +245,13 @@ for the WG protocol, not a generic UDP forwarder.
   means the cap is too low or someone is flooding (still bounded
   memory, but a flooder is using up the slots fresh peers would
   use).
-- TURN credentials themselves can stay loose (or even open, with
-  the right `permission_policy` — see "permission policy" below).
-  The guard is doing the real work, not the credentials.
+- Keep your TURN credentials secret — they're how the WireGuard
+  server behind NAT opens its allocation. The guard's job is
+  filtering the UNTRUSTED side (random UDP from any internet
+  source attempting to use the relay); the credentials guard
+  the TRUSTED side (your WG server's egress through the
+  allocation). Both layers matter; the guard does not replace
+  credential secrecy, it complements it.
 
 The fuzz target `FuzzWireguardGuardProcessInbound` runs in tier-3
 release CI for 30 seconds per release, throwing random bytes at
