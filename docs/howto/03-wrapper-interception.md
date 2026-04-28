@@ -127,7 +127,7 @@ Linux binary" than to a normal proxy helper. See
 [10 Minecraft Soak](10-minecraft-soak.md) for a concrete walkthrough
 of `transport=systrap` with a Java/JVM workload binding via
 `/uwg/socket` (Paper Minecraft 1.21.11 inside `uwgwrapper`), and
-[`docs/reference/wrapper-modes.md`](../reference/wrapper-modes.md)
+[`docs/features/transparent-wrapper.md`](../features/transparent-wrapper.md)
 for the full mode comparison + per-host-shape `auto` cascade.
 
 ## Caveat: static binaries on hosts that block ptrace
@@ -161,5 +161,5 @@ Concretely:
   that allows ptrace.
 
 Both situations are documented in
-[`docs/reference/wrapper-modes.md`](../reference/wrapper-modes.md)'s
+[`docs/features/transparent-wrapper.md`](../features/transparent-wrapper.md)'s
 host-shape compatibility table.

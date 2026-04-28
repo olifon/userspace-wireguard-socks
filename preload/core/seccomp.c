@@ -124,7 +124,7 @@ static const int uwg_trapped_syscalls[] = {
  *     execveat fall through to the default RET_ALLOW. The wrapped
  *     binary's exec into a static child loses interception (the
  *     documented systrap limitation — see PHASE2_DESIGN.md and
- *     docs/reference/wrapper-modes.md).
+ *     docs/features/transparent-wrapper.md).
  *
  *   - `systrap-supervised` (UWGS_SUPERVISED=1): traced list is
  *     {SYS_execve, SYS_execveat}; the wrapper attaches a ptrace

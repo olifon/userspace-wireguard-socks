@@ -120,15 +120,15 @@ Deep reference docs:
 
 - [Configuration behavior](docs/reference/configuration.md)
 - [Full config map](docs/reference/config-reference.md)
-- [ACL model](docs/reference/acls.md)
-- [Mesh control](docs/reference/mesh-control.md)
-- [Proxy routing order](docs/reference/proxy-routing.md)
+- [ACL model](docs/features/relay-and-acls.md)
+- [Mesh control](docs/features/mesh-coordination.md)
+- [Proxy routing order](docs/features/proxies-and-forwards.md)
 - [Socket protocol](docs/reference/socket-protocol.md)
-- [Transport modes](docs/reference/transport-modes.md) (outer WireGuard transports)
-- [Wrapper transport modes](docs/reference/wrapper-modes.md) (`uwgwrapper` interception modes)
-- [TURN integration and relay modes](docs/reference/turn.md)
+- [Transport modes](docs/features/transports.md) (outer WireGuard transports)
+- [Wrapper transport modes](docs/features/transparent-wrapper.md) (`uwgwrapper` interception modes)
+- [TURN integration and relay modes](docs/features/turn-server.md)
 - [Compatibility](docs/reference/compatibility.md)
-- [Testing](docs/reference/testing.md)
+- [Testing](docs/contributing/testing.md)
 - [Standalone TURN daemon](turn/README.md)
 
 ## Platform Snapshot
@@ -140,6 +140,19 @@ Deep reference docs:
 
 See [docs/reference/compatibility.md](docs/reference/compatibility.md) for the
 current matrix and caveats.
+
+## Documentation
+
+Full docs at [docs/README.md](docs/README.md). Structure:
+
+- **features/** — what `uwgsocks` does (tunneling, transports,
+  proxies, mesh, relay/ACLs, transparent wrapper, host-TUN).
+- **operations/** — running it in production (deployment,
+  observability, runbook).
+- **reference/** — YAML schema, API endpoints, wire formats.
+- **contributing/** — testing, architecture, security conventions.
+- **howto/** — task-shaped recipes (simple client, mesh, TURN
+  ingress, Minecraft soak, etc).
 
 ## Companion Project
 

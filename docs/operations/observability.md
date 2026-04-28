@@ -39,6 +39,58 @@ A separate listener with a separate token (or no token) lets the operator
 firewall metrics off to the monitoring VPN, share the scrape secret with
 dashboards safely, and rotate it independently of the admin token.
 
+## Metric format reference (for dashboard authors)
+
+The Prometheus exposition follows the standard format. For each
+metric you'll add to a dashboard, the table below tells you exactly
+what to expect.
+
+| Metric name | Type | Labels | Unit | Increments / Reads | Useful PromQL |
+|---|---|---|---|---|---|
+| `uwgsocks_build_info` | gauge | `version`, `go_version`, `lite` | (always 1) | startup only | `uwgsocks_build_info` (instant value, single label set) |
+| `uwgsocks_peers` | gauge | none | count | recomputed at scrape | `uwgsocks_peers` (point-in-time) |
+| `uwgsocks_peers_handshaked` | gauge | none | count | recomputed at scrape | `uwgsocks_peers - uwgsocks_peers_handshaked` (peers down) |
+| `uwgsocks_dynamic_peers` | gauge | none | count | recomputed at scrape | `uwgsocks_dynamic_peers` |
+| `uwgsocks_active_connections` | gauge | none | count | recomputed at scrape | `uwgsocks_active_connections` |
+| `uwgsocks_relay_conntrack_flows` | gauge | none | count | recomputed at scrape | `uwgsocks_relay_conntrack_flows` (alert when growing without bound) |
+| `uwgsocks_bytes_received_total` | counter | none | bytes | per-packet inc | `rate(uwgsocks_bytes_received_total[1m])` (Bps) |
+| `uwgsocks_bytes_transmitted_total` | counter | none | bytes | per-packet inc | `rate(uwgsocks_bytes_transmitted_total[1m])` (Bps) |
+| `uwgsocks_tcp_retransmits_total` | counter | none | count | gVisor TCP retransmit | `rate(uwgsocks_tcp_retransmits_total[1m])` (loss proxy) |
+| `uwgsocks_mesh_requests_total` | counter | `result` ∈ {`ok`, `rate_limited`, `auth_failed`} | count | per-request inc | `rate(uwgsocks_mesh_requests_total[1m]) by (result)` |
+| `uwgsocks_turn_carrier_drops_total` | counter | none | count | drops on full carrier ch | spike = TURN carrier saturation |
+| `uwgsocks_socks_connections_capped_total` | counter | none | count | SOCKS5 over-cap reject | spike = client misbehaving or cap too low |
+| `uwgsocks_conntrack_refusals_total` | counter | none | count | relay-flow refused | spike = conntrack sized too small / flood |
+| `uwgsocks_roaming_endpoint_changes_total` | counter | none | count | per-peer endpoint flip | spike = NAT instability or attack |
+| `uwgsocks_peer_bytes_received_total` | counter | `peer` (WG pubkey) | bytes | per-peer per-packet | `rate(uwgsocks_peer_bytes_received_total[1m])` per peer (opt-in: `per_peer_detail: true`) |
+| `uwgsocks_peer_bytes_transmitted_total` | counter | `peer` | bytes | per-peer per-packet | per-peer egress (opt-in) |
+| `uwgsocks_peer_last_handshake_unix_seconds` | gauge | `peer` | unix seconds | recomputed at scrape | `time() - uwgsocks_peer_last_handshake_unix_seconds` = handshake age |
+
+### Per-label expansion notes
+
+- `peer` label values are WireGuard public keys (base64). Public
+  keys are public; the label is safe to expose to scrape jobs.
+- `result` on `uwgsocks_mesh_requests_total` is exactly three values
+  with the spellings above — case-sensitive.
+- `version`, `go_version`, `lite` on `uwgsocks_build_info` are
+  set once at process start and don't change.
+
+### Type semantics
+
+- **counter**: monotonically increasing across the process
+  lifetime. Resets to 0 at process restart. Use `rate()` /
+  `increase()`, never the raw value.
+- **gauge**: instantaneous value at scrape time. Use directly.
+
+### Alert thresholds (suggested starting points)
+
+| Condition | PromQL | Why |
+|---|---|---|
+| Peer not handshaking | `(uwgsocks_peers - uwgsocks_peers_handshaked) > 0 for 5m` | Static peer offline |
+| Mesh-control auth failures | `rate(uwgsocks_mesh_requests_total{result="auth_failed"}[5m]) > 0` | Wrong PSK or replay attack |
+| Conntrack at capacity | `rate(uwgsocks_conntrack_refusals_total[5m]) > 0` | Flow table full |
+| Endpoint flapping | `rate(uwgsocks_roaming_endpoint_changes_total[5m]) > 1` | NAT instability |
+| Roaming-no-handshake | `(time() - uwgsocks_peer_last_handshake_unix_seconds) > 600` | Per-peer (opt-in) — peer dead |
+
 ## What's exposed in v1
 
 ### Standard collectors (always on)

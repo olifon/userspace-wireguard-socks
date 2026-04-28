@@ -13,29 +13,29 @@ full behavioral contract.
 
 - [Configuration behavior](../reference/configuration.md)
 - [Full config map](../reference/config-reference.md)
-- [ACL model](../reference/acls.md)
-- [Mesh control](../reference/mesh-control.md)
-- [Proxy routing order](../reference/proxy-routing.md)
+- [ACL model](../features/relay-and-acls.md)
+- [Mesh control](../features/mesh-coordination.md)
+- [Proxy routing order](../features/proxies-and-forwards.md)
 - [Socket protocol](../reference/socket-protocol.md)
-- [Transport modes](../reference/transport-modes.md)
-- [TURN integration and relay modes](../reference/turn.md)
+- [Transport modes](../features/transports.md)
+- [TURN integration and relay modes](../features/turn-server.md)
 - [Compatibility matrix](../reference/compatibility.md)
-- [Testing notes](../reference/testing.md)
-- [Security model](../reference/security-model.md)
-- [Metrics](../reference/metrics.md)
+- [Testing notes](../contributing/testing.md)
+- [Security model](../contributing/security-conventions.md)
+- [Metrics](../operations/observability.md)
 - [Standalone TURN daemon](../../turn/README.md)
 
 ## What To Read For Specific Jobs
 
-- Tuning routing decisions: [Proxy routing order](../reference/proxy-routing.md)
+- Tuning routing decisions: [Proxy routing order](../features/proxies-and-forwards.md)
 - Editing YAML safely: [Full config map](../reference/config-reference.md)
-- Understanding policy and mesh-distributed ACLs: [ACL model](../reference/acls.md)
-- Understanding controller auth and peer distribution: [Mesh control](../reference/mesh-control.md)
+- Understanding policy and mesh-distributed ACLs: [ACL model](../features/relay-and-acls.md)
+- Understanding controller auth and peer distribution: [Mesh control](../features/mesh-coordination.md)
 - Building custom clients or sidecars: [Socket protocol](../reference/socket-protocol.md)
-- Understanding transport tradeoffs: [Transport modes](../reference/transport-modes.md)
-- Running hidden servers behind a TURN edge: [TURN integration and relay modes](../reference/turn.md)
+- Understanding transport tradeoffs: [Transport modes](../features/transports.md)
+- Running hidden servers behind a TURN edge: [TURN integration and relay modes](../features/turn-server.md)
 - Platform caveats: [Compatibility matrix](../reference/compatibility.md)
-- Trust boundaries, untrusted/trusted sources, and explicit non-goals: [Security model](../reference/security-model.md)
+- Trust boundaries, untrusted/trusted sources, and explicit non-goals: [Security model](../contributing/security-conventions.md)
 
 ## For contributors changing the code
 

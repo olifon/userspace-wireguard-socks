@@ -47,7 +47,7 @@ type Config struct {
 	MeshControl MeshControl `yaml:"mesh_control"`
 	// Routing chooses the order in which the engine resolves a
 	// destination IP across the available tunnel/peer/proxy paths
-	// (see docs/reference/proxy-routing.md).
+	// (see docs/features/proxies-and-forwards.md).
 	Routing Routing `yaml:"routing"`
 	// TUN is the optional host-TUN backend. When `enabled: true`
 	// the engine creates a real TUN device and adds routes for
@@ -121,7 +121,7 @@ type Config struct {
 // It is hosted on a separate listener from the admin API so the scrape
 // secret can be a different one (or none) — Prometheus scrape configs are
 // commonly committed to git or shared across teams, and we don't want that
-// secret to imply admin access. See docs/reference/metrics.md.
+// secret to imply admin access. See docs/operations/observability.md.
 type Metrics struct {
 	// Listen is the TCP host:port (or "unix:/path") for the metrics
 	// endpoint. Empty disables the metrics subsystem entirely.

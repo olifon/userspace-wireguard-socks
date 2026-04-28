@@ -30,5 +30,5 @@ See also:
 
 - `docs/howto/README.md`
 - `docs/howto/07-turn-relay-ingress.md`
-- `docs/reference/transport-modes.md`
+- `docs/features/transports.md`
 - `docs/reference/config-reference.md`

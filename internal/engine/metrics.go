@@ -255,7 +255,7 @@ func (e *Engine) buildMetricsRegistry() *prometheus.Registry {
 // resolution path, because the latter would require touching every
 // transport and is the kind of cross-cutting change the audit warned
 // against. Tradeoff: a peer that roams twice between polls counts as one
-// change. Documented in docs/reference/metrics.md.
+// change. Documented in docs/operations/observability.md.
 const metricsRoamingPollInterval = 30 * time.Second
 
 func (m *metricsState) runRoamingPoller(e *Engine) {

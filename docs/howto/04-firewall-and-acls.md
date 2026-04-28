@@ -76,7 +76,7 @@ get “allow one service” instead of “allow everything that looks vaguely re
 Mesh adds one more layer on top: the relay can distribute projected dynamic ACLs
 to peers that enforce them locally, so direct paths and relay fallback still
 stay aligned. The deeper mechanics are in
-[ACL model](../reference/acls.md) and [Mesh control](../reference/mesh-control.md).
+[ACL model](../features/relay-and-acls.md) and [Mesh control](../features/mesh-coordination.md).
 
 ## Runtime Updates
 

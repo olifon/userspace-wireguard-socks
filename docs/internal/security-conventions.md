@@ -4,7 +4,7 @@
 # Security conventions (internal)
 
 This is the developer-facing companion to
-[`docs/reference/security-model.md`](../reference/security-model.md). The
+[`docs/contributing/security-conventions.md`](../contributing/security-conventions.md). The
 reference doc tells operators *what* the daemon defends against; this doc
 tells contributors *how those defenses are implemented* and the patterns
 to follow when changing them.
@@ -184,7 +184,7 @@ A short checklist before you open the PR:
 1. Did you read the relevant per-surface section above?
 2. Did you preserve every invariant the section enumerates?
 3. If you removed an invariant, did you update both this doc and
-   `docs/reference/security-model.md`?
+   `docs/contributing/security-conventions.md`?
 4. Does your change cross a lock boundary? Re-read the lock map for
    the affected package.
 5. Did you add a regression test under `tests/malicious/` for the
