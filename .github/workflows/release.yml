@@ -170,6 +170,26 @@ jobs:
           set -euo pipefail
           UWGS_STRESS=1 go test -race ./internal/fdproxy -run TestStress -count=1 -timeout 60s
 
+      # 5-peer mesh chaos: foundation (clean topology, byte-exact
+      # cross-mesh transfers) + lossy-direct-path (symmetric 5%
+      # loss + 20ms jitter UDP middleman, inner TCP retransmits
+      # must absorb the loss). Runs only on Linux release-test
+      # entries (the chaos proxy is loopback-UDP, no need to
+      # multiply across platforms — the engine code path is
+      # identical). Continue-on-error so a chaos-flake doesn't
+      # gate publishing; we want signal, not a blocker.
+      - name: Mesh chaos test
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        env:
+          UWGS_RUN_MESH_CHAOS: "1"
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -count=1 -timeout 240s \
+            -run 'TestMeshChaosResume_(Foundation|LossyDirectPath)' \
+            ./internal/engine/
+
       # Fuzz the strict wg-quick parser and the ACL rule parser for a
       # short window on every release-CI platform — different OS file-
       # IO timing surfaces different fuzzed paths. The seed corpus
