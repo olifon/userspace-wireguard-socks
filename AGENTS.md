@@ -370,16 +370,57 @@ It depends on Linux-specific pieces:
 Do not assume portability to macOS/BSD. `uwgsocks` itself is broadly portable;
 `uwgwrapper` is not. Treat wrapper portability as a separate project.
 
-Wrapper modes:
-- preload-only
-- ptrace-assisted
-- seccomp-assisted tracing on supported Linux arches
+### Wrapper modes (post-Phase 2 rename)
+
+Note: the old names `preload-only`, `ptrace-assisted`, `seccomp-assisted-tracing`
+have been REPLACED. Do not use them. Current modes (`-transport=<name>`):
+
+- `preload`: pure libc-symbol interposition. Lowest overhead, dynamic-libc
+  binaries only, no kernel-trap involvement.
+- `systrap`: SIGSYS+seccomp BPF kernel-trap path. Catches direct syscalls that
+  bypass libc (Go statically-linked binaries that don't go through libc, etc).
+  Phase 1.
+- `systrap-static`: like `systrap`, but with a freestanding-runtime preload
+  that has zero libc dependency. For static binaries that lack a dynamic
+  loader (musl-static, fully-statically-linked Go programs). Phase 2.
+- `systrap-supervised`: ptrace-supervised systrap. The ptracer re-arms the
+  preload across `execve` boundaries — including dynamic→static and the
+  Chromium zygote fork+exec model. Phase 1.5+2 fusion.
+- `ptrace`: ptrace-only fallback for hosts where seccomp BPF or RET_TRAP isn't
+  available (some containers). Slowest path.
+- `auto` (default): probes the host and the target binary, picks the fastest
+  viable mode. Cascade order: `systrap-supervised` → `systrap` → `systrap-static`
+  → `ptrace` → `preload`. Falls back fast on a static-target × no-ptrace host
+  rather than silently mis-routing.
+- `ptrace-seccomp`: legacy mode kept for diagnostic comparison. Excluded from
+  the auto cascade — never selected unless requested explicitly.
+
+The authoritative perf comparison + host-shape compatibility matrix:
+- `docs/howto/wrapper-modes.md`
+
+### Wrapper specifics worth knowing
+
+- The published `cmd/uwgwrapper/assets/uwgpreload.so` is intentionally built
+  against `ubuntu:18.04` (glibc 2.17) so it runs on every supported host
+  baseline. Do NOT downgrade or remove that base in `.github/workflows/release.yml`.
+- musl-arm64 needed an explicit `msghdr`-zero before populating sendmsg fields;
+  uninitialized padding caused ENOBUFS. See `preload/core/`.
+- The fxlock primitive had a bug in `try_wrlock` where the post-CAS
+  reader-slipped-in retry path missed a `FUTEX_WAKE` for parked writers; this
+  was fixed and a regression test exists. Do not regress.
+- Phase 2's freestanding runtime (`preload/core/freestanding_runtime.c`) is
+  the non-libc shim. `build_static.sh` produces the freestanding `.so`.
+- `systrap-supervised` validated: dynamic→static execve seamless (incl.
+  Chromium full zygote model rendering YouTube under real-internet smoke).
+  The Chromium amd64 GH-runner-specific hang is a known continue-on-error
+  matrix item; it reproduces in 8s on the self-hosted amd64 runner so it's
+  not a blocker.
 
 Key dirs:
-- `preload/`
-- `internal/uwgtrace/`
-- `internal/fdproxy/`
-- `cmd/uwgwrapper/`
+- `preload/` (legacy LD_PRELOAD shim) and `preload/core/` (Phase 1+2 sources)
+- `internal/uwgtrace/` (ptrace+seccomp engine, supervisor)
+- `internal/fdproxy/` (socket bridge to uwgsocks)
+- `cmd/uwgwrapper/` (CLI entry, supervisor glue, embedded assets)
 
 ## Lite build
 There is now a `lite` build tag for a reduced feature set intended for
@@ -458,30 +499,101 @@ Current release workflows publish:
 
 across the configured OS/arch matrix in `.github/workflows/release.yml`.
 
-## CI/testing model
-This repo is heavily test-driven and relies on a wide mix of test styles.
+## CI/testing model — three-tier cadence
 
-Important suites:
-- `go test ./...`
-- malicious cases in `tests/malicious`
-- preload/wrapper coverage in `tests/preload`
-- soak tests in `tests/soak`
-- host-TUN smoke tests behind env flags
-- BSD real-host validation has been done manually on real hosts
+This repo deliberately splits tests into three tiers by cost. The split is
+load-bearing — do not collapse them, do not move chaos/soak/fuzz into the
+fast tier, and do not drop the pre-commit budget:
 
-Useful commands:
+### Tier 1 — pre-commit hook (≤ 10s wall, target ~5s)
+
+`scripts/precommit.sh`. Symlinkable into `.git/hooks/pre-commit`. Runs:
+1. `gofmt -l` on staged `.go` files.
+2. `clang-format --dry-run --Werror` on staged `.c` / `.h` files (tolerates
+   absence so contributors without clang-format don't get blocked).
+3. Doc-link sanity (broken markdown link grep — we've had a few).
+4. `go test -short -count=1 -timeout 30s ./...` — fast unit tests only.
+
+Heavy integration tests opt out via `if testing.Short() { t.Skip(...) }`. The
+load-bearing helpers that gate this:
+- `mustStart` (full WG engine — `internal/engine/integration_test.go`)
+- `mustStartMeshEngine` (mesh-control engine — `mesh_control_test.go`)
+- `requirePhase1Toolchain`, `requireWrapperToolchain` (preload/wrapper builds)
+- `TestLDPreloadManagedTCPUDPConnect`, `TestPreloadDNS` (slow preload tests)
+
+Goal of `-short` mode: "would this catch a typo or a logic regression in code
+the dev just wrote?" — NOT "is this test valuable in general?" Be ruthless.
+Above the 10s ceiling devs reflexively start using `--no-verify`, defeating
+the hook entirely. Pure-logic tests (packet parsers, ACL ordering, SOCKS
+codecs, relay conntrack table) STAY in `-short`; anything bringing up a full
+engine + WireGuard + netstack SKIPS.
+
+### Tier 2 — `test.yml` per push (minutes)
+
+`go test ./...` and the lite/race/exotic-arch matrix. Runs on every push and
+PR. Target: under ~10 minutes per matrix entry. Catches mid-tier regressions
+that didn't fire in the fast tier.
+
+### Tier 3 — `release.yml` tag-triggered only (longer)
+
+Chaos / soak / fuzz / multi-glibc / gVisor smoke. ONLY runs on tag pushes.
+DO NOT add these steps to `test.yml` — that would slow PR feedback for every
+developer push. Current Tier-3 steps:
+
+- Mesh chaos suite — `TestMeshChaosResume_(Foundation|LossyDirectPath|
+  AdvertisedEndpointThroughNAT|RelayFailoverOn100PercentDrop)`. UWGS_RUN_MESH_CHAOS=1.
+  BLOCKING (no continue-on-error) — a real chaos failure stops the release.
+- Wrapper fuzz (wg-quick parser, ACL parser, config parser) ~30s each.
+- gVisor smoke — `uwgwrapper preload curl example.com` + `uwgwrapper systrap
+  curl example.com` under `runsc do --network=host`. amd64 only initially.
+- Phase 2 multi-glibc matrix (Ubuntu 18.04 baseline + musl + arm64).
+
+Useful local commands:
 ```bash
 bash compile.sh
-go test ./...
+go test -short ./...                                    # tier 1
+go test ./...                                           # tier 2
 go test -race ./internal/config ./internal/engine ./tests/malicious ./tests/preload
 go test -tags lite ./...
+UWGS_RUN_MESH_CHAOS=1 go test -count=1 -timeout 900s \  # tier 3 (mesh chaos)
+  -run 'TestMeshChaosResume_' ./internal/engine/
+UWGS_STRESS=1 go test ./internal/engine/                # tier 3 (4-peer mesh)
 ```
 
-Real host-TUN smoke tests are gated by env vars like:
+### Mesh chaos infrastructure
+
+`internal/engine/mesh_chaos_proxy_test.go` defines `chaosProxy`: a
+single-socket UDP middleman with full-cone NAT semantics. Single-socket is
+load-bearing — an earlier two-socket version exposed the upstream-dial
+ephemeral port to the recipient, breaking mesh-control endpoint
+advertisement (the advertised port wasn't reachable from other peers).
+The single socket also lets the same proxy address serve as both "outbound
+from local peer" and "inbound to local peer" in the production NAT shape.
+
+Chaos test files (all `//go:build !lite`, gated by `UWGS_RUN_MESH_CHAOS=1`,
+`-short`-skipped):
+- `mesh_5peer_chaos_test.go` — 5-peer foundation + lossy-direct-path 2-peer.
+- `mesh_chaos_advertised_endpoint_test.go` — pins NAT-translation
+  invariants: hub learns peer-source = proxy.Addr; mesh-control advertises
+  proxy addrs; relay-routed transfers survive 5%/20ms loss on BOTH legs.
+- `mesh_chaos_relay_failover_test.go` — 100%-drop on direct path triggers
+  `dp.Active=false` → automatic relay failover. Wall ~127s.
+
+### Mesh-control timing gotcha
+
+`MeshControl.ActivePeerWindowSeconds` defaults to 120 — DO NOT lower it for
+test convenience. Values < ~120 conflict with wireguard-go's 120s rekey
+cadence: `LastHandshakeTime` fluctuates above the window between rekeys, so
+the hub intermittently stops advertising peers and clients drop them from
+their dynamic-peer table mid-session. 120s is the smallest stable window.
+
+### Other test gates
+
+Real host-TUN smoke tests:
 - `UWG_TEST_REAL_TUN=1`
 - `UWG_TEST_REAL_TUN_DEFAULT=1`
 
-There is also a helper for emulated exotic-arch runs:
+Helper for emulated exotic-arch runs:
 - `tests/test-exotic-arches.sh`
 
 Important nuance:
@@ -541,3 +653,52 @@ Read these before large behavioral changes:
   generic Unix portability.
 - For UI/control-plane behavior, remember `simple-wireguard-server` may depend
   on runtime API compatibility and generated config semantics.
+
+## Collaboration model (user preferences)
+
+The repo owner has been explicit about how they want autonomous agents to
+work this codebase:
+
+- **Iterate to solid-green batches, then review.** Don't ping per-test or
+  per-fix; commit between milestones, push when a coherent batch is green.
+- **Tests must be mean and hard.** Production-faithful chaos beats happy-path
+  smoke. If a test isn't exercising the real failure mode (e.g. naive
+  `dp.Active=false` toggle isn't a faithful "WG path died" simulation),
+  flag it and design the harder version.
+- **Tier-1 chaos in release.yml is BLOCKING.** No `continue-on-error` on
+  real chaos. The escape hatch is: re-run with the step disabled manually
+  after confirming it was an environment flake. Don't silence failures
+  pre-emptively.
+- **Pre-commit budget is hard ≤10s.** ~5s preferred. Above 10s users
+  reflexively `--no-verify`. When in doubt, `-short`-skip rather than tune.
+- **One commit at a time, push to origin between milestones.** If something
+  goes sideways the bisect surface stays small.
+- **Multi-kernel QEMU matrix is a separate-branch project** (`kernel-matrix`,
+  ~2 days). Don't try to land it on `main` in a single sweep.
+- **gVisor matters.** `uwgwrapper` was designed for syscall-restricted
+  sandboxes — gVisor is exactly that audience. Smoke step in release.yml
+  (amd64 only initially) is the canary.
+
+### Test-host shortcut (faster than CI)
+
+Two real-internet test hosts are available for iterating when CI feedback is
+too slow:
+- `ssh root@51.159.237.61` (amd64)
+- `ssh root@51.15.66.128` (arm64)
+
+Use these to repro flake-class issues that need real-network or real-arch
+behavior before pushing — especially Chromium-amd64 / chrome-headless-shell
+interactions that misbehave on GH runners but reproduce in 8s on the
+self-hosted amd64 box.
+
+### Coding-style reminders worth re-stating
+
+- **Don't add helper bloat.** A homegrown `errChainf`+`sprintfTest` to avoid
+  importing `fmt` is not the win you think it is — review feedback rejected
+  this once already. Just import `fmt`.
+- **Avoid `--no-verify`, `--no-gpg-sign`, `--amend` of pushed commits.** All
+  three have bitten this repo.
+- **No emojis unless requested.** No README/MD files unless requested.
+- **Comments earn their keep.** Default to no comment. Add one only when the
+  WHY is non-obvious (a hidden constraint, a workaround for a specific
+  bug, an invariant that would surprise a reader).
