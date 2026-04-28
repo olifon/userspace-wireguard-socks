@@ -597,6 +597,15 @@ func Default() Config {
 			TCPMSSClamp:                 boolPtr(true),
 			ReplyICMP:                   boolPtr(true),
 			ICMPRateLimitPerSec:         10,
+			// Inbound transparent connections are capped by default
+			// to bound the connTable. The M6 security audit flagged
+			// the previous unbounded default: a SYN flood would
+			// allocate trackedConn entries indefinitely. 16384 is
+			// well above any realistic single-host workload (most
+			// production tunnels see < 200 concurrent flows) and
+			// keeps the table at < 2 MiB even at the cap.
+			MaxConnections:              16384,
+			MaxConnectionsPerPeer:       4096,
 			ConnectionTableGraceSeconds: 30,
 			TCPReceiveWindowBytes:       1 << 20,
 			TCPMaxBufferedBytes:         256 << 20,

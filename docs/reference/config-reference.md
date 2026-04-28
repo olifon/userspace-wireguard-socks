@@ -370,10 +370,10 @@ host network through redirected connections.
   - **`icmp_rate_limit_per_sec`** (int) — default: `10`  
     Per-peer ICMP reply rate limit.
 
-  - **`max_connections`** (int)  
+  - **`max_connections`** (int) — default: `16384`  
     Global inbound connection cap; 0 means unlimited.
 
-  - **`max_connections_per_peer`** (int)  
+  - **`max_connections_per_peer`** (int) — default: `4096`  
     Per-peer inbound connection cap; 0 means unlimited.
 
   - **`connection_table_grace_seconds`** (int) — default: `30`  
@@ -508,7 +508,7 @@ coordination.md for the full protocol.
 
 Routing chooses the order in which the engine resolves a
 destination IP across the available tunnel/peer/proxy paths
-(see docs/reference/proxy-routing.md).
+(see docs/features/proxies-and-forwards.md).
 
   ```yaml
   routing:
