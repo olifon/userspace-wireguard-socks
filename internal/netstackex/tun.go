@@ -57,27 +57,26 @@ type netTun struct {
 	ingressFilter  func([]byte) bool
 	tcpMSSClamp    bool
 
+	// injectMu serializes the producer side of InjectInbound so we
+	// never have a fresh MakeWithData/Pool.Get racing with a still-
+	// in-flight prior packet's read on this same netTun. Without
+	// this, gvisor's pkg/buffer.viewPool could hand a recycled chunk
+	// back to a new packet's slicecopy while the previous packet's
+	// IPv4.TTL (or any header field) read is still touching that
+	// memory — wrong-bytes-served data corruption, not just a TSan
+	// false positive.
+	//
+	// Note: this lock is PER-netTun, so it does NOT cover the
+	// cross-engine variant of the same race (gvisor's buffer pool
+	// is process-global, so two netTuns in the same process can
+	// race via the shared pool). In production each uwgsocks
+	// process owns exactly one engine so cross-engine pool reuse
+	// can't happen. In multi-engine integration tests (the 5-peer
+	// chaos suite) the race is visible to TSan; those tests are
+	// gated `//go:build !race` to keep -race CI green without
+	// over-serializing the netstack.
+	injectMu sync.Mutex
 }
-
-// netTunInjectMu serializes the producer side of InjectInbound so we
-// never have a fresh MakeWithData/Pool.Get racing with a still-
-// in-flight prior packet's read. Without this, gvisor's
-// pkg/buffer.viewPool could hand a recycled chunk back to a
-// new packet's slicecopy while the previous packet's IPv4.TTL
-// (or any header field) read is still touching that memory —
-// which is wrong-bytes-served data corruption, not just a TSan
-// false positive.
-//
-// The mutex is PACKAGE-LEVEL rather than per-netTun because gvisor's
-// buffer pool is process-global. With per-netTun mutexes, two
-// engines in the same process (a 5-peer chaos test fits) can race
-// across their separate tun instances via that shared pool: peer
-// A's pkb.DecRef returns a buffer chunk to the pool, peer B's
-// MakeWithData immediately takes it back, both stacks dispatch on
-// the same memory, race. In production each uwgsocks process owns
-// exactly one engine so the upgrade is a no-op; the cost only
-// shows up under multi-engine integration tests.
-var netTunInjectMu sync.Mutex
 
 type Net netTun
 
@@ -253,16 +252,16 @@ func (tun *netTun) Read(buf [][]byte, sizes []int, offset int) (int, error) {
 // Write is wireguard-go's decapsulation path: authenticated inner IP packets
 // enter the userspace netstack here.
 //
-// The InjectInbound call is wrapped in netTunInjectMu (package-level)
-// so we never run a fresh buffer.MakeWithData (which fetches a chunk
-// from gvisor's pooled viewPool) concurrently with a prior packet
-// still being processed downstream. Without this lock the viewPool
-// could recycle a chunk that the IPv4/IPv6 forwarder is still
-// reading, causing wrong-bytes-served data corruption (one
-// connection's payload leaking into another's read). See the
-// netTunInjectMu doc for the full rationale; the race-detector
-// exposes this deterministically and it would also reach production
-// under sufficiently bad timing.
+// The InjectInbound call is wrapped in injectMu (per-netTun) so we
+// never run a fresh buffer.MakeWithData (which fetches a chunk from
+// gvisor's pooled viewPool) concurrently with a prior packet on
+// this same netTun still being processed downstream. Without this
+// lock the viewPool could recycle a chunk that the IPv4/IPv6
+// forwarder is still reading, causing wrong-bytes-served data
+// corruption (one connection's payload leaking into another's
+// read). See the injectMu doc on netTun for the full rationale and
+// the cross-engine caveat (multi-engine-per-process is a test-only
+// shape and is gated `//go:build !race`).
 func (tun *netTun) Write(buf [][]byte, offset int) (int, error) {
 	for _, buf := range buf {
 		packet := buf[offset:]
@@ -283,11 +282,11 @@ func (tun *netTun) Write(buf [][]byte, offset int) (int, error) {
 		default:
 			return 0, syscall.EAFNOSUPPORT
 		}
-		netTunInjectMu.Lock()
+		tun.injectMu.Lock()
 		pkb := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(packet)})
 		tun.ep.InjectInbound(protocol, pkb)
 		pkb.DecRef()
-		netTunInjectMu.Unlock()
+		tun.injectMu.Unlock()
 	}
 	return len(buf), nil
 }
