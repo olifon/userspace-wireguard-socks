@@ -209,6 +209,27 @@ See `tests/preload/phase2_natural_exit_diag_test.go` for the
 diagnostic + per-thread `/proc` dumper (gated by
 `UWG_PHASE2_DIAG=1`).
 
+**TestPhase2StaticBinaryEchoTCP fails on the (arm64 × musl ×
+glibc-style static-PIE C binary) corner of the matrix.** First
+`send()` after `connect()` returns `ENOBUFS` (errno 105). The
+amd64 musl path, the arm64 glibc path, and both arches' Go-static
+paths are all green; only this 4-way intersection fails. Likely a
+syscall-arg or errno-translation bug specific to arm64-musl-PIE;
+worth a focused investigation but not blocking the Phase 2
+v0.1.x release as Go-static (the dominant real-world target) is
+fully validated. Tracked in the soak-test-matrix follow-up.
+
+**Minecraft soak (validated 2026-04-28):** Paper 1.21.11 server
+running under `uwgwrapper --transport=preload`, binding
+`100.64.94.1:25577` via `fdproxy /uwg/socket` (not via the kernel)
+serves Server-List-Ping requests over the WireGuard tunnel
+end-to-end. This validates Java/JVM/Netty + LD_PRELOAD-based bind
+interception + tunnel-side TCP listener + reverse-direction
+client-tunnel→server-tunnel TCP flow. The reverse_forward path
+(Paper bound on host loopback, uwgsocks reverse-forwards from
+tunnel address) is also validated as a simpler operational mode.
+See `/tmp/mc-soak/` on the amd64 test host for live artifacts.
+
 ## Open questions for later
 
 - How to handle clone() — child inherits seccomp filter but not
