@@ -176,11 +176,15 @@ jobs:
       # must absorb the loss). Runs only on Linux release-test
       # entries (the chaos proxy is loopback-UDP, no need to
       # multiply across platforms — the engine code path is
-      # identical). Continue-on-error so a chaos-flake doesn't
-      # gate publishing; we want signal, not a blocker.
+      # identical).
+      #
+      # BLOCKING (no continue-on-error). The whole point of release
+      # CI is that a real chaos failure stops the release; if a
+      # repeat reveals it was an environment flake we re-run with
+      # this step disabled manually — that escape hatch is
+      # sufficient and we don't want to silence a real regression.
       - name: Mesh chaos test
         if: runner.os == 'Linux'
-        continue-on-error: true
         env:
           UWGS_RUN_MESH_CHAOS: "1"
         shell: bash
