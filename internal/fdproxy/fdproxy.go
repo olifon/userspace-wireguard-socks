@@ -809,12 +809,21 @@ func (g *tcpListenerGroup) close() {
 		}
 		_ = member.local.Close()
 	}
+	// Acquire writeMu before closing g.up so a concurrent
+	// sendFrame can't be mid-write when the conn is torn down.
+	// Without this, sendFrame's `g.up != nil` check passes,
+	// then close() races and Closes the conn, then sendFrame's
+	// WriteFrame writes to a closed conn — undefined behaviour
+	// under the io.Closer contract, and panic-prone in some
+	// transports. M6 race-tier-2 finding.
+	g.writeMu.Lock()
 	if g.up != nil {
 		_ = g.up.Close()
 	}
 	if g.loop != nil {
 		_ = g.loop.Close()
 	}
+	g.writeMu.Unlock()
 	for _, accepted := range accepts {
 		if accepted == nil {
 			continue
