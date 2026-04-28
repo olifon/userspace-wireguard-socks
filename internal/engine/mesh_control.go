@@ -827,7 +827,20 @@ func (e *Engine) applyMeshDiscoveredPeers(parent config.Peer, discovered []meshD
 	}
 	e.dynamicMu.Unlock()
 
+	// Re-validate each upsert under the lock before pushing to
+	// wireguard-go. Between the Unlock above and these IpcSets, a
+	// concurrent runtime-API mutation (e.g. SetWireGuardConfig →
+	// reconcileDynamicPeersWithStatic) could have deleted entries
+	// from dynamicPeers. Without this re-check, we'd push a peer
+	// to WG-go that no longer exists in our model, leaving the
+	// device + map state desynchronised. M6 race-tier-2 finding.
 	for _, up := range upserts {
+		e.dynamicMu.RLock()
+		_, stillTracked := e.dynamicPeers[up.key]
+		e.dynamicMu.RUnlock()
+		if !stillTracked {
+			continue
+		}
 		if err := e.upsertDynamicPeerDevice(up.peer); err != nil {
 			return err
 		}
