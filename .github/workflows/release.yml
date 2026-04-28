@@ -194,6 +194,113 @@ jobs:
             -run 'TestMeshChaosResume_(Foundation|LossyDirectPath|AdvertisedEndpointThroughNAT|RelayFailoverOn100PercentDrop)' \
             ./internal/engine/
 
+      # gVisor smoke: uwgwrapper is precisely the tool you'd reach
+      # for inside a syscall-restricted sandbox like gVisor (runsc),
+      # so a tiny smoke step here catches the day someone breaks
+      # gVisor compatibility without us noticing. Tag-triggered only
+      # — never on test.yml; the runsc install + container churn
+      # would slow PR feedback for ~3 minutes per push.
+      #
+      # amd64 only for now: gVisor on arm64 is younger and more
+      # likely to flake. If the smoke is green for a few releases,
+      # expand to a small wrapper-test subset under runsc, then
+      # consider arm64.
+      #
+      # Smoke shape:
+      #   1. Generate a throwaway WG private key (uwgsocks needs one
+      #      to start; no actual tunnel is established because
+      #      `wireguard.peers` is empty and `fallback_direct: true`
+      #      sends every flow straight to the host network).
+      #   2. Boot uwgsocks in the background on the host network
+      #      (port 9090 API + 1080 SOCKS).
+      #   3. Install runsc, then run uwgwrapper inside a runsc
+      #      sandbox in two flavours — preload (LD_PRELOAD) and
+      #      systrap (seccomp+SIGSYS). Each invocation curls a
+      #      well-known HTTP endpoint and the wrapper must
+      #      successfully route the connection through uwgsocks.
+      #
+      # If runsc rejects either wrapper mode (missing syscall,
+      # seccomp incompatibility, etc.) we'd rather find out at
+      # release time than on a customer support ticket.
+      - name: gVisor smoke (uwgwrapper preload + systrap)
+        if: runner.os == 'Linux' && runner.arch == 'X64'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Build the binaries we need for the smoke. CGO is on so
+          # the wrapper picks up its preload dependency surface.
+          go build -o uwgsocks   ./cmd/uwgsocks
+          go build -o uwgwrapper ./cmd/uwgwrapper
+          chmod +x uwgsocks uwgwrapper
+
+          # Throwaway key (32 bytes base64). uwgsocks needs a valid
+          # private key on startup even when no peers are configured.
+          PRIV_KEY=$(head -c 32 /dev/urandom | base64)
+
+          cat > smoke.yaml <<EOF
+          wireguard:
+            private_key: "${PRIV_KEY}"
+            addresses: ["10.99.99.1/32"]
+            peers: []
+          proxy:
+            socks5: 127.0.0.1:1080
+            fallback_direct: true
+          api:
+            listen: 127.0.0.1:9090
+          EOF
+
+          ./uwgsocks --config smoke.yaml >uwgsocks.log 2>&1 &
+          UWGSOCKS_PID=$!
+          trap 'kill ${UWGSOCKS_PID} 2>/dev/null || true' EXIT
+
+          # Wait for the API to come up.
+          for i in $(seq 1 30); do
+            if curl -fsS -m 1 http://127.0.0.1:9090/v1/status >/dev/null 2>&1; then
+              break
+            fi
+            sleep 0.5
+          done
+          curl -fsS http://127.0.0.1:9090/v1/status >/dev/null
+
+          # Install runsc (gVisor). Using the upstream apt repo, not
+          # the snap — snap confinement breaks LD_PRELOAD pathing.
+          curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" | \
+            sudo tee /etc/apt/sources.list.d/gvisor.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y runsc
+
+          runsc --version
+
+          # Run the wrapper under runsc. --network=host so the
+          # sandboxed curl can reach uwgsocks's host-bound API +
+          # SOCKS, AND so the direct-fallback can hit example.com.
+          # --rootless to match the GH-runner privilege model.
+          run_under_runsc() {
+            local mode=$1
+            sudo runsc \
+              --rootless \
+              --network=host \
+              do \
+              ./uwgwrapper \
+                -api http://127.0.0.1:9090 \
+                -transport "$mode" \
+                -- \
+                curl -fsS -m 30 -o /dev/null http://example.com
+          }
+
+          echo "=== gVisor smoke: preload mode ==="
+          run_under_runsc preload
+
+          echo "=== gVisor smoke: systrap mode ==="
+          run_under_runsc systrap
+
+          echo "=== gVisor smoke: both modes passed ==="
+          # Show last lines of uwgsocks.log on success too — useful
+          # to spot warnings even when the smoke passes.
+          tail -50 uwgsocks.log || true
+
       # Fuzz the strict wg-quick parser and the ACL rule parser for a
       # short window on every release-CI platform — different OS file-
       # IO timing surfaces different fuzzed paths. The seed corpus
