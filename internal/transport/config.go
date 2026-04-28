@@ -100,16 +100,22 @@ type ProxyConfig struct {
 	// Type is: none | socks5 | http | https. Use base: turn for TURN.
 	Type string `yaml:"type,omitempty" json:"type,omitempty"`
 
+	// SOCKS5 settings, used when Type is "socks5".
 	SOCKS5 SOCKS5ProxyConfig `yaml:"socks5,omitempty" json:"socks5,omitempty"`
-	HTTP   HTTPProxyConfig   `yaml:"http,omitempty" json:"http,omitempty"`
+	// HTTP CONNECT proxy settings, used when Type is "http" or "https".
+	HTTP HTTPProxyConfig `yaml:"http,omitempty" json:"http,omitempty"`
 }
 
 // TURNConfig configures a TURN relay as the transport base.
 type TURNConfig struct {
-	Server   string `yaml:"server" json:"server"`
+	// Server is the TURN server URL or host:port.
+	Server string `yaml:"server" json:"server"`
+	// Username is the long-term TURN credential username.
 	Username string `yaml:"username" json:"username"`
+	// Password is the long-term TURN credential password.
 	Password string `yaml:"password" json:"password"`
-	Realm    string `yaml:"realm,omitempty" json:"realm,omitempty"`
+	// Realm is the TURN realm for long-term credentials.
+	Realm string `yaml:"realm,omitempty" json:"realm,omitempty"`
 	// Protocol is how to reach the TURN server: udp | tcp | tls | dtls | http | https | quic
 	// Note: TURN does not need encryption for security, its only to bypass firewalls or hide the VPN as web traffic
 	Protocol string `yaml:"protocol,omitempty" json:"protocol,omitempty"`
@@ -137,15 +143,21 @@ func NormalizeConfig(cfg Config) Config {
 
 // SOCKS5ProxyConfig configures a SOCKS5 proxy.
 type SOCKS5ProxyConfig struct {
-	Server   string `yaml:"server" json:"server"`
+	// Server is the SOCKS5 proxy host:port.
+	Server string `yaml:"server" json:"server"`
+	// Username for SOCKS5 user/password auth (RFC 1929). Empty means none.
 	Username string `yaml:"username,omitempty" json:"username,omitempty"`
+	// Password for SOCKS5 user/password auth.
 	Password string `yaml:"password,omitempty" json:"password,omitempty"`
 }
 
 // HTTPProxyConfig configures an HTTP CONNECT proxy.
 type HTTPProxyConfig struct {
-	Server   string `yaml:"server" json:"server"`
+	// Server is the HTTP CONNECT proxy host:port.
+	Server string `yaml:"server" json:"server"`
+	// Username for HTTP Basic auth on the proxy. Empty means none.
 	Username string `yaml:"username,omitempty" json:"username,omitempty"`
+	// Password for HTTP Basic auth on the proxy.
 	Password string `yaml:"password,omitempty" json:"password,omitempty"`
 	// TLS configures HTTPS proxy transport.
 	// When verify_peer is omitted, HTTPS proxies default to:

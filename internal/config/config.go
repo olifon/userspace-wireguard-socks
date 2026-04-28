@@ -23,8 +23,9 @@ import (
 )
 
 type Config struct {
-	WireGuard     WireGuard     `yaml:"wireguard"`
-	Proxy         Proxy         `yaml:"proxy"`
+	WireGuard WireGuard `yaml:"wireguard"`
+	Proxy     Proxy     `yaml:"proxy"`
+	// Ordered inbound ACL rule list.
 	Inbound       Inbound       `yaml:"inbound"`
 	HostForward   HostForward   `yaml:"host_forward"`
 	MeshControl   MeshControl   `yaml:"mesh_control"`
@@ -32,12 +33,13 @@ type Config struct {
 	TUN           TUN           `yaml:"tun"`
 	Filtering     Filtering     `yaml:"filtering"`
 	TrafficShaper TrafficShaper `yaml:"traffic_shaper"`
-	Relay         Relay         `yaml:"relay"`
-	API           API           `yaml:"api"`
-	SocketAPI     SocketAPI     `yaml:"socket_api"`
-	ACL           ACL           `yaml:"acl"`
-	Forwards      []Forward     `yaml:"forwards"`
-	TURN          TURN          `yaml:"turn"`
+	// Ordered relay ACL rule list.
+	Relay     Relay     `yaml:"relay"`
+	API       API       `yaml:"api"`
+	SocketAPI SocketAPI `yaml:"socket_api"`
+	ACL       ACL       `yaml:"acl"`
+	Forwards  []Forward `yaml:"forwards"`
+	TURN      TURN      `yaml:"turn"`
 	// Transports defines the pluggable transport layer for WireGuard packets.
 	// Each entry names a transport (base protocol + optional proxy) that can
 	// be used in listen mode, client mode, or both.  Peers reference transports
@@ -81,30 +83,40 @@ type Metrics struct {
 }
 
 type WireGuard struct {
+	// Path to wg-quick style config.
 	ConfigFile string `yaml:"config_file"`
-	Config     string `yaml:"config"`
+	// Inline wg-quick text.
+	Config string `yaml:"config"`
 
 	// These fields mirror the wg-quick [Interface] and [Peer] values that make
 	// sense for a userspace, no-TUN runtime. Table/SaveConfig are accepted but
 	// ignored because the process never mutates the host routing table.
 	PrivateKey string `yaml:"private_key"`
-	ListenPort *int   `yaml:"listen_port"`
+	// UDP listen port when listening directly.
+	ListenPort *int `yaml:"listen_port"`
 	// ListenAddresses restrict server-mode WireGuard UDP sockets to specific
 	// local IP addresses. Empty means wireguard-go's normal all-IPv4/all-IPv6
 	// listeners.
 	ListenAddresses []string `yaml:"listen_addresses"`
-	Addresses       []string `yaml:"addresses"`
-	MTU             int      `yaml:"mtu"`
-	DNS             []string `yaml:"dns"`
+	// Local tunnel IPs/CIDRs.
+	Addresses []string `yaml:"addresses"`
+	// Userspace tunnel MTU.
+	MTU int `yaml:"mtu"`
+	// DNS servers learned from wg-quick.
+	DNS []string `yaml:"dns"`
 	// RoamFallbackSeconds reapplies a peer's configured static Endpoint after
 	// roaming if the live endpoint stops handshaking for this long. Peers
 	// without Endpoint= remain dynamic and are not affected.
-	RoamFallbackSeconds int      `yaml:"roam_fallback_seconds"`
-	PreUp               []string `yaml:"pre_up"`
-	PostUp              []string `yaml:"post_up"`
-	PreDown             []string `yaml:"pre_down"`
-	PostDown            []string `yaml:"post_down"`
-	Peers               []Peer   `yaml:"peers"`
+	RoamFallbackSeconds int `yaml:"roam_fallback_seconds"`
+	// Script hooks; only run when scripts.allow=true.
+	PreUp []string `yaml:"pre_up"`
+	// Script hooks after startup; require scripts.allow=true.
+	PostUp []string `yaml:"post_up"`
+	// Script hooks before shutdown; require scripts.allow=true.
+	PreDown []string `yaml:"pre_down"`
+	// Script hooks after shutdown; require scripts.allow=true.
+	PostDown []string `yaml:"post_down"`
+	Peers    []Peer   `yaml:"peers"`
 
 	// DefaultTransport is the name of the transport used for peers that do not
 	// specify an explicit Transport field.  When empty the first NCO transport
@@ -144,18 +156,28 @@ type TURN struct {
 }
 
 type Peer struct {
-	PublicKey           string        `yaml:"public_key"`
-	PresharedKey        string        `yaml:"preshared_key"`
-	Endpoint            string        `yaml:"endpoint"`
-	AllowedIPs          []string      `yaml:"allowed_ips"`
+	PublicKey string `yaml:"public_key"`
+	// Optional base64 WireGuard preshared key.
+	PresharedKey string `yaml:"preshared_key"`
+	// host:port or tagged scheme URL.
+	Endpoint string `yaml:"endpoint"`
+	// Routed subnets/IPs for this peer.
+	AllowedIPs []string `yaml:"allowed_ips"`
+	// Keepalive interval in seconds; 0 disables it.
 	PersistentKeepalive int           `yaml:"persistent_keepalive"`
 	TrafficShaper       TrafficShaper `yaml:"traffic_shaper"`
-	ControlURL          string        `yaml:"control_url,omitempty"`
-	MeshEnabled         bool          `yaml:"mesh_enabled,omitempty"`
-	MeshAdvertise       *bool         `yaml:"mesh_advertise,omitempty"`
-	MeshDisableACLs     bool          `yaml:"mesh_disable_acls,omitempty"`
-	MeshAcceptACLs      bool          `yaml:"mesh_accept_acls,omitempty"`
-	MeshTrust           MeshTrust     `yaml:"mesh_trust,omitempty"`
+	// Mesh control URL for this parent peer.
+	ControlURL string `yaml:"control_url,omitempty"`
+	// Allow dynamic mesh peers to be learned from this peer.
+	MeshEnabled bool `yaml:"mesh_enabled,omitempty"`
+	// null means default behavior.
+	MeshAdvertise *bool `yaml:"mesh_advertise,omitempty"`
+	// Opt out of distributed mesh ACL enforcement locally.
+	MeshDisableACLs bool `yaml:"mesh_disable_acls,omitempty"`
+	// Usually enabled when this peer participates in mesh ACLs.
+	MeshAcceptACLs bool `yaml:"mesh_accept_acls,omitempty"`
+	// untrusted | trusted_always | trusted_if_dynamic_acls
+	MeshTrust MeshTrust `yaml:"mesh_trust,omitempty"`
 	// Transport is the name of a transport from the top-level transports list.
 	// Empty means use the default transport (first entry, or legacy UDP).
 	Transport string `yaml:"transport,omitempty"`
@@ -178,33 +200,49 @@ const (
 )
 
 type Proxy struct {
-	SOCKS5                    string          `yaml:"socks5"`
-	HTTP                      string          `yaml:"http"`
-	HTTPListeners             []string        `yaml:"http_listeners"`
-	Mixed                     string          `yaml:"mixed"`
-	Username                  string          `yaml:"username"`
-	Password                  string          `yaml:"password"`
-	FallbackDirect            *bool           `yaml:"fallback_direct"`
-	FallbackSOCKS5            string          `yaml:"fallback_socks5"`
-	IPv6                      *bool           `yaml:"ipv6"`
-	UDPAssociate              *bool           `yaml:"udp_associate"`
-	UDPAssociatePorts         string          `yaml:"udp_associate_ports"`
-	HTTPSProxying             *bool           `yaml:"https_proxying"`
-	HTTPSProxyVerify          string          `yaml:"https_proxy_verify"`
-	HTTPSProxyCAFile          string          `yaml:"https_proxy_ca_file"`
-	Bind                      *bool           `yaml:"bind"`
-	LowBind                   *bool           `yaml:"lowbind"`
-	PreferIPv6ForUDPOverSOCKS *bool           `yaml:"prefer_ipv6_for_udp_over_socks"`
-	HonorEnvironment          *bool           `yaml:"honor_environment"`
-	OutboundProxies           []OutboundProxy `yaml:"outbound_proxies"`
+	SOCKS5 string `yaml:"socks5"`
+	// Host HTTP proxy listen address.
+	HTTP string `yaml:"http"`
+	// Extra HTTP listeners, including unix: paths.
+	HTTPListeners []string `yaml:"http_listeners"`
+	// Combined SOCKS5+HTTP listener.
+	Mixed string `yaml:"mixed"`
+	// Proxy auth username.
+	Username string `yaml:"username"`
+	// Proxy auth password.
+	Password string `yaml:"password"`
+	// Allow direct host dials after routing misses.
+	FallbackDirect *bool  `yaml:"fallback_direct"`
+	FallbackSOCKS5 string `yaml:"fallback_socks5"`
+	IPv6           *bool  `yaml:"ipv6"`
+	// Enable SOCKS5 UDP ASSOCIATE.
+	UDPAssociate *bool `yaml:"udp_associate"`
+	// Optional port or range for UDP ASSOCIATE.
+	UDPAssociatePorts string `yaml:"udp_associate_ports"`
+	// Accept absolute-form HTTPS proxy requests.
+	HTTPSProxying *bool `yaml:"https_proxying"`
+	// none | pki | ca | both
+	HTTPSProxyVerify string `yaml:"https_proxy_verify"`
+	// CA bundle for https_proxy_verify ca/both.
+	HTTPSProxyCAFile string `yaml:"https_proxy_ca_file"`
+	// Enable SOCKS5 BIND and listener-style raw sockets.
+	Bind *bool `yaml:"bind"`
+	// Allow ports below 1024 where supported.
+	LowBind                   *bool `yaml:"lowbind"`
+	PreferIPv6ForUDPOverSOCKS *bool `yaml:"prefer_ipv6_for_udp_over_socks"`
+	// Import ALL_PROXY/HTTP(S)_PROXY fallbacks.
+	HonorEnvironment *bool           `yaml:"honor_environment"`
+	OutboundProxies  []OutboundProxy `yaml:"outbound_proxies"`
 }
 
 type OutboundProxy struct {
 	// Type is "socks5" or "http". If Address is a URL, the scheme fills this.
 	Type string `yaml:"type" json:"type"`
 	// Address is host:port or a URL such as socks5://127.0.0.1:1080.
-	Address  string `yaml:"address" json:"address"`
+	Address string `yaml:"address" json:"address"`
+	// Proxy auth username.
 	Username string `yaml:"username" json:"username,omitempty"`
+	// Proxy auth password.
 	Password string `yaml:"password" json:"password,omitempty"`
 	// Roles controls whether the proxy can be used for SOCKS/HTTP proxy clients,
 	// transparent inbound WireGuard forwarding, or both. Empty means both.
@@ -215,22 +253,37 @@ type OutboundProxy struct {
 }
 
 type Inbound struct {
-	Transparent                 *bool  `yaml:"transparent"`
-	ConsistentPort              string `yaml:"consistent_port"`
-	DisableLowPorts             *bool  `yaml:"disable_low_ports"`
-	ForwardICMPErrors           *bool  `yaml:"forward_icmp_errors"`
-	TCPMSSClamp                 *bool  `yaml:"tcp_mss_clamp"`
-	ReplyICMP                   *bool  `yaml:"reply_icmp"`
-	ICMPRateLimitPerSec         int    `yaml:"icmp_rate_limit_per_sec"`
-	MaxConnections              int    `yaml:"max_connections"`
-	MaxConnectionsPerPeer       int    `yaml:"max_connections_per_peer"`
-	ConnectionTableGraceSeconds int    `yaml:"connection_table_grace_seconds"`
-	TCPReceiveWindowBytes       int    `yaml:"tcp_receive_window_bytes"`
-	TCPMaxBufferedBytes         int    `yaml:"tcp_max_buffered_bytes"`
-	HostDialProxySOCKS5         string `yaml:"host_dial_proxy_socks5"`
-	HostDialBindAddress         string `yaml:"host_dial_bind_address"`
-	TCPIdleTimeoutSeconds       int    `yaml:"tcp_idle_timeout_seconds"`
-	UDPIdleTimeoutSeconds       int    `yaml:"udp_idle_timeout_seconds"`
+	// Accept tunnel TCP/UDP directly to host sockets.
+	Transparent *bool `yaml:"transparent"`
+	// strict | loose | disabled
+	ConsistentPort string `yaml:"consistent_port"`
+	// Reject host ports below 1024 unless explicitly allowed.
+	DisableLowPorts *bool `yaml:"disable_low_ports"`
+	// Forward ICMP errors back into the tunnel when possible.
+	ForwardICMPErrors *bool `yaml:"forward_icmp_errors"`
+	// Clamp MSS on inbound TCP to avoid PMTU issues.
+	TCPMSSClamp *bool `yaml:"tcp_mss_clamp"`
+	// Generate local ICMP echo replies where supported.
+	ReplyICMP *bool `yaml:"reply_icmp"`
+	// Per-peer ICMP reply rate limit.
+	ICMPRateLimitPerSec int `yaml:"icmp_rate_limit_per_sec"`
+	// Global inbound connection cap; 0 means unlimited.
+	MaxConnections int `yaml:"max_connections"`
+	// Per-peer inbound connection cap; 0 means unlimited.
+	MaxConnectionsPerPeer int `yaml:"max_connections_per_peer"`
+	// Keep closed-flow state briefly for late packets.
+	ConnectionTableGraceSeconds int `yaml:"connection_table_grace_seconds"`
+	// Netstack TCP receive window for inbound flows.
+	TCPReceiveWindowBytes int `yaml:"tcp_receive_window_bytes"`
+	// Global buffered TCP cap for inbound flows.
+	TCPMaxBufferedBytes int    `yaml:"tcp_max_buffered_bytes"`
+	HostDialProxySOCKS5 string `yaml:"host_dial_proxy_socks5"`
+	// Optional host source IP for transparent outbound dials.
+	HostDialBindAddress string `yaml:"host_dial_bind_address"`
+	// Idle timeout for transparent inbound TCP flows.
+	TCPIdleTimeoutSeconds int `yaml:"tcp_idle_timeout_seconds"`
+	// Idle timeout for transparent inbound UDP flows.
+	UDPIdleTimeoutSeconds int `yaml:"udp_idle_timeout_seconds"`
 }
 
 type HostForward struct {
@@ -245,9 +298,12 @@ type HostForward struct {
 }
 
 type HostForwardEndpoint struct {
-	Enabled     *bool  `yaml:"enabled"`
-	RedirectIP  string `yaml:"redirect_ip"`
-	RedirectTUN bool   `yaml:"redirect_tun"`
+	// Allow proxy clients to reach host-local services.
+	Enabled *bool `yaml:"enabled"`
+	// Optional host IP to use instead of loopback.
+	RedirectIP string `yaml:"redirect_ip"`
+	// Re-enter through the host TUN path.
+	RedirectTUN bool `yaml:"redirect_tun"`
 }
 
 type Routing struct {
@@ -286,7 +342,8 @@ type TUN struct {
 	FallbackSystemDNS []string `yaml:"fallback_system_dns"`
 	// Up and Down are optional shell snippets run after interface creation and
 	// before teardown when scripts.allow is true.
-	Up   []string `yaml:"up"`
+	Up []string `yaml:"up"`
+	// Teardown hooks; require scripts.allow=true.
 	Down []string `yaml:"down"`
 }
 
@@ -296,9 +353,12 @@ type Filtering struct {
 }
 
 type TrafficShaper struct {
-	UploadBps     int64 `yaml:"upload_bps" json:"upload_bps"`
-	DownloadBps   int64 `yaml:"download_bps" json:"download_bps"`
-	LatencyMillis int   `yaml:"latency_ms" json:"latency_ms"`
+	// Upload ceiling in bytes per second.
+	UploadBps int64 `yaml:"upload_bps" json:"upload_bps"`
+	// Download ceiling in bytes per second.
+	DownloadBps int64 `yaml:"download_bps" json:"download_bps"`
+	// Extra artificial latency in milliseconds.
+	LatencyMillis int `yaml:"latency_ms" json:"latency_ms"`
 }
 
 func (t TrafficShaper) IsZero() bool {
@@ -306,16 +366,23 @@ func (t TrafficShaper) IsZero() bool {
 }
 
 type Relay struct {
-	Enabled             *bool `yaml:"enabled"`
-	Conntrack           *bool `yaml:"conntrack"`
-	ConntrackMaxFlows   int   `yaml:"conntrack_max_flows"`
-	ConntrackMaxPerPeer int   `yaml:"conntrack_max_per_peer"`
+	// Allow proxy clients to reach host-local services.
+	Enabled *bool `yaml:"enabled"`
+	// Keep stateful relay conntrack enabled.
+	Conntrack *bool `yaml:"conntrack"`
+	// Global relay flow table cap.
+	ConntrackMaxFlows int `yaml:"conntrack_max_flows"`
+	// Per-peer relay flow table cap.
+	ConntrackMaxPerPeer int `yaml:"conntrack_max_per_peer"`
 }
 
 type API struct {
-	Listen                   string `yaml:"listen"`
-	Token                    string `yaml:"token"`
-	AllowUnauthenticatedUnix bool   `yaml:"allow_unauthenticated_unix"`
+	// Host listen address or unix:// socket path.
+	Listen string `yaml:"listen"`
+	// Bearer token for HTTP listeners.
+	Token string `yaml:"token"`
+	// Allow trusted local Unix-socket callers without a token.
+	AllowUnauthenticatedUnix bool `yaml:"allow_unauthenticated_unix"`
 }
 
 type SocketAPI struct {
@@ -333,12 +400,18 @@ type SocketAPI struct {
 }
 
 type ACL struct {
-	InboundDefault  acl.Action `yaml:"inbound_default"`
+	// allow | deny
+	InboundDefault acl.Action `yaml:"inbound_default"`
+	// allow | deny
 	OutboundDefault acl.Action `yaml:"outbound_default"`
-	RelayDefault    acl.Action `yaml:"relay_default"`
-	Inbound         []acl.Rule `yaml:"inbound"`
-	Outbound        []acl.Rule `yaml:"outbound"`
-	Relay           []acl.Rule `yaml:"relay"`
+	// allow | deny
+	RelayDefault acl.Action `yaml:"relay_default"`
+	// Ordered inbound ACL rule list.
+	Inbound []acl.Rule `yaml:"inbound"`
+	// Ordered outbound ACL rule list.
+	Outbound []acl.Rule `yaml:"outbound"`
+	// Ordered relay ACL rule list.
+	Relay []acl.Rule `yaml:"relay"`
 }
 
 type Forward struct {
@@ -368,18 +441,25 @@ type Forward struct {
 }
 
 type DNSServer struct {
-	Listen      string `yaml:"listen"`
-	MaxInflight int    `yaml:"max_inflight"`
+	// Host listen address or unix:// socket path.
+	Listen string `yaml:"listen"`
+	// Maximum concurrent DNS requests handled at once.
+	MaxInflight int `yaml:"max_inflight"`
 }
 
 type MeshControl struct {
-	Listen                      string `yaml:"listen"`
-	ChallengeRotateSeconds      int    `yaml:"challenge_rotate_seconds"`
-	ActivePeerWindowSeconds     int    `yaml:"active_peer_window_seconds"`
-	NotifyWindowSeconds         int    `yaml:"notify_window_seconds"`
-	NotifyMinIntervalSeconds    int    `yaml:"notify_min_interval_seconds"`
-	SubscribeMaxLifetimeSeconds int    `yaml:"subscribe_max_lifetime_seconds"`
-	AdvertiseSelf               bool   `yaml:"advertise_self"`
+	// Host listen address or unix:// socket path.
+	Listen string `yaml:"listen"`
+	// Rotate auth challenges on this interval.
+	ChallengeRotateSeconds int `yaml:"challenge_rotate_seconds"`
+	// Only advertise recently active peers.
+	ActivePeerWindowSeconds  int `yaml:"active_peer_window_seconds"`
+	NotifyWindowSeconds      int `yaml:"notify_window_seconds"`
+	NotifyMinIntervalSeconds int `yaml:"notify_min_interval_seconds"`
+	// Maximum lifetime for mesh event streams.
+	SubscribeMaxLifetimeSeconds int `yaml:"subscribe_max_lifetime_seconds"`
+	// Include the current node itself in mesh responses.
+	AdvertiseSelf bool `yaml:"advertise_self"`
 }
 
 type Scripts struct {
@@ -389,6 +469,7 @@ type Scripts struct {
 }
 
 type Log struct {
+	// Enable verbose/debug-style logging.
 	Verbose bool `yaml:"verbose"`
 }
 

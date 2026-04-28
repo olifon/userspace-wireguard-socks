@@ -45,7 +45,8 @@ type Rule struct {
 	Destinations []string `yaml:"destinations,omitempty" json:"destinations,omitempty"`
 	SourcePort   string   `yaml:"source_port,omitempty" json:"source_port,omitempty"`
 	DestPort     string   `yaml:"destination_port,omitempty" json:"destination_port,omitempty"`
-	Protocol     string   `yaml:"protocol,omitempty" json:"protocol,omitempty"`
+	// udp | tcp | tls | dtls | http | https | quic
+	Protocol string `yaml:"protocol,omitempty" json:"protocol,omitempty"`
 
 	sourcePrefixes []netip.Prefix
 	destPrefixes   []netip.Prefix

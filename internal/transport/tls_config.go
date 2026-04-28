@@ -108,12 +108,18 @@ func (o OptionalString) resolve(defaultValue string) (serverName string, sendSNI
 
 func (c *TLSConfig) UnmarshalYAML(value *yaml.Node) error {
 	type rawTLSConfig struct {
-		CertFile       string         `yaml:"cert_file,omitempty"`
-		KeyFile        string         `yaml:"key_file,omitempty"`
-		VerifyPeer     *bool          `yaml:"verify_peer,omitempty"`
-		ReloadInterval string         `yaml:"reload_interval,omitempty"`
-		CAFile         string         `yaml:"ca_file,omitempty"`
-		ServerSNI      OptionalString `yaml:"server_sni,omitempty"`
+		// Client or server certificate.
+		CertFile string `yaml:"cert_file,omitempty"`
+		// Private key matching cert_file.
+		KeyFile string `yaml:"key_file,omitempty"`
+		// Verify the remote certificate/chain.
+		VerifyPeer *bool `yaml:"verify_peer,omitempty"`
+		// Hot-reload TLS files on this interval.
+		ReloadInterval string `yaml:"reload_interval,omitempty"`
+		// Custom CA bundle for peer verification.
+		CAFile string `yaml:"ca_file,omitempty"`
+		// Override the SNI / expected server name.
+		ServerSNI OptionalString `yaml:"server_sni,omitempty"`
 	}
 	var raw rawTLSConfig
 	if err := value.Decode(&raw); err != nil {
@@ -135,12 +141,18 @@ func (c *TLSConfig) UnmarshalYAML(value *yaml.Node) error {
 
 func (c TLSConfig) MarshalYAML() (any, error) {
 	type rawTLSConfig struct {
-		CertFile       string         `yaml:"cert_file,omitempty"`
-		KeyFile        string         `yaml:"key_file,omitempty"`
-		VerifyPeer     *bool          `yaml:"verify_peer,omitempty"`
-		ReloadInterval string         `yaml:"reload_interval,omitempty"`
-		CAFile         string         `yaml:"ca_file,omitempty"`
-		ServerSNI      OptionalString `yaml:"server_sni,omitempty"`
+		// Client or server certificate.
+		CertFile string `yaml:"cert_file,omitempty"`
+		// Private key matching cert_file.
+		KeyFile string `yaml:"key_file,omitempty"`
+		// Verify the remote certificate/chain.
+		VerifyPeer *bool `yaml:"verify_peer,omitempty"`
+		// Hot-reload TLS files on this interval.
+		ReloadInterval string `yaml:"reload_interval,omitempty"`
+		// Custom CA bundle for peer verification.
+		CAFile string `yaml:"ca_file,omitempty"`
+		// Override the SNI / expected server name.
+		ServerSNI OptionalString `yaml:"server_sni,omitempty"`
 	}
 	raw := rawTLSConfig{
 		CertFile:       c.CertFile,
