@@ -153,5 +153,14 @@ func addrString(addr net.Addr) string {
 	if addr == nil {
 		return ""
 	}
-	return addr.String()
+	// Handle the typed-nil case: an interface wrapping a nil
+	// concrete pointer (e.g. (*net.UDPAddr)(nil)) is non-nil at
+	// the interface level but Stringifies to "<nil>". Treat it
+	// the same as a nil interface — callers want empty for
+	// "no address yet."
+	s := addr.String()
+	if s == "<nil>" {
+		return ""
+	}
+	return s
 }
