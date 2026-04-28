@@ -483,6 +483,19 @@ func (b *MultiTransportBind) reconnectPeer(s *sessionState, identBytes []byte) {
 		s.mu.Unlock()
 		return
 	}
+	// TOCTOU guard: between releasing the lock above and the Dial
+	// completing, a concurrent ResetPeerSession (peer removed via
+	// runtime API) or SetPeerSession (peer reconfigured) could have
+	// nullified s.staticEP / s.transport. If that happened, the
+	// dialed session is for a peer we no longer want — close it
+	// cleanly rather than leaking it into s.activeSession (which
+	// would leave the bind state desynced from the engine config).
+	// M6 round-3 race-tier-1 finding from the security audit.
+	if s.staticEP == nil || s.transport != t {
+		s.mu.Unlock()
+		_ = sess.Close()
+		return
+	}
 	s.lastEstablish = time.Now()
 	s.activeSession = sess
 	ep := NewConnEstablishedEndpoint(t.Name(), target, sess, buildIdent(t.Name(), target))
