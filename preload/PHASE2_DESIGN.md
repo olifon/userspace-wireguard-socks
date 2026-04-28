@@ -173,18 +173,26 @@ from disk via `UWGS_STATIC_BLOB` or the sibling
 `assets/uwgpreload-static-${arch}.so`. `//go:embed` was deferred
 to keep binary-churn out of git; a placeholder strategy is TBD.
 
-## Validation status (as of commit `265c88b`)
+## Validation status (released `v0.1.0-beta.55`)
 
-End-to-end on **amd64 and arm64**:
-- All 3 Phase 2 stress tests pass.
+End-to-end on **amd64 and arm64**, both **glibc and musl**:
+- All 3 Phase 2 stress tests pass (incl. arm64+musl after the
+  `msghdr`-zero fix in beta.52).
 - All Phase 1 lock-stress tests pass: `TestPhase1FxlockStress` (3.2M
   ops, 32 threads × 1 lock), `TestPhase1FxlockContentionStress`
   (3.2M ops, 16 threads × 8 locks at ~6.7M ops/sec), and
   `TestPhase1FxlockContentionStressMean` (9.6M ops at 8:1 thread:lock
   contention, 0 invariant violations).
 - `TestPhase1CacheRaceStress`: 80k ops, 0 torn reads.
-- Full preload-test suite (`go test ./tests/preload/`): green in
-  ~62s on arm64, ~181s on amd64.
+- Full `preload-libc-matrix` green: glibc 2.27 / 2.31 / 2.36 + musl
+  current / musl 1.2.3, each on amd64 and arm64 (10 entries).
+- Chromium real-internet smoke (`UWGS_RUN_CHROMIUM_REAL_INTERNET=1`):
+  drives Chromium against example.com + api.github.com via the
+  uwgsocks HTTP proxy in ~2s.
+- Minecraft soak (`docs/howto/10-minecraft-soak.md`): Paper 1.21.11
+  bound on `100.64.94.1:25577` via uwgwrapper + `/uwg/socket`,
+  reachable through the WG tunnel for SLP. JVM/Netty + LD_PRELOAD-
+  based bind interception validated.
 
 The lock primitive's correctness has been negative-tested: a copy
 with the rdlock retry-path step-3 re-check intentionally removed
