@@ -1,0 +1,103 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Build info",
+      "type": "stat",
+      "id": 1,
+      "gridPos": {"x": 0, "y": 0, "w": 8, "h": 3},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "uwgsocks_build_info", "instant": true, "legendFormat": "{{version}} ({{go_version}}, lite={{lite}})"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "textMode": "value"}
+    },
+    {
+      "title": "Static peers",
+      "type": "stat",
+      "id": 2,
+      "gridPos": {"x": 8, "y": 0, "w": 4, "h": 3},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "uwgsocks_peers"}]
+    },
+    {
+      "title": "Handshaked peers",
+      "type": "stat",
+      "id": 3,
+      "gridPos": {"x": 12, "y": 0, "w": 4, "h": 3},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "uwgsocks_peers_handshaked"}],
+      "fieldConfig": {"defaults": {"thresholds": {"steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}}
+    },
+    {
+      "title": "Dynamic peers",
+      "type": "stat",
+      "id": 4,
+      "gridPos": {"x": 16, "y": 0, "w": 4, "h": 3},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "uwgsocks_dynamic_peers"}]
+    },
+    {
+      "title": "Active connections",
+      "type": "stat",
+      "id": 5,
+      "gridPos": {"x": 20, "y": 0, "w": 4, "h": 3},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "uwgsocks_active_connections"}]
+    },
+    {
+      "title": "Tunnel throughput (bytes/s)",
+      "type": "timeseries",
+      "id": 10,
+      "gridPos": {"x": 0, "y": 3, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "rate(uwgsocks_bytes_transmitted_total[1m])", "legendFormat": "tx"},
+        {"expr": "rate(uwgsocks_bytes_received_total[1m])", "legendFormat": "rx"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "Bps"}}
+    },
+    {
+      "title": "Relay conntrack table size",
+      "type": "timeseries",
+      "id": 11,
+      "gridPos": {"x": 12, "y": 3, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "uwgsocks_relay_conntrack_flows"}]
+    },
+    {
+      "title": "Mesh-control requests / sec by result",
+      "type": "timeseries",
+      "id": 20,
+      "gridPos": {"x": 0, "y": 11, "w": 12, "h": 7},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "rate(uwgsocks_mesh_requests_total[1m])", "legendFormat": "{{result}}"}]
+    },
+    {
+      "title": "Drops + refusals (cumulative)",
+      "type": "timeseries",
+      "id": 21,
+      "gridPos": {"x": 12, "y": 11, "w": 12, "h": 7},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "uwgsocks_conntrack_refusals_total", "legendFormat": "conntrack refusals"},
+        {"expr": "uwgsocks_socks_connections_capped_total", "legendFormat": "SOCKS capped"},
+        {"expr": "uwgsocks_turn_carrier_drops_total", "legendFormat": "TURN carrier drops"},
+        {"expr": "uwgsocks_tcp_retransmits_total", "legendFormat": "TCP retransmits"},
+        {"expr": "uwgsocks_roaming_endpoint_changes_total", "legendFormat": "WG roaming"}
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["uwgsocks"],
+  "templating": {"list": []},
+  "time": {"from": "now-30m", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "uwgsocks overview",
+  "uid": "uwgsocks-overview",
+  "version": 1
+}
