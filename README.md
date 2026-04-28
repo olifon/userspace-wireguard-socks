@@ -114,6 +114,7 @@ Start with the guided flow:
 - [07 TURN Relay Ingress](docs/howto/07-turn-relay-ingress.md)
 - [08 Reference Map](docs/howto/08-reference-map.md)
 - [09 Unix Socket Forwards](docs/howto/09-unix-socket-forwards.md)
+- [10 Minecraft Soak (Paper + uwgwrapper)](docs/howto/10-minecraft-soak.md)
 
 Deep reference docs:
 

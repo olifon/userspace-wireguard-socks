@@ -107,9 +107,20 @@ through `uwgsocks`; it does not change the process' Unix privileges.
 
 ## Why It Still Works On Static Go Or Rust Binaries
 
-- `LD_PRELOAD` catches the easy libc path.
+- `LD_PRELOAD` catches the easy libc path on dynamic binaries.
 - `seccomp-bpf` reduces ptrace overhead on supported Linux systems.
-- `ptrace` remains as the fallback for static binaries and direct syscalls.
+- `transport=preload-static` (added in v0.1.0-beta.51) is the fast
+  path for static binaries: the wrapper `ptrace`-injects a tiny
+  freestanding blob into the static target's address space at
+  `exec` time and lets it run in-process from there — no per-
+  syscall PTRACE round-trip after detach.
+- Per-syscall `ptrace` remains as the universal fallback for
+  static binaries on platforms or kernels where the blob injection
+  doesn't apply (or where `transport=ptrace-only` is explicitly
+  requested, e.g. inside a container that doesn't allow seccomp).
 
-That combination is why `uwgwrapper` is closer to “socksify for any Linux
-binary” than to a normal proxy helper.
+That combination is why `uwgwrapper` is closer to "socksify for any
+Linux binary" than to a normal proxy helper. See
+[10 Minecraft Soak](10-minecraft-soak.md) for a concrete walkthrough
+of `transport=preload-static` with a Java/JVM workload binding via
+`/uwg/socket` (Paper Minecraft 1.21.11 inside `uwgwrapper`).
