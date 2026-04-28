@@ -32,6 +32,26 @@ type inboundPacket struct {
 }
 
 // sessionState tracks the lifecycle of one peer's transport session.
+// closeOnceSession wraps a Session so Close() is unconditionally
+// idempotent at the bind layer. The Session interface documents
+// Close as idempotent, but this wrapper enforces it regardless of
+// the concrete transport. Belt-and-suspenders for the
+// updatePeerEndpoint grace-close vs serveConnSession-defer race
+// (the M6 security audit's race-tier-1 finding for transport).
+type closeOnceSession struct {
+	inner    Session
+	closeOnce sync.Once
+}
+
+func (c *closeOnceSession) ReadPacket() ([]byte, error) { return c.inner.ReadPacket() }
+func (c *closeOnceSession) WritePacket(p []byte) error  { return c.inner.WritePacket(p) }
+func (c *closeOnceSession) RemoteAddr() string         { return c.inner.RemoteAddr() }
+func (c *closeOnceSession) Close() error {
+	var err error
+	c.closeOnce.Do(func() { err = c.inner.Close() })
+	return err
+}
+
 type sessionState struct {
 	mu sync.Mutex
 
@@ -303,7 +323,17 @@ func (b *MultiTransportBind) serveNotConnSession(_ context.Context, t Transport,
 
 // serveConnSession reads all packets from a connection-oriented session.
 // Each packet updates the peer's active endpoint (roaming support).
+//
+// The session is wrapped in a closeOnce guard before any other code
+// path receives it. updatePeerEndpoint can schedule a grace-close
+// goroutine on the previous session at the same time as the
+// serveConnSession defer for that previous session fires; without
+// the guard, both would call Close() on the same Session, and the
+// io.Closer interface doesn't promise idempotency. The wrapper
+// makes Close idempotent at the bind layer regardless of what the
+// underlying transport does.
 func (b *MultiTransportBind) serveConnSession(_ context.Context, t Transport, sess Session) {
+	sess = &closeOnceSession{inner: sess}
 	var peerIdentBytes []byte
 	defer func() {
 		sess.Close()
