@@ -106,15 +106,6 @@ func WithWebSocketAdvertiseHTTP3(advertise bool) WebSocketOption {
 	}
 }
 
-func WithWebSocketSNIHostname(name string) WebSocketOption {
-	return func(t *WebSocketTransport) {
-		t.tlsCfg.ServerSNI = OptionalString{
-			set:   true,
-			value: &name,
-		}
-	}
-}
-
 // NewWebSocketTransport creates a WebSocketTransport.
 // scheme should be "http" (ws://) or "https" (wss://).
 func NewWebSocketTransport(name, scheme string, dialer ProxyDialer, listenAddrs []string, certMgr *CertManager, tlsCfg TLSConfig, opts ...WebSocketOption) *WebSocketTransport {

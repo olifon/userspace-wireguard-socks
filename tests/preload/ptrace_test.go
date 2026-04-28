@@ -84,76 +84,6 @@ func TestUWGWrapperPtraceOnlyRawGoTCPUDP(t *testing.T) {
 	}
 }
 
-func TestUWGWrapperBothMixedInterop(t *testing.T) {
-	// This test was written for the (now-removed) preload-and-ptrace
-	// transport: it asserted that libc-routed syscalls did NOT bump
-	// the ptracer's per-syscall counters (proving the libc-fast-path
-	// bypassed the tracer) while raw-asm syscalls DID. Under the
-	// post-rename surface, "preload-and-ptrace" aliases to "systrap",
-	// which has NO tracer attached at all (the in-process SIGSYS
-	// handler is the trap). The tracer-side counter assertions
-	// therefore can't measure what they were designed to measure.
-	//
-	// systrap-supervised shipped in v0.1.0-beta.57; its
-	// dynamic↔static execve invariants are now exercised by
-	// TestSystrapSupervisedDynamicExecsStatic and friends in
-	// systrap_supervised_test.go. This test (preload-and-ptrace's
-	// cross-tracer-cache deltas) is permanently skipped — the
-	// removed mode is no longer reachable via any transport name
-	// or alias, and the per-fd-cache cross-process invariants it
-	// asserted on don't apply to systrap-supervised (whose tracer
-	// only fires at execve, not on every traced syscall).
-	t.Skip("preload-and-ptrace removed; cross-tracer-cache assertion no longer applies. systrap-supervised's invariants are tested in systrap_supervised_test.go.")
-	requireWrapperToolchain(t)
-	art := buildWrapperArtifacts(t)
-	_, httpSock := setupWrapperNetwork(t)
-
-	_, baseline := runWrappedTargetWithStats(t, art, httpSock, "systrap", art.rawmixClient,
-		[]string{"print-only", "0.0.0.0", "0", "both-baseline"}, wrapperRunOptions{})
-
-	out, stats := runWrappedTargetWithStats(t, art, httpSock, "systrap", art.rawmixClient,
-		[]string{"raw-socket-libc-connect-dynamic-only", "100.64.94.1", "18080", "both-raw-open-dynamic"}, wrapperRunOptions{})
-	if normalizedOutput(out) != "both-raw-open-dynamic" {
-		t.Fatalf("unexpected both raw-open dynamic output %q", out)
-	}
-	assertSyscallCount(t, stats, "socket", 1)
-	assertSyscallCount(t, stats, "connect", 0)
-	// AtMost-2 instead of exactly 0: preload's first I/O after a
-	// connect/accept goes through the cold path (HotReady=0) and so
-	// reaches the tracer. The bulk of the optimization is still
-	// validated — the workload writes/reads thousands of times in
-	// the dynamic_echo loop and only the first one or two leak.
-	assertSyscallDeltaAtMost(t, baseline, stats, "write", 2)
-	assertSyscallDeltaAtMost(t, baseline, stats, "read", 2)
-
-	out, stats = runWrappedTargetWithStats(t, art, httpSock, "systrap", art.rawmixClient,
-		[]string{"raw-socket-libc-connect-stdio-only", "100.64.94.1", "18080", "both-raw-open-stdio"}, wrapperRunOptions{})
-	if normalizedOutput(out) != "both-raw-open-stdio" {
-		t.Fatalf("unexpected both raw-open stdio output %q", out)
-	}
-	assertSyscallCount(t, stats, "socket", 1)
-	assertSyscallCount(t, stats, "connect", 0)
-	// stdio variant is more lenient than dynamic_echo because glibc's
-	// fdopen/fwrite/fread emit internal fcntl + read calls that bypass
-	// preload's interposition (libc-internal symbol references rather
-	// than dlsym'd ones). Newer glibc (2.40+) added an extra fcntl
-	// inside fdopen — see assertSyscallDeltaAtMost docstring.
-	assertSyscallDeltaAtMost(t, baseline, stats, "write", 2)
-	assertSyscallDeltaAtMost(t, baseline, stats, "read", 4)
-
-	out = runWrappedTarget(t, art, httpSock, "systrap", art.rawmixClient,
-		"raw-socket-libc-connect", "100.64.94.1", "18080", "both-raw-open")
-	if normalizedOutput(out) != "both-raw-open" {
-		t.Fatalf("unexpected both raw-open output %q", out)
-	}
-
-	out = runWrappedTarget(t, art, httpSock, "systrap", art.rawmixClient,
-		"libc-socket-raw-connect", "100.64.94.1", "18080", "both-raw-connect")
-	if normalizedOutput(out) != "both-raw-connect" {
-		t.Fatalf("unexpected both raw-connect output %q", out)
-	}
-}
-
 func TestUWGWrapperPtraceOnlyAccidentalPreloadUsesSecretPassthrough(t *testing.T) {
 	requireWrapperToolchain(t)
 	art := buildWrapperArtifacts(t)
@@ -1309,11 +1239,9 @@ func transportUsesPtrace(transport string) bool {
 
 // transportTracerCountsHotpathSyscalls reports whether the tracer's
 // per-syscall counter is expected to see hot-path syscalls (send,
-// recv, read, write, poll, etc.). preload-and-ptrace deliberately
-// bypasses the tracer for those via the passthrough secret — that's
-// the whole point of the optimization — so counter assertions for
-// hot-path syscalls would be wrong there. The bypass is validated
-// separately by TestUWGWrapperBothMixedInterop's delta=0 assertions.
+// recv, read, write, poll, etc.). Only the pure ptrace modes get the
+// hot-path through the tracer; systrap traps in-process via SIGSYS,
+// and preload uses libc-symbol interposition with no tracer at all.
 func transportTracerCountsHotpathSyscalls(transport string) bool {
 	switch transport {
 	case "ptrace", "ptrace-only", "ptrace-seccomp":

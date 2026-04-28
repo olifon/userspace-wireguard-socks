@@ -21,6 +21,14 @@ type OptionalString struct {
 	value *string
 }
 
+// NewOptionalString returns an OptionalString explicitly set to the
+// given value. Use this when constructing config from code (tests,
+// programmatic config builders); the YAML/JSON paths use the
+// (un)marshallers below.
+func NewOptionalString(v string) OptionalString {
+	return OptionalString{set: true, value: &v}
+}
+
 func (o OptionalString) IsZero() bool {
 	return !o.set
 }

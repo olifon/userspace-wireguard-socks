@@ -71,7 +71,7 @@ func TestPhase2NaturalExitDiag(t *testing.T) {
 	totalReq := concurrent * perWorker
 
 	wrapperArgs := []string{
-		"--transport=preload-static",
+		"--transport=systrap-static",
 		"--listen", filepath.Join(tmp, "fdproxy.sock"),
 		"--api", "unix:" + httpSock,
 		"--socket-path", "/uwg/socket",

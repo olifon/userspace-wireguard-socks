@@ -82,7 +82,7 @@ The supervisor lives in `cmd/uwgwrapper/inject_static.go` (new
 file). Skeleton:
 
 ```go
-// transport=preload-static
+// transport=systrap-static
 //
 // 1. fork → child PTRACE_TRACEME → execve(target, ...)
 // 2. parent waits for first PTRACE_EVENT_EXEC stop
@@ -161,8 +161,8 @@ covers three scenarios end-to-end on amd64 and arm64:
    per-fd futex_rwlock + `rt_sigaction`-protect under a real Go
    M-spawning workload. Validated 5.5s end-to-end.
 
-✅ **Step 8: `transport=preload-static`** — `cmd/uwgwrapper/main.go`
-gates on `--transport=preload-static`. The orchestrator
+✅ **Step 8: `transport=systrap-static`** — `cmd/uwgwrapper/main.go`
+gates on `--transport=systrap-static`. The orchestrator
 (`cmd/uwgwrapper/inject_run.go`) does fork+`PTRACE_TRACEME`+execve,
 reads envp from the post-execve stack, parses the blob, loads it,
 runs `uwg_static_init(0, NULL, envp)` via the handoff trap, and
@@ -202,7 +202,7 @@ the user-spotted retry-path deadlock.
 
 ## Known limitations
 
-**Natural-exit hang under `transport=preload-static`** (diagnosed,
+**Natural-exit hang under `transport=systrap-static`** (diagnosed,
 workaround documented). When a Go static binary's `main` returns
 naturally (defer→runtime.exit→exit_group), if the Go `Server.Serve`
 goroutine is parked in `accept4` (trapped) inside our SIGSYS

@@ -24,7 +24,7 @@ import (
 )
 
 // TestPhase2StaticBinaryEchoTCP wraps a CGO_ENABLED=0 Go static binary
-// through transport=preload-static. The binary is the simplest possible
+// through transport=systrap-static. The binary is the simplest possible
 // tunnel client: dials a TCP address, writes a sentinel message,
 // reads it back, prints it.
 //
@@ -89,12 +89,12 @@ func TestPhase2StaticBinaryEchoTCP(t *testing.T) {
 	art := buildPhase1Artifacts(t)
 	_, httpSock := setupWrapperNetwork(t)
 
-	// Run the static client through transport=preload-static. The
+	// Run the static client through transport=systrap-static. The
 	// stub_client takes "<ip> <port> <message> [tcp|udp|...]"; tcp
 	// mode connects, writes, reads, prints.
 	args := []string{"100.64.94.1", "18080", "phase2-static-tcp", "tcp"}
 	wrapperArgs := []string{
-		"--transport=preload-static",
+		"--transport=systrap-static",
 		"--listen", filepath.Join(tmp, "fdproxy.sock"),
 		"--api", "unix:" + httpSock,
 		"--socket-path", "/uwg/socket",
@@ -122,7 +122,7 @@ func TestPhase2StaticBinaryEchoTCP(t *testing.T) {
 }
 
 // TestPhase2StaticGoBinaryEchoTCP wraps a CGO_ENABLED=0 Go static
-// binary through transport=preload-static. This validates Go runtime
+// binary through transport=systrap-static. This validates Go runtime
 // compatibility: Go installs its own SIGSYS handler during early
 // init, but the rt_sigaction-protection in the seccomp filter
 // silently no-ops sigaction(SIGSYS, ...) so our handler stays intact.
@@ -159,7 +159,7 @@ func TestPhase2StaticGoBinaryEchoTCP(t *testing.T) {
 
 	args := []string{"100.64.94.1", "18080", "phase2-go-static-tcp"}
 	wrapperArgs := []string{
-		"--transport=preload-static",
+		"--transport=systrap-static",
 		"--listen", filepath.Join(tmp, "fdproxy.sock"),
 		"--api", "unix:" + httpSock,
 		"--socket-path", "/uwg/socket",
@@ -187,7 +187,7 @@ func TestPhase2StaticGoBinaryEchoTCP(t *testing.T) {
 }
 
 // TestPhase2StaticGoConcurrencyStress runs a Go-static HTTP server
-// under transport=preload-static, listening on a tunnel address, and
+// under transport=systrap-static, listening on a tunnel address, and
 // hammers it with N concurrent clients dispatched from the WireGuard
 // server-side engine. Validates:
 //   - listener flow (uwg_listen + uwg_accept + uwg_managed_accept)
@@ -228,7 +228,7 @@ func TestPhase2StaticGoConcurrencyStress(t *testing.T) {
 	totalReq := concurrent * perWorker
 
 	wrapperArgs := []string{
-		"--transport=preload-static",
+		"--transport=systrap-static",
 		"--listen", filepath.Join(tmp, "fdproxy.sock"),
 		"--api", "unix:" + httpSock,
 		"--socket-path", "/uwg/socket",

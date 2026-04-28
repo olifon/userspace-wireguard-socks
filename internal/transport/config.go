@@ -3,8 +3,6 @@
 
 package transport
 
-import "strings"
-
 // Config describes one pluggable transport entry from the YAML config.
 type Config struct {
 	// Name is a unique identifier referenced by peers.
@@ -24,9 +22,8 @@ type Config struct {
 
 	// TLS holds TLS / DTLS / HTTPS / QUIC certificate and validation options.
 	TLS TLSConfig `yaml:"tls,omitempty" json:"tls,omitempty"`
-	// TURN configures TURN as the base transport. This replaces the older
-	// legacy form "base: udp" + "proxy.type: turn", which is still accepted
-	// and normalized into this field for backward compatibility.
+	// TURN configures TURN as the base transport. Set base: turn alongside
+	// this block.
 	TURN TURNConfig `yaml:"turn,omitempty" json:"turn,omitempty"`
 	// URL is the full base URL for the "url" auto-negotiation transport,
 	// e.g. "https://example.com/wg". Only used when Base = "url".
@@ -96,17 +93,13 @@ type WebSocketConfig struct {
 	// can discover a matching HTTP/3 endpoint on the same port. This does not
 	// enable QUIC by itself; configure a real QUIC listener separately.
 	AdvertiseHTTP3 bool `yaml:"advertise_http3,omitempty" json:"advertise_http3,omitempty"`
-	// SNIHostname is deprecated. Use tls.server_sni instead.
-	SNIHostname string `yaml:"sni_hostname,omitempty" json:"sni_hostname,omitempty"`
 }
 
 // ProxyConfig selects an optional proxy layer and its settings.
 type ProxyConfig struct {
-	// Type is: none | socks5 | http | https. "turn" is still accepted as a legacy
-	// compatibility alias and is normalized into base: turn.
+	// Type is: none | socks5 | http | https. Use base: turn for TURN.
 	Type string `yaml:"type,omitempty" json:"type,omitempty"`
 
-	TURN   TURNConfig        `yaml:"turn,omitempty" json:"turn,omitempty"`
 	SOCKS5 SOCKS5ProxyConfig `yaml:"socks5,omitempty" json:"socks5,omitempty"`
 	HTTP   HTTPProxyConfig   `yaml:"http,omitempty" json:"http,omitempty"`
 }
@@ -132,23 +125,13 @@ type TURNConfig struct {
 	Permissions []string `yaml:"permissions,omitempty" json:"permissions,omitempty"`
 }
 
-// TURNProxyConfig is kept as a compatibility alias for older code paths.
+// TURNProxyConfig is an alias for TURNConfig used by some engine
+// call sites.
 type TURNProxyConfig = TURNConfig
 
-// NormalizeConfig rewrites legacy transport encodings into the current
-// canonical shape without changing behavior.
+// NormalizeConfig is a placeholder for any future transport-config
+// normalization. Today it returns the config unchanged.
 func NormalizeConfig(cfg Config) Config {
-	if (cfg.Base == "" || cfg.Base == "udp") && strings.EqualFold(cfg.Proxy.Type, "turn") {
-		cfg.Base = "turn"
-		if cfg.TURN.Server == "" {
-			cfg.TURN = cfg.Proxy.TURN
-		}
-		cfg.Proxy.Type = ""
-		cfg.Proxy.TURN = TURNConfig{}
-	}
-	if cfg.Base == "turn" && cfg.TURN.Server == "" && cfg.Proxy.TURN.Server != "" {
-		cfg.TURN = cfg.Proxy.TURN
-	}
 	return cfg
 }
 
@@ -200,10 +183,10 @@ func ValidateBase(base string) error {
 // ValidateProxyType checks that the proxy Type field is valid.
 func ValidateProxyType(t string) error {
 	switch t {
-	case "", "none", "turn", "socks5", "http":
+	case "", "none", "socks5", "http":
 		return nil
 	}
-	return &ConfigError{Field: "proxy.type", Value: t, Msg: "must be one of: none turn socks5 http"}
+	return &ConfigError{Field: "proxy.type", Value: t, Msg: "must be one of: none socks5 http (use base: turn for TURN)"}
 }
 
 func ValidateWebSocketUpgradeMode(mode string) error {

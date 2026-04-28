@@ -490,10 +490,11 @@ func TestWebSocketTransportTLSSNIOverride(t *testing.T) {
 		loopbackDialer{},
 		nil,
 		nil,
-		transport.TLSConfig{},
+		transport.TLSConfig{
+			ServerSNI: transport.NewOptionalString("ws.test"),
+		},
 		transport.WithWebSocketPath("/wireguard"),
 		transport.WithWebSocketHostHeader("inner.example"),
-		transport.WithWebSocketSNIHostname("ws.test"),
 	)
 
 	ctx := context.Background()

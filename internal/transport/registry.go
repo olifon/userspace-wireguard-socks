@@ -194,9 +194,6 @@ func buildBaseTransport(cfg Config, dialer ProxyDialer, wgPubKey [32]byte) (Tran
 	if cfg.WebSocket.AdvertiseHTTP3 {
 		wsOpts = append(wsOpts, WithWebSocketAdvertiseHTTP3(true))
 	}
-	if cfg.WebSocket.SNIHostname != "" && !cfg.TLS.ServerSNI.IsSet() {
-		wsOpts = append(wsOpts, WithWebSocketSNIHostname(cfg.WebSocket.SNIHostname))
-	}
 
 	switch cfg.Base {
 	case "", "udp":

@@ -3,7 +3,7 @@
 //
 // Diagnostic variant of static_http_server WITHOUT explicit os.Exit(0):
 // returns from main naturally so we can investigate why Go's natural-
-// exit path stalls under preload-static. Used by
+// exit path stalls under systrap-static. Used by
 // TestPhase2NaturalExitDiag only.
 
 package main

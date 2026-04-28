@@ -344,14 +344,6 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 	//   - ptrace-only          Per-syscall ptrace, no seccomp.
 	//   - ptrace               ptrace-seccomp → ptrace-only fallback.
 	//
-	// Removed (deprecation aliases — emit a warning + run the
-	// nearest-equivalent mode for one release, then delete):
-	//   - "preload-and-ptrace" → "systrap"      (replaces SIGSYS-less
-	//       libc+seccomp+ptrace, which had cross-process per-fd cache
-	//       coherence subtleties; systrap supersedes the use case via
-	//       a single in-process trap path)
-	//   - "preload-static"     → "systrap-static"
-	//
 	// auto ordering favors correctness then speed:
 	//   systrap → ptrace-seccomp → ptrace-only → preload (libc-only)
 	//
@@ -372,12 +364,6 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 		systrapSupervisedRun()
 	case "systrap-static":
 		systrapStaticRun()
-	case "preload-static":
-		log.Printf("uwgwrapper: 'preload-static' is a deprecated alias for 'systrap-static'; please update your config")
-		systrapStaticRun()
-	case "preload-and-ptrace":
-		log.Printf("uwgwrapper: 'preload-and-ptrace' is removed; running 'systrap' instead. Update your config to use systrap (or preload for libc-only).")
-		systrapRun()
 	case "ptrace-seccomp":
 		if err := traceSimple(); err != nil {
 			log.Fatalf("ptrace-seccomp mode failed: %v", err)

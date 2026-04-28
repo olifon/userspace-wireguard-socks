@@ -18,7 +18,7 @@
 #      UWGS_CHROME_BIN=/path/to/chromium \
 #      UWGS_BROWSER_SMOKE_TRANSPORT=$transport \
 #      go test -run TestUWGWrapperNodeHeadlessChromeSmoke
-#   4. repeat for transport in {ptrace, preload-and-ptrace}
+#   4. repeat for transport in {systrap, systrap-supervised}
 #
 # Output: PASS/FAIL line per image with libc fingerprint.
 # Exit code: 0 PASS (both transports), non-zero FAIL.
@@ -60,7 +60,7 @@ case "$image" in
 esac
 
 results=""
-for transport in ptrace preload-and-ptrace; do
+for transport in systrap systrap-supervised; do
   docker_script=$(cat <<EOF
 set -e
 $install_cmd >/dev/null 2>&1

@@ -17,7 +17,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// runStaticPreload is the transport=preload-static entry point.
+// runStaticPreload is the transport=systrap-static entry point.
 //
 //   1. fork + exec the target with PTRACE_TRACEME so the parent
 //      becomes its tracer.

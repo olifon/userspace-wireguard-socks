@@ -120,24 +120,6 @@ Rust, chromium, JVM, anything linking libc) see effectively
 bypass libc; that overhead is **at least an order of magnitude
 cheaper** than the ptrace round-trip the `ptrace*` modes pay.
 
-## Removed modes (deprecation aliases)
-
-For one release window, the wrapper accepts and translates these:
-
-- `preload-and-ptrace` → runs `systrap`. The legacy
-  preload+seccomp+ptrace combination had cross-process per-fd
-  cache invariants (the per-fd cache is process-private; only the
-  in-process `.so` side could invalidate it; raw-asm `close(2)`
-  from the ptracer side could not). Today the cache is
-  negative-only so the invariant happens to hold, but it's
-  fragile under future changes. `systrap` covers the same use case
-  via a single in-process trap path with no cross-process state to
-  keep coherent.
-- `preload-static` → runs `systrap-static`.
-- `preload-with-optional-ptrace` → runs `auto`.
-
-These will be removed entirely in a later release.
-
 ## Environment variables
 
 - `UWGS_WRAPPER_TRANSPORT=systrap` — equivalent to
