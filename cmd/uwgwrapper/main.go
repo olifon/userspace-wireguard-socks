@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"debug/elf"
 	_ "embed"
 	"encoding/binary"
 	"errors"
@@ -434,6 +435,33 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 		// ptrace-seccomp remains as a user-selectable mode.
 		seccompOK := probeSeccompAvailable()
 		ptraceOK := probePtraceAvailable()
+
+		// Static-target pre-flight: if the wrapped target is a
+		// statically-linked ELF, libc-only `preload` (the last
+		// cascade slot) cannot intercept anything because there's
+		// no LD_PRELOAD path on a static binary, AND `systrap`
+		// alone (seccomp + SIGSYS but no ptrace) leaves the
+		// kernel's inherited filter active in the static child
+		// without an installed handler — first trapped syscall
+		// kills the child. Only systrap-supervised (with ptrace
+		// for blob inject) and ptrace work for static targets.
+		// Auto must FAIL fast if neither is reachable rather than
+		// silently fall through to a non-functional mode.
+		targetStatic := isStaticELF(target)
+		if targetStatic {
+			switch {
+			case seccompOK && ptraceOK:
+				systrapSupervisedRun()
+			case ptraceOK:
+				if err := traceNoSeccomp(); err != nil {
+					log.Fatalf("auto: ptrace-only failed for static target %q: %v", target, err)
+				}
+				return
+			default:
+				log.Fatalf("auto: target %q is statically linked, but this host blocks ptrace(2); only systrap-supervised or ptrace can intercept a static binary, and both require ptrace. Pick a different host or wrap a dynamic target. Note: --transport=preload (libc-only) and --transport=systrap cannot intercept static binaries.", target)
+			}
+			return
+		}
 		switch {
 		case seccompOK && ptraceOK:
 			// Best correctness + performance: real systrap-
@@ -459,6 +487,41 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 	default:
 		log.Fatalf("unsupported transport %q (supported: auto, systrap, systrap-static, preload, ptrace-seccomp, ptrace-only, ptrace)", transport)
 	}
+}
+
+// isStaticELF returns true if `path` is an ELF binary with no
+// PT_INTERP program header (i.e. a statically-linked executable
+// with no dynamic linker reference). Returns false on any error,
+// non-ELF input, or when path is empty — auto's caller should
+// treat false as "treat as dynamic for cascade purposes".
+//
+// Used by `auto` to fail fast when the user wraps a static
+// target on a host that blocks ptrace (no interception path
+// possible).
+func isStaticELF(path string) bool {
+	if path == "" {
+		return false
+	}
+	// Resolve PATH if path doesn't have a slash, so things like
+	// `uwgwrapper -- mybinary` work consistently with
+	// `uwgwrapper -- ./mybinary`.
+	resolved := path
+	if !strings.ContainsRune(path, '/') {
+		if p, err := exec.LookPath(path); err == nil {
+			resolved = p
+		}
+	}
+	f, err := elf.Open(resolved)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	for _, p := range f.Progs {
+		if p.Type == elf.PT_INTERP {
+			return false
+		}
+	}
+	return true
 }
 
 func appendEnv(env []string, kv string) []string {

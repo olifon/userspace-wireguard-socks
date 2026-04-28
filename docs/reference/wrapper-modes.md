@@ -11,15 +11,16 @@ explicitly with `--transport=...`, or let `auto` pick.
 
 ## Mode summary
 
-| Mode | Libc hooks | Kernel trap (seccomp + SIGSYS) | Per-syscall ptrace | Static binaries | Notes |
-|---|---|---|---|---|---|
-| `preload` | ✅ | — | — | ❌ | Libc-only fallback for hosts without seccomp or ptrace. Raw-asm syscalls leak past the hooks. |
-| `systrap` | ✅ | ✅ | optional (only at execve, when host allows it) | exec-into-static needs ptrace | Default. Fast: hot path stays in libc, raw-asm syscalls trap into our in-process SIGSYS handler. |
-| `systrap-static` | — | ✅ | ✅ at every execve | ✅ | For statically-linked targets *and* their dynamically-linked descendants — assumes everything is static, never uses libc hooks. Fundamentally requires ptrace for blob injection. |
-| `ptrace-seccomp` | — | ✅ (filter only, no SIGSYS) | ✅ | ✅ | Per-syscall ptrace; filter pre-selects the traced subset. Rarely needed (when both seccomp and ptrace are available, `systrap` is preferred). |
-| `ptrace-only` | — | — | ✅ (every syscall) | ✅ | Universal fallback for hosts where seccomp is restricted but ptrace works. |
-| `ptrace` | — | tries seccomp; falls back if blocked | ✅ | ✅ | Auto-pick between `ptrace-seccomp` and `ptrace-only`. |
-| `auto` | varies | varies | varies | varies | Probes the host for seccomp + ptrace availability and picks the strongest mode (table below). |
+| Mode | Libc hooks | Kernel trap (seccomp + SIGSYS) | Per-syscall ptrace | execve supervisor | Static target | Notes |
+|---|---|---|---|---|---|---|
+| `preload` | ✅ | — | — | — | ❌ | Libc-only fallback for hosts without seccomp or ptrace. Raw-asm syscalls leak past the hooks. |
+| `systrap` | ✅ | ✅ | — | — | ❌ (target itself); descendants of fork+exec into a static child also lose interception. | Recommended for **containers without ptrace** (Docker default seccomp, K8s pods without `SYS_PTRACE`). Fast: hot path stays in libc, raw-asm syscalls trap into our in-process SIGSYS handler. No tracer attached. |
+| `systrap-supervised` | ✅ | ✅ | only at execve / execveat (`SECCOMP_RET_TRACE`, otherwise idle) | ✅ | ✅ | The strongest mode. Same in-process SIGSYS path as `systrap`, plus a long-running ptrace supervisor that wakes on every `execve` boundary and re-arms: dynamic→static execve injects the freestanding blob into the static child; dynamic→dynamic relies on `LD_PRELOAD` propagation. Multi-threaded execve is naturally handled (kernel guarantees only the calling thread survives execve). Requires ptrace. |
+| `systrap-static` | — | ✅ | ✅ at every execve | ✅ | ✅ | Like `systrap-supervised` but **assumes every binary is static** — no libc hooks at all. Useful when libc on the host is broken or our `.so` can't link. Requires ptrace. |
+| `ptrace-seccomp` | — | ✅ (filter only, no SIGSYS) | ✅ | ✅ | ✅ | Per-syscall ptrace; filter pre-selects the traced subset. Auto skips this when seccomp+ptrace are both available — `systrap-supervised` is faster. |
+| `ptrace-only` | — | — | ✅ (every syscall) | ✅ | ✅ | Universal fallback for hosts where seccomp is restricted but ptrace works. |
+| `ptrace` | — | tries seccomp; falls back if blocked | ✅ | ✅ | ✅ | Auto-pick between `ptrace-seccomp` and `ptrace-only`. |
+| `auto` | varies | varies | varies | varies | depends — see below | Probes the host for seccomp + ptrace availability AND inspects the target ELF; picks the strongest mode that can actually intercept this target. **Fails fast** if the target is static and no mode can intercept it. |
 
 ## What needs ptrace, in detail
 
@@ -36,30 +37,62 @@ A clear mental model for when ptrace is mandatory vs. optional:
 
 ## `auto` cascade — what it picks per host shape
 
+`auto` first probes seccomp + ptrace availability, then ELF-checks
+the target binary for `PT_INTERP` (= dynamically linked) vs no
+`PT_INTERP` (= statically linked), and picks the strongest mode
+that can actually intercept this target:
+
+### Dynamic target
+
 | Host shape | `auto` picks | What works | What doesn't |
 |---|---|---|---|
-| seccomp ✅, ptrace ✅ | **`systrap`** with the supervisor (Phase 1.5+2; runs as plain `systrap` today until the supervisor lands) | Everything: dynamic, static, dynamic↔static execve, multi-threaded execve, fork+exec trees | (nothing — once the supervisor ships) |
-| seccomp ✅, ptrace ❌ (typical container: Docker default seccomp, K8s pods w/o `SYS_PTRACE`) | **`systrap`** (no ptrace) | Single-process workloads of dynamic binaries; fork+exec into other dynamic binaries (`LD_PRELOAD` re-arms via the dynamic linker) | Wrapping a static target directly fails the pre-flight check; descendants that `execve` into a static binary lose interception (seccomp filter inherited but no SIGSYS handler → child killed on first trapped syscall) |
-| seccomp ❌, ptrace ✅ (sandbox-inside-sandbox edge cases) | **`ptrace-only`** | Everything (slow — every syscall round-trips through the supervisor) | (nothing) |
-| seccomp ❌, ptrace ❌ (very restricted container) | **`preload`** (libc-only) | Libc-routed network calls only | Raw-asm syscalls (Go runtime internals, some C++/Rust net code), static binaries entirely, fork+exec to anything that bypasses libc |
+| seccomp ✅, ptrace ✅ | **`systrap-supervised`** | Everything: dynamic, dynamic→static execve, dynamic→dynamic execve, multi-threaded execve, fork+exec trees | (nothing) |
+| seccomp ✅, ptrace ❌ (typical container: Docker default seccomp, K8s pods w/o `SYS_PTRACE`) | **`systrap`** (no ptrace) | The dynamic target itself; fork+exec into other dynamic binaries (`LD_PRELOAD` re-arms via the dynamic linker) | Descendants that `execve` into a static binary lose interception (seccomp filter inherited but no SIGSYS handler → child killed on first trapped syscall) |
+| seccomp ❌, ptrace ✅ (sandbox-inside-sandbox edge cases) | **`ptrace`** (auto-picks ptrace-seccomp / ptrace-only inside) | Everything (slow — every syscall round-trips through the tracer) | (nothing) |
+| seccomp ❌, ptrace ❌ (very restricted container) | **`preload`** (libc-only) | Libc-routed network calls in the dynamic target | Raw-asm syscalls (Go runtime internals, some C++/Rust net code), descendants that exec into anything bypassing libc |
+
+### Static target
+
+The libc-only `preload` mode and the no-ptrace `systrap` mode
+**cannot intercept a static target at all** (no LD_PRELOAD path on
+a static binary; the inherited seccomp filter without an installed
+SIGSYS handler kills the child on the first trapped syscall).
+Auto uses an ELF pre-flight (`PT_INTERP` absent) to detect this
+and either picks a ptrace-using mode or fails fast.
+
+| Host shape | `auto` picks | What works |
+|---|---|---|
+| seccomp ✅, ptrace ✅ | **`systrap-supervised`** | Everything (in-process SIGSYS for the static target, blob inject for any further static descendants) |
+| seccomp ✅ or ❌, ptrace ✅ | **`ptrace-only`** | Everything (slow) |
+| ptrace ❌ | **`auto` exits with an error** explaining that no mode can intercept a static binary on this host. The user must wrap a dynamic target, run on a host that allows ptrace, or pick `--transport=preload` explicitly to accept the no-interception trade-off. | n/a |
 
 > **Kernel-availability fact.** `SECCOMP_RET_TRAP` and `SECCOMP_RET_TRACE` were added in the same kernel commit (Linux 3.5, `c2e1f2e30daa`, 2012). There is no host that ships one without the other — they're both return values of the same `seccomp(2)` syscall. So the "seccomp ✅" hosts above all support both `RET_TRAP` (powering systrap's SIGSYS path) and `RET_TRACE` (used for the execve hook in the supervisor). The independent variable is **ptrace**, which container runtimes commonly block separately from seccomp.
 
 ## Choosing a mode explicitly
 
-- **Default (`auto` or `systrap`)**: most hosts. Linux ≥ 4.8 with
-  unrestricted seccomp + SIGSYS support. Fast.
-- **`preload`**: containers that ban `seccomp(2)` *and* `ptrace(2)`.
-  The cost is that any caller using raw-asm syscalls (parts of the
-  Go runtime, some C++/Rust networking code) bypass interception
-  silently.
+- **`auto`**: let the wrapper probe + decide. Recommended for
+  general use. Fails fast on a static target without a working
+  interception path rather than running it un-armed.
+- **`systrap-supervised`**: full hosts (most Linux ≥ 4.8 + ptrace
+  allowed). Handles dynamic↔static execve seamlessly via the
+  ptrace supervisor. Fastest path that's also fully correct.
+- **`systrap`**: containers that ban `ptrace(2)` but allow
+  `seccomp(2)` (Docker default seccomp profile, K8s pods without
+  `SYS_PTRACE`). Same in-process SIGSYS as `systrap-supervised`
+  but no execve supervisor, so static descendants of a fork+exec
+  lose interception. The right pick when you know your container
+  policy blocks ptrace and your workload is dynamic-only.
+- **`preload`**: containers that ban both `seccomp(2)` and
+  `ptrace(2)`. Libc-only. The cost is that any caller using
+  raw-asm syscalls (parts of the Go runtime, some C++/Rust
+  networking code) bypass interception silently.
 - **`systrap-static`**: when your target is a statically-linked
-  binary (Go-with-`CGO_ENABLED=0`, musl-static C/Rust, BusyBox), or
-  when libc on the host is broken / can't link our `.so`. Assumes
-  everything is static and tracks new binaries via `RET_TRACE` on
-  every `execve`. **Requires ptrace.** The wrapper does a pre-flight
-  ptrace probe and fails fast with a clear error if ptrace is
-  blocked on this host.
+  binary (Go-with-`CGO_ENABLED=0`, musl-static C/Rust, BusyBox),
+  or when libc on the host is broken / can't link our `.so`.
+  Assumes everything is static and tracks new binaries via
+  `RET_TRACE` on every `execve`. **Requires ptrace.** The wrapper
+  does a pre-flight ptrace probe and fails fast with a clear
+  error if ptrace is blocked on this host.
 - **`ptrace-only`**: debugging or hosts that block seccomp entirely
   but allow ptrace. Slow.
 
@@ -93,20 +126,40 @@ These will be removed entirely in a later release.
 - `UWGS_DISABLE_SECCOMP=1` — legacy alias for
   `UWGS_DISABLE_SYSTRAP`. Both work.
 
-## Future direction
+## What systrap-supervised does on each execve boundary
 
-`systrap` will gain an adaptive execve supervisor (Phase 1.5 + 2
-fusion): a small ptrace process that wakes up only on
-`SECCOMP_RET_TRACE` for `execve` / `execveat`, decides per-image
-whether the new binary is static or dynamic, and re-arms the
-appropriate injection (libc-shim re-load via `LD_PRELOAD` for
-dynamic, blob inject for static). After exec the supervisor goes
-back to sleep — no per-syscall ptrace cost. This is what makes
-dynamic↔static execve transitions work seamlessly within a single
-wrapped process tree.
+Once attached, the supervisor waits on
+`PTRACE_EVENT_SECCOMP` for `SYS_execve` / `SYS_execveat` (the
+filter installed by the `.so` constructor returns
+`SECCOMP_RET_TRACE` for those when `UWGS_SUPERVISED=1` is in the
+environment). On every event:
 
-When the supervisor lands, the `auto` cascade behaviour for
-"seccomp ✅, ptrace ✅" gains the static-execve handling
-automatically. Hosts that block ptrace (the second row in the
-cascade table) keep working with the same caveats: dynamic-only
-trees are fine; exec-into-static is unreachable on those hosts.
+1. Let the syscall continue (`PTRACE_CONT`).
+2. Wait for the follow-up `PTRACE_EVENT_EXEC` stop. (Note: this
+   only fires when execve **succeeds**. A failed `execve(2)`
+   returns through the SECCOMP event with the original image
+   intact and never produces a EXEC stop — handled correctly
+   by the loop.)
+3. Single-step once. The EXEC stop fires inside the kernel's
+   syscall-exit path (PC has been switched to the new image's
+   entry but the syscall hasn't unwound); remote `mmap` is
+   unreliable from here. Single-step advances the tracee to
+   the first user-space instruction where regs are user-mode
+   regs and remote syscalls work.
+4. Open `/proc/<pid>/exe` and inspect `PT_INTERP`:
+   - present → dynamic image; `LD_PRELOAD` will re-run the
+     `.so` constructor in the new image; supervisor does
+     nothing.
+   - absent → static image; supervisor injects the
+     freestanding blob via the same machinery as
+     `systrap-static` (parse blob → remote `mmap` →
+     `PTRACE_POKEDATA` segments → jump to `uwg_static_init`).
+5. `PTRACE_CONT` and loop.
+
+The supervisor stays attached for the **entire lifetime** of the
+process tree (it never `PTRACE_DETACH`es). Children spawned via
+`fork`/`vfork`/`clone` are auto-traced via
+`PTRACE_O_TRACEFORK` / `TRACEVFORK` / `TRACECLONE`. The supervisor
+exits with the same status as the root traced PID; non-traced
+sibling processes (the fdproxy daemon spawned by the wrapper)
+are filtered out of the wait loop by PID.
