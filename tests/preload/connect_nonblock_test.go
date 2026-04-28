@@ -50,9 +50,14 @@ func TestPtraceNonblockConnectFlow(t *testing.T) {
 	for _, transport := range []string{"preload", "preload-and-ptrace", "ptrace", "ptrace-seccomp", "ptrace-only"} {
 		for _, mode := range []string{"sock-nonblock", "fcntl", "blocking"} {
 			t.Run(transport+"/"+mode, func(t *testing.T) {
+				// Bumped from 30s — ptrace-only mode on GH runners
+				// occasionally exceeds 30s under CPU contention; the
+				// per-syscall ptrace round-trip multiplies anything
+				// that's already slow. Self-hosted + dev hosts complete
+				// in <0.1s, so 90s is generous.
 				out := runWrappedTargetWithOptions(t, art, httpSock, transport, repro,
 					[]string{"100.64.94.1", "18080", mode},
-					wrapperRunOptions{timeout: 30 * time.Second})
+					wrapperRunOptions{timeout: 90 * time.Second})
 				// "OK got N bytes" is the success sentinel from the
 				// reproducer. Anything else (FAIL ..., a hang, an
 				// empty stdout) means a real regression.

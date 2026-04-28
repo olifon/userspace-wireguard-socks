@@ -534,7 +534,7 @@ jobs:
             --cap-add SYS_PTRACE \
             --security-opt seccomp=unconfined \
             golang:alpine \
-            sh -c "apk add --no-cache gcc musl-dev linux-headers && \
+            sh -c "apk add --no-cache gcc musl-dev linux-headers bash file && \
                    mkdir -p cmd/uwgwrapper/assets && \
                    gcc -shared -fPIC -O2 -Wall -Wextra \
                      -o cmd/uwgwrapper/assets/uwgpreload.so preload/uwgpreload.c -ldl -pthread -lpthread && \
@@ -642,20 +642,20 @@ jobs:
           - name: musl-current-amd64
             runner: ubuntu-latest
             image: golang:1.24-alpine
-            install: 'apk add --no-cache gcc musl-dev linux-headers git'
+            install: 'apk add --no-cache gcc musl-dev linux-headers git bash file'
           - name: musl-current-arm64
             runner: ubuntu-24.04-arm
             image: golang:1.24-alpine
-            install: 'apk add --no-cache gcc musl-dev linux-headers git'
+            install: 'apk add --no-cache gcc musl-dev linux-headers git bash file'
           # musl older — Alpine 3.16 (musl 1.2.3) with manual Go install
           - name: musl-1.2.3-amd64
             runner: ubuntu-latest
             image: alpine:3.16
-            install: 'apk add --no-cache gcc musl-dev linux-headers git wget ca-certificates && wget -q https://go.dev/dl/go1.25.0.linux-amd64.tar.gz -O /tmp/go.tgz && tar -C /usr/local -xzf /tmp/go.tgz'
+            install: 'apk add --no-cache gcc musl-dev linux-headers git bash file wget ca-certificates && wget -q https://go.dev/dl/go1.25.0.linux-amd64.tar.gz -O /tmp/go.tgz && tar -C /usr/local -xzf /tmp/go.tgz'
           - name: musl-1.2.3-arm64
             runner: ubuntu-24.04-arm
             image: alpine:3.16
-            install: 'apk add --no-cache gcc musl-dev linux-headers git wget ca-certificates && wget -q https://go.dev/dl/go1.25.0.linux-arm64.tar.gz -O /tmp/go.tgz && tar -C /usr/local -xzf /tmp/go.tgz'
+            install: 'apk add --no-cache gcc musl-dev linux-headers git bash file wget ca-certificates && wget -q https://go.dev/dl/go1.25.0.linux-arm64.tar.gz -O /tmp/go.tgz && tar -C /usr/local -xzf /tmp/go.tgz'
     steps:
       - uses: actions/checkout@v4
 

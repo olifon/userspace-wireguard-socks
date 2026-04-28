@@ -493,8 +493,11 @@ func TestUWGWrapperSocketSyscallSurfaceExtra(t *testing.T) {
 	for _, transport := range []string{"preload", "preload-and-ptrace", "ptrace", "ptrace-seccomp", "ptrace-only"} {
 		t.Run(transport, func(t *testing.T) {
 			if transportTracerCountsHotpathSyscalls(transport) {
+				// Bumped from 60s — ptrace-only on GH runners occasion-
+				// ally exceeds 60s; same CPU-contention root cause as
+				// TestPtraceNonblockConnectFlow.
 				out, stats := runWrappedTargetWithStats(t, art, httpSock, transport, art.stub, args,
-					wrapperRunOptions{timeout: 60 * time.Second})
+					wrapperRunOptions{timeout: 120 * time.Second})
 				if normalizedOutput(out) != "syscall-surface-extra" {
 					t.Fatalf("unexpected syscall surface extra output %q", out)
 				}
