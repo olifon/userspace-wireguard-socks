@@ -189,8 +189,32 @@ int uwg_core_init(void) {
      * sets this env when transport=systrap-supervised. */
     const char *sup = uwg_getenv("UWGS_SUPERVISED");
     uwg_seccomp_supervised_flag = (sup && *sup == '1') ? 1 : 0;
+
+    /* Skip duplicate install across execve: the kernel inherits
+     * seccomp filters across execve, so when the child's preload
+     * constructor runs the parent's filter is already in place.
+     * Stacking a second identical filter works (kernel allows N
+     * filters) but burns cycles on every syscall. UWGS_SECCOMP_INSTALLED=1
+     * in the inherited env tells us the parent already installed; the
+     * SIGSYS handler still needs reinstalling (signal handlers ARE reset
+     * on execve), but the filter we can skip. */
+    const char *already = uwg_getenv("UWGS_SECCOMP_INSTALLED");
+    if (already && *already == '1') {
+        return 0;
+    }
+
     rc = uwg_install_seccomp_filter(uwg_bypass_secret);
     if (rc < 0) return rc;
+
+#ifndef UWG_FREESTANDING
+    /* Mark the filter as installed in the environment so children
+     * inheriting our env via execve can skip the duplicate install.
+     * setenv is libc-only; the freestanding/static build can't easily
+     * mutate environ, but it doesn't typically execve into Phase-1
+     * preload children either, so the missed-dedupe cost is moot. */
+    extern int setenv(const char *, const char *, int);
+    (void)setenv("UWGS_SECCOMP_INSTALLED", "1", 1);
+#endif
 
     return 0;
 }
