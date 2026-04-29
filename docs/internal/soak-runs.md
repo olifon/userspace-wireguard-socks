@@ -85,15 +85,31 @@ A soak run "passes" when, over the 24-hour window:
   7.7 GB RAM, Go 1.25.0.
 - **Test**: `TestLoopbackImpairedChattySOCKSSoak` (24h soak with
   impaired-network chatty SOCKS proxy load).
-- **Started**: 2026-04-28T15:26Z (CEST 17:26).
-- **Finished**: TBD on the next run-log update.
-- **Trajectory** (5-min samples; 8h-in snapshot):
-  - RSS warm-up: 45 MB → 60 MB over first 5 min, then stable
-    at 62-63 MB through 8h+ in.
-  - Threads: 9-10 throughout.
-  - FDs: 23 throughout.
-  - Net conns: 14-25 oscillating (the test's chatty workload).
-- **Verdict**: TBD when the 24h completes. Cron will append.
+- **Started**: 2026-04-28T15:26Z.
+- **Finished**: 2026-04-29T15:26Z. Wall: 86400.06s, exit 0.
+- **Trajectory** (5-min samples across the full 24h):
+  - **RSS**: 45 MB at start → 60 MB after 5 min warm-up → settled
+    in a 62-63 MB band for the remaining 23h (final 63 MB). +18 MB
+    total, all in the warm-up; flat after that. No drift.
+  - **Threads**: 8 → steady 10 throughout. No goroutine leak.
+  - **FDs**: 23 throughout — perfectly flat. No FD leak.
+  - **Heap**: 30-60 MB band sampled by the test's own
+    `runtime.ReadMemStats`. No drift; consistent with the RSS
+    plateau.
+  - **Goroutines** (sampled inside the test): 95-104 steady-state
+    band, tracking the chatty-SOCKS active-connection churn.
+    Every `proxy_pending` count returned to single digits between
+    bursts; `active_connections=0` at every quiescent sample.
+- **Verdict**: **PASS**. No leak signals. RSS / FDs / goroutines
+  all in healthy steady states. The 18 MB warm-up bump is the
+  initial netstack table allocation; everything past minute 5 is
+  flat. Suitable as the v1.0.0 release-blocker reference baseline.
+- **Notes**: The run included Phase 1 SIGSYS+seccomp preload (the
+  graduated production path), the new TURN auto-reconnect machinery
+  on standby (no TURN traffic in this workload), and the wrapper
+  state-file cleanup landed mid-run. None of those touched the
+  steady-state numbers; the soak is a pure SOCKS+netstack+
+  WireGuard exercise.
 
 <!-- Future entries follow this shape: -->
 <!--
