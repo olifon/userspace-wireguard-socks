@@ -2,79 +2,119 @@
  * Copyright (c) 2026 Reindert Pelsma
  * SPDX-License-Identifier: ISC
  *
- * Inert SIGSYS pre-init stub for systrap-supervised mode.
+ * Design doc for closing the post-execve raw-asm coverage gap (#92).
  *
- * == What this is ==
- *
- * A minimal SIGSYS handler that the supervisor injects into a tracee
- * BEFORE the tracee's libc-init runs in the post-execve window. Once
- * the wrapped program's real Phase 1 LD_PRELOAD constructor runs, it
- * replaces this stub with the full uwg_sigsys_handler from sigsys.c.
- *
- * == Why ==
+ * == The gap ==
  *
  * Today preload/core/seccomp.c trims read / write / close / dup /
- * fcntl out of the trap list because libc-init in the post-execve
- * child runs them heavily and would die on a SIGSYS without an
- * installed handler (signal handlers reset on execve, the inherited
- * filter does not). That trade-off forfeits coverage of those
- * syscalls when called from raw asm — Go-runtime / a few portability
- * shims that bypass the libc symbol layer.
+ * dup2 / dup3 / fcntl out of the trap list because libc-init in the
+ * post-execve child runs them heavily and would die on a SIGSYS
+ * without an installed handler (signal handlers reset on execve,
+ * the inherited filter does not). That trade-off forfeits coverage
+ * of those syscalls when called from raw asm — Go-runtime, a few
+ * portability shims, and any code that bypasses libc.
  *
- * Under systrap-supervised the supervisor can ptrace the tracee
- * mid-execve and install this inert stub at the post-execve stop
- * before user code runs. Once the stub is in place we can re-add
- * read/write/close/dup/fcntl to the trap list without losing the
- * post-execve window. Phase 1's real constructor running later
- * overwrites the SIGSYS sa_handler with the dispatching uwg_sigsys_
- * handler, and all subsequent SIGSYS events go through normal
- * dispatch.
+ * == Two designs considered ==
  *
- * == What this stub does ==
+ * --- Design A: in-tracee asm stub ---
  *
- * Receive SIGSYS, decode the syscall nr + first 6 args from the
- * ucontext, re-issue the same syscall via raw asm with the bypass
- * secret in arg6, write the return value back into the ucontext's
- * RAX/X0 slot, and return. The kernel's signal-return path then
- * resumes the tracee with the syscall's effective return value in
- * the ABI return register.
+ * Supervisor at PTRACE_EVENT_EXEC mmaps a page in the tracee,
+ * writes a precomputed asm SIGSYS handler (patched with the bypass
+ * secret), calls rt_sigaction(SIGSYS, stub_addr) via remoteSyscall,
+ * then PtraceCont. The stub: read syscall nr from siginfo->si_syscall,
+ * read args from ucontext.uc_mcontext.gregs[], issue the same
+ * syscall via raw asm with bypass_secret in arg6, write result back
+ * to gregs[REG_RAX], return. Phase 1's real constructor later
+ * overwrites the SIGSYS sa_handler with the full dispatcher.
  *
- * == Status ==
+ * Pro: zero supervisor round-trip per trapped syscall after install.
+ * Con: ucontext layout differs across glibc versions and arches —
+ *      need separate amd64 and arm64 asm blobs, each ~50-80 bytes,
+ *      kept in sync with kernel ABI changes. Plus the bypass-secret
+ *      patch.
  *
- * SCAFFOLDED, not built or wired yet. The full integration needs:
+ * --- Design B: supervisor-as-handler ---  *** PREFERRED ***
  *
- *   1. Position-independent asm version of this stub for both
- *      x86_64 and arm64 (the ucontext field offsets differ across
- *      arches and across kernel versions). Probably easier to have
- *      the Go supervisor side emit the asm directly into the
- *      tracee's mmap'd page (codex's installAMD64CallStub pattern).
+ * No in-tracee asm. With ptrace attached, every signal stops the
+ * tracee for the tracer's review (signal-delivery-stop). For SIGSYS-
+ * stops in the trapped subset, the supervisor:
  *
- *   2. Supervisor wiring at PTRACE_EVENT_EXEC: mmap a page in the
- *      tracee, write the stub bytes, call rt_sigaction(SIGSYS,
- *      &stub_addr) via remoteSyscall, then PtraceCont. All three
- *      steps need to happen BEFORE the tracee's first user-space
- *      instruction runs.
+ *   1. Reads tracee regs via PtraceGetRegs.
+ *   2. Reads syscall nr from siginfo via PtraceGetSiginfo, OR from
+ *      orig_rax in the regs. Reads args 0-5 from regs.
+ *   3. Decides handle-or-forward (see "window detection" below).
+ *   4. To HANDLE: issues the same syscall via remoteSyscall (which
+ *      passes the bypass secret in arg6, so our own filter ALLOWs).
+ *      Writes the result to regs.RAX. Advances RIP/PC by the
+ *      syscall instruction length (2 bytes on x86_64, 4 on arm64
+ *      — same as the syscall opcode width). PtraceSetRegs.
+ *      PtraceCont(pid, 0) — suppresses the SIGSYS, tracee continues
+ *      from past-the-syscall.
+ *   5. To FORWARD: PtraceCont(pid, SIGSYS) — delivers the signal,
+ *      tracee's installed handler runs, dispatches via uwg_dispatch.
  *
- *   3. seccomp.c trap-list expansion: add SYS_read, SYS_write,
- *      SYS_close, SYS_dup, SYS_dup2, SYS_dup3, SYS_fcntl back to
- *      uwg_trapped_syscalls[], gated on the supervised flag (so
- *      bare systrap mode keeps its current narrower list and
- *      doesn't need this stub).
+ * Pro: no in-tracee code. All logic in the Go supervisor. Cross-arch
+ *      via the same syscall-arg helpers (cmd/uwgwrapper/exec_env_
+ *      inject_amd64.go / _arm64.go) we already have.
+ * Con: every trapped syscall costs a ptrace round-trip while the
+ *      supervisor handles it. Acceptable because:
+ *        a) The window where the supervisor handles is small (libc-
+ *           init only); after phase1's constructor runs we forward
+ *           SIGSYS to the in-tracee dispatcher which has zero
+ *           ptrace overhead.
+ *        b) The fd 0/1/2 BPF fast-skip (see below) eliminates the
+ *           dominant traffic — stdio.
  *
- *   4. BPF builder: fd 0/1/2 fast-skip for read/write/close/dup/
- *      fcntl. Inserted between the syscall-nr load and the trap
- *      loop: if nr is one of the stdio-relevant ones AND args[0]
- *      is < 3, RET_ALLOW. Saves a SIGSYS round-trip on every stdio
- *      syscall, which would dominate post-trap-list-expansion cost.
- *      Stdio fds are essentially never WireGuard-tunnel sockets
- *      (would have to be intentional dup2 over them, which breaks
- *      stdio for the rest of the process).
+ * == Window detection ==
  *
- *   5. Test: tests/preload/inert_stub_test.go that verifies a
- *      raw-asm read/write on a non-stdio tunnel-managed fd is
- *      handled correctly by the stub during the post-execve window.
+ * The supervisor needs to know whether to handle SIGSYS (libc-init
+ * window, no in-tracee handler) or forward (post-init, in-tracee
+ * dispatcher ready).
  *
- * Tracked as task #92.
+ *   - Cleanest: tracee writes to /proc/self/comm or another
+ *     supervisor-readable side channel when its constructor finishes.
+ *   - Simpler: track per-pid state. handleExecveBoundary marks pid
+ *     as "in pre-init window". The supervisor flips it when it
+ *     observes the first non-trapped syscall (= phase1 constructor
+ *     installed the real handler so subsequent traps ARE going to
+ *     the in-tracee handler). Heuristic, but reliable in practice.
+ *   - Pragmatic alternative: handle SIGSYS for fd 0/1/2 syscalls
+ *     unconditionally (libc-init's pattern); forward for the rest.
+ *     The BPF fd 0/1/2 fast-skip below makes this moot — stdio
+ *     traps don't reach the supervisor at all.
+ *
+ * == BPF fd 0/1/2 fast-skip ==
+ *
+ * For each syscall in the expanded trap set, before RET_TRAP, emit:
+ *   if syscall nr matches AND args[0] < 3: RET_ALLOW
+ *
+ * Saves a SIGSYS round-trip on every stdio syscall. Stdio fds are
+ * essentially never WireGuard-tunnel sockets (would have to be
+ * intentional dup2 over them, which breaks stdio for the rest of
+ * the process).
+ *
+ * == Implementation order ==
+ *
+ *   1. Add UWG_FILTER_ARG0_LO infrastructure (already exists, used
+ *      by the rt_sigaction(SIGSYS) conditional trap).
+ *   2. Extend uwg_build_filter: when supervised, emit per-syscall
+ *      trap entries with the fd 0/1/2 fast-skip prepended.
+ *   3. Add SYS_read/write/close/dup/dup2/dup3/fcntl to a new
+ *      uwg_trapped_syscalls_supervised_extra[] array, included only
+ *      when supervised flag is set.
+ *   4. supervisor: handle SIGSYS-stop (signal-delivery-stop with
+ *      sig == SIGSYS). New helper handleSIGSYSStop in a new file
+ *      cmd/uwgwrapper/sigsys_stop_handler.go. Reuses remoteSyscall
+ *      / PtraceGetRegs / PtraceSetRegs / readSyscallArg /
+ *      writeSyscallArg.
+ *   5. Test: tests/preload/inert_stub_test.go — raw-asm read/write
+ *      via syscall(2) on a non-stdio tunnel fd in the post-execve
+ *      window must succeed.
+ *
+ * Tracked as task #92. This file exists as the design pin; no code
+ * here is built or linked. The Design-A asm-stub C reference below
+ * stays for posterity in case Design B's per-syscall ptrace overhead
+ * becomes a bottleneck and we want to revisit.
  */
 
 #ifndef UWG_FREESTANDING
