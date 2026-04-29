@@ -41,6 +41,24 @@
 long uwg_socket(int domain, int type, int protocol) {
     long fd = uwg_passthrough_syscall3(SYS_socket, domain, type, protocol);
     uwg_tracef("socket domain=%d type=%d proto=%d -> %ld", domain, type, protocol, fd);
+    /* ICMP-without-caps fallback. AF_INET[6]+SOCK_DGRAM+IPPROTO_ICMP[V6]
+     * needs CAP_NET_RAW or net.ipv4.ping_group_range membership; on
+     * GH-hosted runners (and stripped containers) neither is available
+     * and the kernel returns -EPERM. The fd we return here is just a
+     * placeholder — connect() dup3's a unix socketpair end (the manager
+     * stream) over it, so the type/protocol the kernel sees never
+     * matters. Retry with protocol=0 (becomes UDP for SOCK_DGRAM) so we
+     * have a real fd to track. Mirrors legacy uwgpreload.c's
+     * is_icmp_protocol fallback. -EACCES = -13, -EPERM = -1. */
+    if (fd == -1 || fd == -13) {
+        int base = type & 0xff /* SOCK_TYPE_MASK */;
+        if ((domain == AF_INET || domain == AF_INET6) &&
+            base == SOCK_DGRAM &&
+            (protocol == 1 /* IPPROTO_ICMP */ || protocol == 58 /* IPPROTO_ICMPV6 */)) {
+            fd = uwg_passthrough_syscall3(SYS_socket, domain, type, 0);
+            uwg_tracef("socket icmp-retry-with-proto-0 -> %ld", fd);
+        }
+    }
     if (fd < 0) return fd;
 
     /* Only track fds in families the wrapper cares about. AF_UNIX,
