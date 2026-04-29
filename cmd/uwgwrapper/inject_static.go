@@ -13,7 +13,7 @@ import (
 	"runtime"
 )
 
-// Phase 2 static-binary supervisor scaffolding.
+// Phase 2 static-binary supervisor.
 //
 // Goal: when uwgwrapper is asked to wrap a static binary (no
 // LD_PRELOAD path), inject our freestanding uwgpreload-static blob
@@ -21,19 +21,24 @@ import (
 // then let the tracee run at full speed with the in-process SIGSYS
 // handler installed.
 //
-// Implementation ladder:
-//   ✅ Step 1: freestanding.h shim
-//   ✅ Step 2: custom uwg_parse_ipv6
-//   ✅ Step 3: build_static.sh produces freestanding .so
-//   ✅ Step 4: replace __thread + environ with portable shims
-//             — zero externs in freestanding build
-//   ✅ Step 5a: ELF parser scaffold (this file) — finds entry point
-//             offset, enumerates PT_LOAD segments, returns relocation
-//             tables for the supervisor to apply.
-//   ⏳ Step 5b: remote mmap via ptrace SETREGS (allocate space in tracee)
-//   ⏳ Step 5c: PTRACE_POKEDATA copy of segments + relocation fixup
-//   ⏳ Step 5d: jump to uwg_static_init via PTRACE_SETREGS RIP
-//   ⏳ Step 6:  validation suite: tests/preload/phase2_static_test.go
+// All implementation steps shipped:
+//   - freestanding.h shim
+//   - custom uwg_parse_ipv6
+//   - build_static.sh produces freestanding .so
+//   - __thread + environ replaced with portable shims; zero externs
+//     in the freestanding build
+//   - ELF parser (this file) — finds entry point offset, enumerates
+//     PT_LOAD segments, returns relocation tables
+//   - remote mmap via remoteSyscall(SYS_mmap) — see inject_load.go
+//   - PTRACE_POKEDATA copy of segments + RELA relocation fixup —
+//     loadBlobIntoTracee in inject_load.go
+//   - jump to uwg_static_init via PTRACE_SETREGS — runStaticInitWithEnvp
+//     in inject_run.go (and the equivalent path used at execve
+//     boundaries by handleExecveBoundary in systrap_supervisor.go)
+//
+// Validation: tests/preload/phase2_static_test.go (Go-static HTTP
+// server stress) and tests/preload/systrap_supervised_test.go (dynamic
+// shell execve'ing a static stub_client) pin the end-to-end flow.
 
 // staticBlobSpec describes everything the supervisor needs to inject
 // the blob into a tracee. Computed once per uwgwrapper run and
@@ -171,10 +176,11 @@ func parseStaticBlob(path string) (*staticBlobSpec, error) {
 		return nil, errors.New("blob has no PT_LOAD segments")
 	}
 
-	// TODO Step 5b: parse .rela.dyn for RELA entries the supervisor
-	// applies post-copy. For an -fPIC freestanding .so produced by
-	// build_static.sh, these are typically R_X86_64_RELATIVE for the
-	// few static-pointer fields (e.g., __dso_handle if any).
+	// .rela.dyn relocations (R_X86_64_RELATIVE / R_AARCH64_RELATIVE)
+	// are read and applied post-copy by applyRelocations in
+	// inject_load.go — that path runs after the segments are written
+	// into the tracee, so we don't need to materialize them on the
+	// spec at parse time.
 
 	return spec, nil
 }
