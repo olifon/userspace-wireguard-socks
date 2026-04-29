@@ -263,4 +263,19 @@ static inline long uwg_passthrough_syscall5(long nr, long a1, long a2, long a3, 
     return uwg_syscall6(nr, a1, a2, a3, a4, a5, (long)uwg_bypass_secret);
 }
 
+/*
+ * 6-arg variant. Used by uwg_dispatch's default case (passthrough for
+ * syscalls without an explicit handler) and by the shim_libc syscall(2)
+ * wrapper. There is no slot to add the bypass secret because the 6th
+ * positional is already consumed by the caller's a6 — so we route
+ * through plain uwg_syscall6 without the bypass. Safe for unknown-
+ * syscall passthrough because the seccomp filter only traps the
+ * specific syscalls in our trap list (everything else is RET_ALLOW'd
+ * by the kernel directly), and any trapped syscall has an explicit
+ * case in uwg_dispatch above.
+ */
+static inline long uwg_passthrough_syscall6(long nr, long a1, long a2, long a3, long a4, long a5, long a6) {
+    return uwg_syscall6(nr, a1, a2, a3, a4, a5, a6);
+}
+
 #endif /* UWG_PRELOAD_CORE_SYSCALL_H */

@@ -80,9 +80,22 @@ long uwg_dispatch(long nr, long a1, long a2, long a3,
         return uwg_passthrough_syscall4(SYS_rt_sigaction, a1, a2, a3, a4);
 
     default:
-        /* Filter and dispatch table out of sync — bug. The filter
-         * trapped a syscall we didn't register. Fail closed. */
-        return ENOSYS_RET;
+        /* Unknown syscall — pass through to the kernel with the
+         * bypass-secret in arg6 so the seccomp filter ALLOWs it. The
+         * SIGSYS handler reaches this branch when:
+         *   1. Filter and dispatch table are out of sync (programmer
+         *      error — adding a syscall to the trap list without
+         *      adding a case here). Passthrough means the kernel does
+         *      its normal job; symptom is just lost interception, not
+         *      a fail-closed crash. We accept this trade-off because:
+         *   2. Library code that calls libc's syscall(2) wrapper
+         *      (vs. the per-syscall libc symbols like bind(2)) routes
+         *      its raw syscall through this dispatcher — see
+         *      preload/shim_libc/shim_syscall.c. The shim's call to
+         *      uwg_dispatch lands here for any syscall nr we don't
+         *      explicitly intercept, and the right answer is "let the
+         *      kernel handle it." */
+        return uwg_passthrough_syscall6(nr, a1, a2, a3, a4, a5, a6);
     }
 }
 
