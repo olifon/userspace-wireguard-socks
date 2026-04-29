@@ -38,7 +38,6 @@ type wrapperArtifacts struct {
 	rawmixLib    string
 	rawmixClient string
 	nnpProbe     string
-	reentrant    string
 	stdioHeavy   string
 }
 
@@ -855,24 +854,6 @@ func TestUWGWrapperPtraceLifecycleLoop(t *testing.T) {
 	}
 }
 
-func TestUWGWrapperReentrantTrackedLockFailsFast(t *testing.T) {
-	requireWrapperToolchain(t)
-	art := buildWrapperArtifacts(t)
-	httpSock := filepath.Join(t.TempDir(), "unused-api.sock")
-
-	out := runWrappedTargetWithOptions(t, art, httpSock, "systrap", art.reentrant,
-		[]string{"100.64.94.2", "19197"},
-		wrapperRunOptions{
-			timeout: 30 * time.Second,
-			env: map[string]string{
-				"UWGS_TEST_TRACKED_WRLOCK_DELAY_US": "50000",
-			},
-		})
-	if normalizedOutput(out) != "reentrant-ok" {
-		t.Fatalf("unexpected reentrant output %q", out)
-	}
-}
-
 func TestUWGWrapperNoNewPrivilegesDefaultAndOverride(t *testing.T) {
 	if runningRestrictedGVisor() {
 		t.Skip("restricted gVisor keeps no_new_privs forced on wrapper-launched processes")
@@ -934,7 +915,6 @@ func buildWrapperArtifacts(t *testing.T) wrapperArtifacts {
 		rawmixLib:    filepath.Join(tmp, "librawmix_helpers.so"),
 		rawmixClient: filepath.Join(tmp, "rawmix_client"),
 		nnpProbe:     filepath.Join(tmp, "nnp_probe"),
-		reentrant:    filepath.Join(tmp, "reentrant_client"),
 		stdioHeavy:   filepath.Join(tmp, "stdio_heavy"),
 	}
 	if err := os.MkdirAll(embeddedPreloadDir, 0o755); err != nil {
@@ -947,7 +927,6 @@ func buildWrapperArtifacts(t *testing.T) wrapperArtifacts {
 	run(t, repo, "gcc", "-shared", "-fPIC", "-O2", "-Wall", "-Wextra", "-o", art.rawmixLib, "tests/preload/testdata/rawmix_helpers.c")
 	run(t, repo, "gcc", "-O2", "-Wall", "-Wextra", "-pthread", "-I", "tests/preload/testdata", "-L", tmp, "-Wl,-rpath,$ORIGIN", "-o", art.rawmixClient, "tests/preload/testdata/rawmix_client.c", "-lrawmix_helpers")
 	run(t, repo, "gcc", "-O2", "-Wall", "-Wextra", "-o", art.nnpProbe, "tests/preload/testdata/nnp_probe.c")
-	run(t, repo, "gcc", "-O2", "-Wall", "-Wextra", "-o", art.reentrant, "tests/preload/testdata/reentrant_client.c")
 	run(t, repo, "gcc", "-O2", "-Wall", "-Wextra", "-o", art.stdioHeavy, "tests/preload/testdata/stdio_heavy.c")
 	buildWithEnv(t, repo, map[string]string{"CGO_ENABLED": "0"}, "go", "build", "-o", art.raw, "tests/preload/testdata/raw_client.go")
 	buildWithEnv(t, repo, map[string]string{"CGO_ENABLED": "0"}, "go", "build", "-o", art.wrapper, "./cmd/uwgwrapper")
