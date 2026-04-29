@@ -32,6 +32,13 @@ func readSyscallArg(regs *unix.PtraceRegs, n int) uint64 {
 	return 0
 }
 
+// writeSyscallReturn sets the syscall return register (RAX on amd64).
+// Used by the SIGSYS-stop handler to inject a passthrough syscall's
+// result into the tracee's view.
+func writeSyscallReturn(regs *unix.PtraceRegs, v uint64) {
+	regs.Rax = v
+}
+
 func writeSyscallArg(regs *unix.PtraceRegs, n int, v uint64) {
 	switch n {
 	case 0:

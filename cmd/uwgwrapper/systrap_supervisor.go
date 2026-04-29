@@ -58,7 +58,7 @@ import (
 // so we always see a single PID re-emerge from the post-exec stop
 // — no special handling needed for multi-threaded targets.
 func runSystrapSupervised(target string, args, env []string,
-	preloadPath, blobPath string) error {
+	preloadPath, blobPath string, bypassSecret uint64) error {
 
 	if preloadPath == "" {
 		return errors.New("systrap-supervised needs --preload (or UWGS_PRELOAD) for dynamic-target re-arm")
@@ -133,7 +133,7 @@ func runSystrapSupervised(target string, args, env []string,
 		return fmt.Errorf("initial PTRACE_CONT: %w", err)
 	}
 
-	exitCode, err := supervisorEventLoop(rootPID, blobSpec, options)
+	exitCode, err := supervisorEventLoop(rootPID, blobSpec, options, bypassSecret)
 	if err != nil {
 		return err
 	}
@@ -145,7 +145,7 @@ func runSystrapSupervised(target string, args, env []string,
 // Returns the wrapped target's exit code on clean termination
 // (when the root traced PID exits — we don't wait for non-traced
 // siblings like a co-running fdproxy daemon).
-func supervisorEventLoop(rootPID int, blobSpec *staticBlobSpec, traceeOptions int) (int, error) {
+func supervisorEventLoop(rootPID int, blobSpec *staticBlobSpec, traceeOptions int, bypassSecret uint64) (int, error) {
 	const (
 		ptraceEventFork    = unix.PTRACE_EVENT_FORK
 		ptraceEventVfork   = unix.PTRACE_EVENT_VFORK
@@ -276,11 +276,22 @@ func supervisorEventLoop(rootPID int, blobSpec *staticBlobSpec, traceeOptions in
 				// or a signal-stop. For new-child events the
 				// kernel auto-attaches; we just need to
 				// continue the parent. For signal-stops we
-				// pass the signal through to the tracee.
+				// pass the signal through to the tracee — except
+				// SIGSYS during the post-execve libc-init window
+				// where we act as the inert pre-init handler so
+				// the trap-list expansion (#92) is safe to enable.
 				deliver := 0
 				if cause == 0 && sig != syscall.SIGTRAP {
-					// Genuine signal-stop — re-deliver.
 					deliver = int(sig)
+				}
+				if cause == 0 && sig == syscall.SIGSYS {
+					handled, herr := handleSIGSYSStop(pid, sig, bypassSecret)
+					if herr != nil {
+						fmt.Fprintf(os.Stderr, "uwgwrapper: systrap-supervised: SIGSYS-stop handler for pid %d failed: %v\n", pid, herr)
+					}
+					if handled {
+						deliver = 0
+					}
 				}
 				if err := unix.PtraceCont(pid, deliver); err != nil {
 					if errors.Is(err, syscall.ESRCH) {

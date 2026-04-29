@@ -285,9 +285,16 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 		// pre-Close, unlink it post-supervisor-exit. The supervisor
 		// waits for its tracee tree internally, so the unlink is safe
 		// once runSystrapSupervised returns.
+		//
+		// Capture the bypass secret BEFORE Close — the supervisor's
+		// SIGSYS-stop handler (#92, scaffolded in
+		// cmd/uwgwrapper/sigsys_stop_handler.go) needs it to issue
+		// passthrough syscalls that skip our own seccomp filter via
+		// the arg6 secret-check.
+		bypassSecret := shared.Secret()
 		statePath := shared.Path()
 		_ = shared.Close(false)
-		err := runSystrapSupervised(target, progArgs, env, preloadPath, blob)
+		err := runSystrapSupervised(target, progArgs, env, preloadPath, blob, bypassSecret)
 		if statePath != "" {
 			_ = os.Remove(statePath)
 		}

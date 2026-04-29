@@ -21,6 +21,11 @@ func readSyscallArg(regs *unix.PtraceRegs, n int) uint64 {
 	return regs.Regs[n]
 }
 
+// writeSyscallReturn sets the syscall return register (X0 on arm64).
+func writeSyscallReturn(regs *unix.PtraceRegs, v uint64) {
+	regs.Regs[0] = v
+}
+
 func writeSyscallArg(regs *unix.PtraceRegs, n int, v uint64) {
 	if n < 0 || n > 5 {
 		return
