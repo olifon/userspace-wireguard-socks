@@ -27,16 +27,15 @@ import (
 //   1. Catches PTRACE_EVENT_SECCOMP for execve before the kernel
 //      processes it.
 //   2. Reads the tracee's envp via PtracePeekData.
-//   3. mmaps a buffer in the tracee via remoteSyscall(SYS_mmap).
-//   4. Writes a merged envp (existing pointers + injected UWGS_*/
-//      LD_PRELOAD strings) into the buffer.
-//   5. Rewrites the syscall's envp arg to point at the buffer.
-//   6. Continues execve.
+//   3. Writes a merged envp blob (existing pointers + injected UWGS_*/
+//      LD_PRELOAD strings) onto the tracee's stack below RSP via
+//      PtracePokeData — no mmap or syscall injection required.
+//   4. Rewrites the syscall's envp arg to point at the stack blob.
+//   5. Continues execve; kernel copy_strings() reads the new pointer.
 //
 // Pins the contract that wrapper-tracked sessions survive programs
 // that rebuild envp from scratch.
 func TestSystrapSupervisedPreservesUWGSEnvAcrossExecveWithEmptyEnv(t *testing.T) {
-	t.Skip("env-preserve full integration deferred: needs syscall-hijack at SECCOMP-event (orig_rax=-1 cancel + mmap + re-issue execve) + supervisor access to spawn env. Scaffolding in exec_env_inject.go, design tracked in #91.")
 	requireWrapperToolchain(t)
 	art := buildWrapperArtifacts(t)
 	_, httpSock := setupWrapperNetwork(t)

@@ -70,7 +70,7 @@ int main(int argc, char **argv) {
     }
     /* Re-exec self with empty env. Supervisor MUST inject UWGS_* /
      * LD_PRELOAD before the kernel processes the execve. */
-    char *new_argv[] = {argv[1], (char *)"child", NULL};
+    char *new_argv[] = {argv[0], argv[1], (char *)"child", NULL};
     char *empty_env[] = {NULL};
     execve(argv[1], new_argv, empty_env);
     perror("execve self with empty env");

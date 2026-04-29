@@ -55,3 +55,12 @@ func writeSyscallArg(regs *unix.PtraceRegs, n int, v uint64) {
 		regs.R9 = v
 	}
 }
+
+// stackScratchAddr returns a tracee stack address safe for writing a blob
+// of the given size at a PTRACE_EVENT_SECCOMP stop. The x86-64 SysV ABI
+// reserves 128 bytes below RSP as a red zone for leaf functions; we write
+// below that so no live data is disturbed even if execve fails and the
+// tracee continues running in the original image.
+func stackScratchAddr(regs *unix.PtraceRegs, size uintptr) uintptr {
+	return uintptr(regs.Rsp) - 128 - (size+15)&^15
+}

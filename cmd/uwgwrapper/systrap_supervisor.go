@@ -133,7 +133,7 @@ func runSystrapSupervised(target string, args, env []string,
 		return fmt.Errorf("initial PTRACE_CONT: %w", err)
 	}
 
-	exitCode, err := supervisorEventLoop(rootPID, blobSpec, options, bypassSecret)
+	exitCode, err := supervisorEventLoop(rootPID, blobSpec, options, bypassSecret, envSupervised)
 	if err != nil {
 		return err
 	}
@@ -145,7 +145,7 @@ func runSystrapSupervised(target string, args, env []string,
 // Returns the wrapped target's exit code on clean termination
 // (when the root traced PID exits — we don't wait for non-traced
 // siblings like a co-running fdproxy daemon).
-func supervisorEventLoop(rootPID int, blobSpec *staticBlobSpec, traceeOptions int, bypassSecret uint64) (int, error) {
+func supervisorEventLoop(rootPID int, blobSpec *staticBlobSpec, traceeOptions int, bypassSecret uint64, spawnEnv []string) (int, error) {
 	const (
 		ptraceEventFork    = unix.PTRACE_EVENT_FORK
 		ptraceEventVfork   = unix.PTRACE_EVENT_VFORK
@@ -230,28 +230,17 @@ func supervisorEventLoop(rootPID int, blobSpec *staticBlobSpec, traceeOptions in
 				}
 				continue
 			case ptraceEventSeccomp:
-				// RET_TRACE event — the filter routes execve /
-				// execveat here. Just let the syscall continue;
-				// the follow-up PTRACE_EVENT_EXEC stop is where
-				// handleExecveBoundary decides static vs dynamic
-				// and injects the freestanding blob for the
-				// static case.
-				//
-				// Force-preserve UWGS_* / LD_PRELOAD env across
-				// this boundary is scaffolded in
-				// cmd/uwgwrapper/exec_env_inject.go (task #91)
-				// but not wired in: doing remoteSyscall(SYS_mmap)
-				// at this stop interferes with the kernel's
-				// queued execve — the original RET_TRACE state
-				// is lost when we single-step a different syscall
-				// in between, and the re-evaluated execve returns
-				// -ENOSYS. The full integration needs a syscall-
-				// hijack: cancel the queued execve via orig_rax=
-				// -1, run mmap, then re-issue execve with the
-				// rewritten envp arg. Plus the supervisor needs
-				// access to the spawn env (UWGS_* are set on the
-				// child, not the wrapper). Both are real
-				// ptrace-state engineering for a follow-up.
+				// RET_TRACE event — the seccomp filter routes
+				// execve/execveat here before the kernel processes
+				// the call. Inject any missing UWGS_*/LD_PRELOAD
+				// vars by writing a merged envp blob directly onto
+				// the tracee's stack below RSP (no mmap needed)
+				// and rewriting the envp argument register.
+				// The follow-up PTRACE_EVENT_EXEC stop is where
+				// handleExecveBoundary handles static-blob re-arm.
+				if err := preserveUWGSEnvAtExecve(pid, spawnEnv); err != nil {
+					fmt.Fprintf(os.Stderr, "uwgwrapper: systrap-supervised: env-preserve for pid %d: %v\n", pid, err)
+				}
 				if err := unix.PtraceCont(pid, 0); err != nil {
 					return exitCode, fmt.Errorf("PtraceCont after SECCOMP event: %w", err)
 				}

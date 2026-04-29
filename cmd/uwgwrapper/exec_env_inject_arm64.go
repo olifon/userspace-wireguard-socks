@@ -32,3 +32,10 @@ func writeSyscallArg(regs *unix.PtraceRegs, n int, v uint64) {
 	}
 	regs.Regs[n] = v
 }
+
+// stackScratchAddr returns a tracee stack address safe for writing a blob
+// of the given size at a PTRACE_EVENT_SECCOMP stop. arm64 (AAPCS64) has
+// no red zone; write immediately below SP, aligned to 16 bytes.
+func stackScratchAddr(regs *unix.PtraceRegs, size uintptr) uintptr {
+	return uintptr(regs.Sp) - (size+15)&^15
+}

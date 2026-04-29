@@ -32,13 +32,13 @@ import (
 //
 // Strategy: at the SECCOMP-event for execve/execveat, walk the tracee's
 // envp, identify which UWGS_* (and LD_PRELOAD) vars are missing, build a
-// merged envp + string blob in supervisor memory, allocate a single
-// page-aligned buffer in the tracee via remoteSyscall(SYS_mmap), copy
-// the blob in via writeMem, and rewrite the syscall's envp register to
-// point at the new array. The kernel reads from the new pointer when it
-// continues the call. This is a one-time cost per execve and keeps the
-// wrapper's session-state coherent regardless of what the executable
-// does to envp.
+// merged envp + string blob in supervisor memory, write it directly into
+// the tracee's stack below RSP (via PtracePokeData — no mmap needed, the
+// stack page is already committed), and rewrite the syscall's envp
+// register to point at the new array. The kernel's copy_strings() reads
+// from the new pointer before it replaces the address space. If execve
+// fails and returns to the original image, the bytes below RSP are just
+// stack scratch that the next call frame will overwrite harmlessly.
 
 // Linux x86_64 / arm64 syscall numbers for execve and execveat. The
 // kernel ABI is stable; these don't change. Defined locally so we don't
@@ -286,27 +286,12 @@ func preserveUWGSEnvAtExecve(pid int, spawnEnv []string) error {
 	}
 	blobSize := pointerArraySize + stringAreaSize
 
-	// Round up to a page (4096) so mmap(MAP_ANONYMOUS) is happy.
-	const pageSize = 4096
-	mmapSize := (blobSize + pageSize - 1) &^ (pageSize - 1)
-	if mmapSize < pageSize {
-		mmapSize = pageSize
-	}
-
-	addr, err := remoteSyscall(pid, unix.SYS_MMAP,
-		0, uintptr(mmapSize),
-		unix.PROT_READ|unix.PROT_WRITE,
-		uintptr(unix.MAP_ANONYMOUS|unix.MAP_PRIVATE),
-		^uintptr(0), 0)
-	if err != nil {
-		return fmt.Errorf("remote mmap for envp: %w", err)
-	}
-	if int64(addr) < 0 && int64(addr) >= -4095 {
-		return fmt.Errorf("remote mmap returned errno %d", -int64(addr))
-	}
-	if addr == 0 {
-		return fmt.Errorf("remote mmap returned 0 at execve seccomp-event stop")
-	}
+	// Use stack space below RSP as scratch. The stack page is always
+	// committed. stackScratchAddr respects the x86-64 red zone (128 B)
+	// and aligns to 16 bytes; arm64 writes immediately below SP.
+	// If execve succeeds the old address space is gone (irrelevant);
+	// if execve fails these bytes are harmless stack scratch.
+	addr := stackScratchAddr(&regs, uintptr(blobSize))
 
 	// Build the blob in supervisor memory.
 	// Layout:
