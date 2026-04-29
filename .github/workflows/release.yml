@@ -44,9 +44,7 @@ jobs:
             golang:1.24-bullseye \
             bash -lc 'export PATH=/usr/local/go/bin:$PATH GOTOOLCHAIN=auto && \
               apt-get update >/dev/null && apt-get install -y gcc libc6-dev >/dev/null && \
-              mkdir -p cmd/uwgwrapper/assets && \
-              gcc -shared -fPIC -O2 -Wall -Wextra \
-                -o cmd/uwgwrapper/assets/uwgpreload.so preload/uwgpreload.c -ldl -pthread -lpthread'
+              bash ./preload/build_phase1.sh cmd/uwgwrapper/assets/uwgpreload.so'
           sudo chown -R "$(id -u):$(id -g)" cmd/uwgwrapper/assets
 
       - name: Run tests
@@ -381,9 +379,7 @@ jobs:
             golang:1.24-bullseye \
             bash -lc 'export PATH=/usr/local/go/bin:$PATH GOTOOLCHAIN=auto && \
               apt-get update >/dev/null && apt-get install -y gcc libc6-dev >/dev/null && \
-              mkdir -p cmd/uwgwrapper/assets && \
-              gcc -shared -fPIC -O2 -Wall -Wextra \
-                -o cmd/uwgwrapper/assets/uwgpreload.so preload/uwgpreload.c -ldl -pthread -lpthread'
+              bash ./preload/build_phase1.sh cmd/uwgwrapper/assets/uwgpreload.so'
           sudo chown -R "$(id -u):$(id -g)" cmd/uwgwrapper/assets
 
       - name: Run lite tests
@@ -690,9 +686,7 @@ jobs:
             --security-opt seccomp=unconfined \
             golang:alpine \
             sh -c "apk add --no-cache gcc musl-dev linux-headers bash file && \
-                   mkdir -p cmd/uwgwrapper/assets && \
-                   gcc -shared -fPIC -O2 -Wall -Wextra \
-                     -o cmd/uwgwrapper/assets/uwgpreload.so preload/uwgpreload.c -ldl -pthread -lpthread && \
+                   bash ./preload/build_phase1.sh cmd/uwgwrapper/assets/uwgpreload.so && \
                    go test ./internal/uwgtrace/... ./internal/fdproxy/... && \
                    (go test ./tests/preload/... || go test ./tests/preload/...)"
           sudo chown -R "$(id -u):$(id -g)" cmd/uwgwrapper/assets
@@ -726,8 +720,7 @@ jobs:
                      apt-get update -qq >/dev/null && \
                      apt-get install -y -qq gcc libc6-dev >/dev/null && \
                      gcc --version | head -1 && \
-                     gcc -shared -fPIC -O2 -Wall -Wextra \
-                       -o cmd/uwgwrapper/assets/uwgpreload.so preload/uwgpreload.c -ldl -pthread -lpthread'
+                     bash ./preload/build_phase1.sh cmd/uwgwrapper/assets/uwgpreload.so'
           sudo chown -R "$(id -u):$(id -g)" cmd/uwgwrapper/assets
           # Confirm the resulting .so doesn't reference any glibc
           # symbol newer than our target floor (GLIBC_2.27).
@@ -742,8 +735,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p cmd/uwgwrapper/assets dist
-          zig cc -target ${{ matrix.zig_target }} -shared -fPIC -O2 -Wall -Wextra \
-            -o cmd/uwgwrapper/assets/uwgpreload.so preload/uwgpreload.c -ldl -pthread -lpthread
+          CC="zig cc -target ${{ matrix.zig_target }}" \
+            bash ./preload/build_phase1.sh cmd/uwgwrapper/assets/uwgpreload.so
 
       - name: Build uwgwrapper
         env:

@@ -42,6 +42,7 @@
 
 #define UWG_FILTER_NR_OFFSET     offsetof(struct seccomp_data, nr)
 #define UWG_FILTER_ARCH_OFFSET   offsetof(struct seccomp_data, arch)
+#define UWG_FILTER_ARG0_LO       offsetof(struct seccomp_data, args[0])
 #define UWG_FILTER_ARG5_LO       offsetof(struct seccomp_data, args[5])
 #define UWG_FILTER_ARG5_HI       (offsetof(struct seccomp_data, args[5]) + 4)
 
@@ -106,21 +107,16 @@ static const int uwg_trapped_syscalls[] = {
      * fds. Raw-asm uses leak — Phase 1.5 supervisor closes the
      * gap by re-arming the SIGSYS handler before libc-init runs. */
 
-    /* rt_sigaction was previously trapped to protect our SIGSYS handler
-     * from being clobbered by application runtimes (Go's runtime
-     * installs its own SIGSYS handler during M startup; chromium-style
-     * sandbox layers do similar). Removed because it makes the post-
-     * execve window in the child fatal: glibc-init calls rt_sigaction
-     * before LD_PRELOAD .so constructors run, the new process has no
-     * SIGSYS handler yet (signal handlers are reset on execve), and the
-     * inherited seccomp filter trapping rt_sigaction routes that call
-     * to SIGSYS → kernel default action (terminate). Trading off the
-     * rt_sigaction-trap defence-in-depth for the much more common
-     * dynamic-binary execve case. The shim_libc layer + handler-self-
-     * defense in dispatch.c (silently succeed on rt_sigaction(SIGSYS))
-     * still cover libc-routed callers. Raw asm rt_sigaction(SIGSYS)
-     * after init is now a known gap (mitigated by rt_sigaction-on-
-     * SIGSYS being a vanishingly rare workload). */
+    /* rt_sigaction is NOT in this unconditional trap list. It's handled
+     * by a separate conditional-trap branch below in the BPF filter:
+     * trap only when arg0 (the signum) == SIGSYS. That preserves the
+     * Go-runtime / chromium-sandbox protection (their handlers install
+     * SIGSYS sigactions that would clobber ours), while letting glibc-
+     * init's rt_sigaction calls for OTHER signums pass through during
+     * the post-execve window when our SIGSYS handler isn't yet
+     * reinstalled. Without that exemption the child dies on SIGSYS
+     * default-action because libc-init runs before LD_PRELOAD
+     * constructors. See the conditional block in uwg_build_filter. */
 };
 
 /* execve / execveat → RET_TRACE for the systrap-supervised mode.
@@ -244,6 +240,28 @@ static int uwg_build_filter(struct uwg_filter_prog *p, uint64_t bypass_secret,
                                                  uwg_trapped_syscalls[i], 0, 1));
         uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP));
     }
+
+    /* (4b) Conditional trap: rt_sigaction(SIGSYS, ...) only.
+     * After the unconditional trap loop, A still holds the syscall nr.
+     * If nr == SYS_rt_sigaction, load arg0 (the signum) and trap when
+     * it equals SIGSYS (= 31). Any other signum falls through to ALLOW.
+     *
+     * This protects our SIGSYS handler from being clobbered by Go's
+     * runtime / chromium-sandbox layers (their M-startup or sandbox-
+     * init code installs a SIGSYS handler) while leaving glibc-init's
+     * rt_sigaction calls for SIGCHLD / SIGINT / etc. unaffected — those
+     * happen post-execve before our LD_PRELOAD constructor reinstalls
+     * the SIGSYS handler, so trapping them would terminate the child.
+     *
+     * SIGSYS is 31 on every Linux arch we support (asm-generic/signal.h);
+     * no need for arch-specific constants. The signum fits in the lo
+     * 32 bits of args[0] so we don't need to also check the hi half. */
+    uwg_emit(p, (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
+                                             SYS_rt_sigaction, 0, 3));
+    uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, UWG_FILTER_ARG0_LO));
+    uwg_emit(p, (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
+                                             31 /* SIGSYS */, 0, 1));
+    uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP));
 
     /* (5) default — let the kernel handle it */
     uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));

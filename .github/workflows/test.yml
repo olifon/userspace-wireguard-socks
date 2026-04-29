@@ -47,9 +47,7 @@ jobs:
             golang:1.24-bullseye \
             bash -lc 'export PATH=/usr/local/go/bin:$PATH GOTOOLCHAIN=auto && \
               apt-get update >/dev/null && apt-get install -y gcc libc6-dev >/dev/null && \
-              mkdir -p cmd/uwgwrapper/assets && \
-              gcc -shared -fPIC -O2 -Wall -Wextra \
-                -o cmd/uwgwrapper/assets/uwgpreload.so preload/uwgpreload.c -ldl -pthread -lpthread'
+              bash ./preload/build_phase1.sh cmd/uwgwrapper/assets/uwgpreload.so'
           sudo chown -R "$(id -u):$(id -g)" cmd/uwgwrapper/assets
 
       - name: Run tests
@@ -228,9 +226,7 @@ jobs:
             golang:1.24-bullseye \
             bash -lc 'export PATH=/usr/local/go/bin:$PATH GOTOOLCHAIN=auto && \
               apt-get update >/dev/null && apt-get install -y gcc libc6-dev >/dev/null && \
-              mkdir -p cmd/uwgwrapper/assets && \
-              gcc -shared -fPIC -O2 -Wall -Wextra \
-                -o cmd/uwgwrapper/assets/uwgpreload.so preload/uwgpreload.c -ldl -pthread -lpthread'
+              bash ./preload/build_phase1.sh cmd/uwgwrapper/assets/uwgpreload.so'
           sudo chown -R "$(id -u):$(id -g)" cmd/uwgwrapper/assets
 
       - name: Run lite tests

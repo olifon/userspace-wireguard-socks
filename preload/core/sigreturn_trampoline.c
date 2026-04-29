@@ -2,19 +2,21 @@
  * Copyright (c) 2026 Reindert Pelsma
  * SPDX-License-Identifier: ISC
  *
- * SA_RESTORER trampoline for the freestanding (Phase 2) static-binary
- * build. The kernel jumps to this address when a signal handler
- * returns (sa_restorer field on x86_64 / aarch64). Without it, the
- * tracee crashes on the first SIGSYS return.
+ * SA_RESTORER trampoline used by both the .so build and the
+ * freestanding (Phase 2) static-binary build. The kernel jumps to this
+ * address when a signal handler returns (sa_restorer field on x86_64 /
+ * aarch64). Without it, the tracee crashes on the first SIGSYS return.
+ *
+ * The .so build needs this when it installs its SIGSYS handler via
+ * uwg_passthrough_syscall4 (rather than libc's sigaction wrapper). The
+ * passthrough is required so the BPF prologue's bypass-secret check
+ * ALLOWs the install through the conditional rt_sigaction(SIGSYS) trap
+ * — but bypassing libc means we don't get libc's __restore_rt for free,
+ * so we provide our own trampoline.
  *
  * Inline asm only — no C runtime dependencies. The trampoline issues
  * SYS_rt_sigreturn which restores the pre-signal context.
- *
- * The .so build (no UWG_FREESTANDING) doesn't compile this file; libc
- * provides __restore_rt automatically via sigaction(2).
  */
-
-#ifdef UWG_FREESTANDING
 
 #if defined(__x86_64__)
 __attribute__((naked, noreturn))
@@ -39,5 +41,3 @@ void uwg_sigreturn_trampoline(void) {
 #else
 #  error "uwg sigreturn trampoline: unsupported arch"
 #endif
-
-#endif /* UWG_FREESTANDING */

@@ -264,35 +264,65 @@ int uwg_install_sigsys_handler(void) {
         .k_sa_restorer = uwg_sigreturn_trampoline, /* provided by Phase 2 */
         .k_sa_mask    = 0,
     };
-    long rc = uwg_syscall4(SYS_rt_sigaction, SIGSYS, (long)&sa, 0, 8);
+    /* passthrough_syscall4 (not raw uwg_syscall4) so the BPF prologue's
+     * bypass-secret check ALLOWs this rt_sigaction(SIGSYS, ...) call.
+     * Without that, the conditional rt_sigaction(SIGSYS) trap added in
+     * seccomp.c step 4b traps THIS very install — but no handler is in
+     * place yet, so the kernel default-action terminates the tracee.
+     * In the supervised-static-injection path the supervisor catches
+     * the resulting SIGSYS instead of the SIGTRAP it expected and
+     * fails with "post-handoff: SIGSYS-stop". */
+    long rc = uwg_passthrough_syscall4(SYS_rt_sigaction, SIGSYS, (long)&sa, 0, 8);
     return (rc < 0) ? (int)rc : 0;
 }
 
 #else  /* libc available */
 
-#include <errno.h>
+extern void uwg_sigreturn_trampoline(void);
 
+/*
+ * The libc `sigaction` wrapper sets up sa_restorer = __restore_rt
+ * (libc-internal) plus SA_RESTORER, then calls SYS_rt_sigaction. That
+ * worked fine before we added the conditional rt_sigaction(SIGSYS) trap
+ * in the BPF filter (preload/core/seccomp.c step 4b) — but in the post-
+ * execve child the seccomp filter is INHERITED while the SIGSYS handler
+ * is RESET to SIG_DFL. So the very first sigaction(SIGSYS) call (from
+ * here) hits the conditional trap, the kernel raises SIGSYS, no handler
+ * exists yet, default action is terminate, child dies before installing
+ * its handler.
+ *
+ * Fix: bypass the filter for this single install call by going through
+ * uwg_passthrough_syscall4 — it places the bypass secret in arg6, which
+ * the BPF prologue ALLOWs unconditionally before reaching the trap
+ * checks. We hand-build the kernel-ABI sigaction struct here (same
+ * layout the freestanding path uses), and provide our own sa_restorer
+ * (preload/core/sigreturn_trampoline.c) so the kernel has a valid
+ * trampoline on signal return — without it the first SIGSYS handler
+ * exit segfaults the tracee on x86_64.
+ */
 int uwg_install_sigsys_handler(void) {
-    struct sigaction sa;
-    sa.sa_sigaction = uwg_sigsys_handler;
-    /* SA_ONSTACK is required for Go-runtime compatibility: Go's
-     * runtime/signal_unix.go preserves user-installed signal
-     * handlers ONLY if they're flagged with SA_ONSTACK. Without
-     * the flag, Go's runtime treats the handler as "unwanted" and
-     * may override it during runtime init, causing trapped
-     * syscalls to crash or hang inside Go's signal machinery.
-     * Per-thread sigaltstack is set up lazily in the handler
-     * itself (or during early thread init in Phase 2). */
-    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
-    /* NO SA_NODEFER → kernel adds SIGSYS to mask while handler
-     * runs → blocks recursive SIGSYS. */
-    sigemptyset(&sa.sa_mask);
-    if (sigaction(SIGSYS, &sa, NULL) != 0) {
-        /* sigaction(2) failed — typically EFAULT or EINVAL.
-         * libc set errno; we mirror that as -errno per our contract. */
-        return -errno;
-    }
-    return 0;
+    struct kernel_sigaction {
+        void     (*k_sa_handler)(int, siginfo_t *, void *);
+        unsigned long k_sa_flags;
+        void     (*k_sa_restorer)(void);
+        unsigned long k_sa_mask;
+    } sa = {
+        .k_sa_handler  = uwg_sigsys_handler,
+        /* SA_ONSTACK is required for Go-runtime compatibility: Go's
+         * runtime/signal_unix.go preserves user-installed signal handlers
+         * ONLY if they're flagged with SA_ONSTACK. Without the flag, Go's
+         * runtime treats the handler as "unwanted" and may override it
+         * during runtime init, causing trapped syscalls to crash or hang
+         * inside Go's signal machinery. Per-thread sigaltstack is set up
+         * lazily in the handler itself (or during early thread init in
+         * Phase 2). NO SA_NODEFER → kernel auto-masks SIGSYS while the
+         * handler runs, blocking recursive SIGSYS. */
+        .k_sa_flags    = SA_SIGINFO | SA_ONSTACK | SA_RESTORER,
+        .k_sa_restorer = uwg_sigreturn_trampoline,
+        .k_sa_mask     = 0,
+    };
+    long rc = uwg_passthrough_syscall4(SYS_rt_sigaction, SIGSYS, (long)&sa, 0, 8);
+    return (rc < 0) ? (int)rc : 0;
 }
 
 #endif  /* UWG_FREESTANDING */

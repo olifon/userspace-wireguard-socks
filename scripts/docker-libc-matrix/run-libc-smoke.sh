@@ -16,7 +16,7 @@
 #
 # Per-image steps inside the container:
 #   1. install gcc + libc dev headers
-#   2. compile preload/uwgpreload.c → uwgpreload.so
+#   2. compile Phase 1 sources → uwgpreload.so via build_phase1.sh
 #   3. run /bin/true with LD_PRELOAD=uwgpreload.so (catches dlopen
 #      crashes, ABI mismatches, missing dlsym targets)
 #   4. run a tiny C probe that calls socket()+close(), verify
@@ -62,7 +62,7 @@ set -e
 $install_cmd >/dev/null 2>&1
 cd /src
 LIBCVER=\$( ($libc_probe 2>/dev/null | tr -d '\n') || echo unknown )
-gcc -shared -fPIC -O2 -Wall -o /tmp/uwgpreload.so preload/uwgpreload.c -ldl -pthread -lpthread >/dev/null 2>&1
+bash preload/build_phase1.sh /tmp/uwgpreload.so >/dev/null 2>&1
 LD_PRELOAD=/tmp/uwgpreload.so /bin/true >/dev/null 2>&1
 cat > /tmp/probe.c <<'PROBE'
 #include <sys/socket.h>

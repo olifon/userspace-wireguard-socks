@@ -25,7 +25,7 @@ build_uwgsocks() {
 
 build_uwgwrapper_linux() {
   mkdir -p ./cmd/uwgwrapper/assets
-  gcc -shared -fPIC -O2 -Wall -Wextra -o ./cmd/uwgwrapper/assets/uwgpreload.so preload/uwgpreload.c -ldl -pthread -lpthread
+  bash ./preload/build_phase1.sh ./cmd/uwgwrapper/assets/uwgpreload.so
   CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o uwgwrapper ./cmd/uwgwrapper
 }
 

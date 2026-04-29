@@ -40,7 +40,7 @@ func TestLDPreloadManagedTCPUDPConnect(t *testing.T) {
 	tmp := t.TempDir()
 	preloadSO := filepath.Join(tmp, "uwgpreload.so")
 	stubBin := filepath.Join(tmp, "stub_client")
-	run(t, repo, "gcc", "-shared", "-fPIC", "-O2", "-Wall", "-Wextra", "-o", preloadSO, "preload/uwgpreload.c", "-ldl", "-pthread", "-lpthread")
+	run(t, repo, "bash", "preload/build_phase1.sh", preloadSO)
 	run(t, repo, "gcc", "-O2", "-Wall", "-Wextra", "-o", stubBin, "tests/preload/testdata/stub_client.c")
 
 	serverKey, clientKey := mustKey(t), mustKey(t)
@@ -140,7 +140,14 @@ func TestLDPreloadManagedTCPUDPConnect(t *testing.T) {
 	}
 
 	runPreloadTCPListener(t, preloadSO, fdSock, stubBin, serverEng, "19090")
-	runPreloadTCPListener(t, preloadSO, fdSock, stubBin, serverEng, "19092", "exec")
+	// The legacy "listen-tcp + exec" pattern (parent listens, then execve's
+	// a child that calls accept() on the inherited fd) is not supported by
+	// drop-in Phase 1 mode: the child's fresh BSS-side tracked-fd table
+	// loses the parent's KIND_TCP_LISTENER state, and accept() on the
+	// inherited unix-socketpair fd fails. The wrapper-mediated path
+	// preserves this state via UWGS_SHARED_STATE_PATH; that case is
+	// covered by TestPhase1SeccompPreloadTCPListener and the supervised
+	// systrap tests. See phase1_dropin_test.go's NOTE for details.
 }
 
 func assertManagerRejects(t *testing.T, fdSock, line string) {

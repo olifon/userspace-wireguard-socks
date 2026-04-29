@@ -1,14 +1,12 @@
 #!/bin/bash
-# Phase 1 preload .so build script. Produces preload/uwgpreload-phase1.so
-# alongside the legacy preload/uwgpreload.c → cmd/uwgwrapper/assets/
-# uwgpreload.so. The Phase 1 .so is a drop-in test artifact that
-# can be loaded via UWGS_PRELOAD=/path/to/uwgpreload-phase1.so
-# instead of the legacy .so.
-#
-# Once Phase 1 is feature-complete (UDP datagram framing, DNS-on-:53
-# forcing, getsockname synthesis, full shim_libc layer) this script
-# can replace the legacy preload build entirely. Until then, both
-# coexist on this branch.
+# Phase 1 preload .so build script. This is the canonical build for the
+# wrapper's embedded uwgpreload.so: compile.sh and the CI workflows all
+# call this script. The legacy single-file preload/uwgpreload.c was
+# retired once Phase 1 reached drop-in equivalence (verified by the
+# tests/preload/ suite passing with this output substituted as the
+# wrapper's embedded asset). The output path is the first positional
+# argument; if omitted it defaults to preload/uwgpreload-phase1.so for
+# ad-hoc local testing.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -34,6 +32,7 @@ CORE_SRCS=(
     preload/core/dns_force.c
     preload/core/trace.c
     preload/core/freestanding_runtime.c
+    preload/core/sigreturn_trampoline.c
 )
 
 SHIM_SRCS=(
@@ -42,7 +41,10 @@ SHIM_SRCS=(
 )
 
 OUT="${1:-preload/uwgpreload-phase1.so}"
-gcc $CFLAGS_BASE $CFLAGS_WARN \
+# Honour CC for cross-compilation (e.g. CC="zig cc -target aarch64-linux-musl"
+# from the release.yml exotic-arch matrix). Default to gcc on the host.
+CC="${CC:-gcc}"
+$CC $CFLAGS_BASE $CFLAGS_WARN \
     "${CORE_SRCS[@]}" "${SHIM_SRCS[@]}" \
     -o "$OUT"
 
