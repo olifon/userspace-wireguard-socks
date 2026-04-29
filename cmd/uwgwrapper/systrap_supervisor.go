@@ -33,19 +33,19 @@ import (
 //     let the syscall complete (PTRACE_CONT), wait for the
 //     follow-up PTRACE_EVENT_EXEC stop, then decide:
 //
-//       - dynamic image (PT_INTERP present): nothing to do —
-//         LD_PRELOAD propagates through execve and the new image's
-//         dynamic linker re-loads our .so before user main runs.
-//         The kernel-inherited seccomp filter is in place during
-//         the post-exec libc-init window; for the trim trap list
-//         (network syscalls only) libc-init doesn't trip it, so
-//         there's no race.
+//   - dynamic image (PT_INTERP present): nothing to do —
+//     LD_PRELOAD propagates through execve and the new image's
+//     dynamic linker re-loads our .so before user main runs.
+//     The kernel-inherited seccomp filter is in place during
+//     the post-exec libc-init window; for the trim trap list
+//     (network syscalls only) libc-init doesn't trip it, so
+//     there's no race.
 //
-//       - static image (no PT_INTERP): inject the freestanding
-//         blob into the new image's address space and jump to
-//         uwg_static_init. Reuses the same machinery as
-//         transport=systrap-static (parseStaticBlob /
-//         loadBlobIntoTracee / runStaticInitWithEnvp).
+//   - static image (no PT_INTERP): inject the freestanding
+//     blob into the new image's address space and jump to
+//     uwg_static_init. Reuses the same machinery as
+//     transport=systrap-static (parseStaticBlob /
+//     loadBlobIntoTracee / runStaticInitWithEnvp).
 //
 //   - We stay attached for the lifetime of the process tree; on
 //     fork/clone we automatically follow new children via
@@ -155,6 +155,9 @@ func runSystrapSupervised(target string, args, env []string,
 // siblings like a co-running fdproxy daemon).
 func supervisorEventLoop(rootPID int, blobSpec *staticBlobSpec) (int, error) {
 	const (
+		ptraceEventFork    = 1 // PTRACE_EVENT_FORK
+		ptraceEventVfork   = 2 // PTRACE_EVENT_VFORK
+		ptraceEventClone   = 3 // PTRACE_EVENT_CLONE
 		ptraceEventExec    = 4 // PTRACE_EVENT_EXEC
 		ptraceEventSeccomp = 7 // PTRACE_EVENT_SECCOMP
 	)
@@ -167,8 +170,12 @@ func supervisorEventLoop(rootPID int, blobSpec *staticBlobSpec) (int, error) {
 	// fork children's execve hits RET_TRACE and the kernel returns
 	// -ENOSYS to the tracee because no PTRACE_EVENT_SECCOMP gets
 	// delivered to us. Set options explicitly on the first stop we
-	// see for each new pid as a defensive belt-and-braces. Idempotent
-	// on kernels that DO inherit (newer glibc/musl matrix entries).
+	// see for each new pid as a defensive belt-and-braces. On
+	// fork/vfork/clone events we also set options on the child pid
+	// from PTRACE_GETEVENTMSG immediately, before waiting for the
+	// child's own stop; old kernels can otherwise let the child reach
+	// execve's RET_TRACE path first. Idempotent on kernels that DO
+	// inherit (newer glibc/musl matrix entries).
 	const (
 		ptraceOTraceSeccomp = 0x00000080
 		ptraceOTraceExec    = 0x00000010
@@ -235,6 +242,20 @@ func supervisorEventLoop(rootPID int, blobSpec *staticBlobSpec) (int, error) {
 			cause := int(ws) >> 16
 
 			switch cause {
+			case ptraceEventFork, ptraceEventVfork, ptraceEventClone:
+				if child, err := unix.PtraceGetEventMsg(pid); err == nil && child != 0 {
+					childPID := int(child)
+					if err := unix.PtraceSetOptions(childPID, int(traceeOptions)); err == nil {
+						seenTracees[childPID] = true
+					}
+				}
+				if err := unix.PtraceCont(pid, 0); err != nil {
+					if errors.Is(err, syscall.ESRCH) {
+						continue
+					}
+					return exitCode, fmt.Errorf("PtraceCont after fork event: %w", err)
+				}
+				continue
 			case ptraceEventSeccomp:
 				// RET_TRACE event — the only ones in the filter
 				// today are execve / execveat. Just let the
