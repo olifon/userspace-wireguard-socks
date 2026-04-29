@@ -10,7 +10,9 @@ load? Not statement coverage. Not "is the function called"; "is
 the function correct under stress, edge cases, and adversarial
 inputs."
 
-**Status as of `845e066` (post-Phase 2 + systrap-supervised work).**
+**Status as of `eeed108` (priorities 1–3 from the original triage list have
+shipped; 4 is in progress as the v1 24h soak; 5 remains open and is
+blocked on engine-API surface).**
 
 Scoring legend:
 
@@ -76,12 +78,15 @@ What's covered:
 - Roaming reconnect across stream-oriented transports.
 
 Gaps worth filling:
-- ❌ **Conformance matrix**: no automated test that asserts
-  "every transport carries a known-good ping packet from peer A
-  to peer B and back" as a single matrix. Each transport has its
-  own bespoke test. A unified `TestTransportConformance` table
-  would catch regressions in transports that don't get a lot of
-  manual exercise.
+- ✅ **Conformance matrix**: shipped in `eeed108` —
+  `TestTransportConformanceMatrix` table-drives every
+  connection-oriented transport (TCP/TLS/DTLS/WS-HTTP/WS-HTTPS/
+  QUIC) through the same Listen+Accept+Dial+round-trip flow with
+  a primer + 10 client→server + 10 reverse round-trips. UDP is
+  intentionally excluded: UDP listener sessions are
+  one-packet-by-design (each datagram its own session), so the
+  multi-iter shape doesn't apply; UDP is covered by the existing
+  `TestBindRoamingAcrossTransports`.
 - ⚠️ **Adversarial transport peer**: a peer that sends malformed
   WireGuard frames at high rate. Outer-transport-layer DoS
   resistance has not been measured. The QUIC accept queue is
@@ -179,29 +184,18 @@ Gaps:
   be the safe cross-platform mechanism; the BSD path's resolv-conf
   rewriting hasn't been asserted in a CI test.
 
-## 7. `internal/socketproto/`  ❌
+## 7. `internal/socketproto/`  ✅
 
-LoC: 368, **0 test files**. Defines the wire format for
-`/v1/socket` / `/uwg/socket`.
+LoC: 368, 1 test file (`protocol_test.go`, 491 LoC, 21 test
+functions). Direct unit tests for the wire format added in
+`31935ab` after the initial audit. Closes the original ❌ gap.
 
-Gap: zero behavioral coverage. The protocol is exercised
-indirectly via `internal/engine` and `internal/fdproxy` tests, but
-neither asserts at the protocol-bytes level. A round-trip test of
-each command type (CONNECT / LISTEN / ATTACH / etc.) at the
-byte-format level would catch protocol-layout regressions that
-today's higher-level tests would silently route around.
+## 8. `internal/acl/`  ✅
 
-## 8. `internal/acl/`  ❌
-
-LoC: 284, **0 test files**. ACL rule parser + matcher.
-
-Gap: zero direct test coverage. ACL behavior is asserted in
-`internal/engine` integration tests, but the ACL layer itself —
-the rule-match algorithm under tricky CIDR overlaps, rule-order
-ambiguity, dport range parsing — is only exercised via the
-engine's higher-level routing tests. A focused
-`internal/acl/match_test.go` would catch parser/matcher
-regressions before they manifest as hard-to-debug routing bugs.
+LoC: 296, 1 test file (`acl_test.go`, 637 LoC, 28 test
+functions). Direct unit tests for the rule parser + matcher
+added in `900e4c1` after the initial audit. Closes the original
+❌ gap.
 
 ## 9. `internal/wgbind/`  ⚠️
 
@@ -273,15 +267,13 @@ These don't fit a single package but matter in production:
 
 Suggested order to close the gaps, by user-impact:
 
-1. **`internal/acl/` direct tests** (zero today; ACL bugs cause
-   security-relevant routing failures).
-2. **`internal/socketproto/` direct tests** (zero today; format
-   regressions break the wrapper silently).
-3. **Transport conformance matrix** (single test asserting every
-   `transport=` configuration round-trips a packet).
-4. **24-hour leak soak harness** (one test that runs for hours
-   when env-flag-enabled; surfaces accumulation bugs).
-5. **Mesh-control under partition** (current tests assume always-
-   up control plane).
+1. ✅ **`internal/acl/` direct tests** — shipped in `900e4c1`.
+2. ✅ **`internal/socketproto/` direct tests** — shipped in `31935ab`.
+3. ✅ **Transport conformance matrix** — shipped in `eeed108`.
+4. **24-hour leak soak harness** (in progress as the v1
+   pre-release run; see `soak-runs.md`).
+5. **Mesh-control under partition** (open; tracked as task #73,
+   blocked on engine API surface for clean partition injection).
 
-Would land as separate PRs over the v0.1.x train.
+Items 1–3 landed as separate small PRs over the v0.1.x train per
+the user-stated collaboration model.
