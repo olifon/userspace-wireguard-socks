@@ -205,6 +205,19 @@ func supervisorEventLoop(rootPID int, blobSpec *staticBlobSpec) (int, error) {
 				// syscall continue; the follow-up
 				// PTRACE_EVENT_EXEC stop is where we do the
 				// per-target re-arm work.
+				//
+				// Force-preserve-UWGS_*-env across this boundary
+				// is scaffolded in cmd/uwgwrapper/exec_env_inject.go
+				// but not wired in here yet — at SECCOMP-event the
+				// tracee is in a stop where remoteSyscall can't
+				// allocate a fresh buffer (the kernel has the
+				// original syscall queued and PtraceSingleStep
+				// dispatches it instead of our substituted mmap).
+				// The full integration needs to either intercept
+				// at PTRACE_EVENT_EXEC and rewrite the new image's
+				// stack envp in place, or hijack the syscall by
+				// setting orig_rax to a no-op + replaying after
+				// allocation. Tracked as task #91 follow-up.
 				if err := unix.PtraceCont(pid, 0); err != nil {
 					return exitCode, fmt.Errorf("PtraceCont after SECCOMP event: %w", err)
 				}
