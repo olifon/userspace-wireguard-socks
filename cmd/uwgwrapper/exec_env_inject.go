@@ -79,9 +79,18 @@ var envVarsToForcePreserve = []string{
 
 // captureSupervisorPreserveSet snapshots the supervisor's own
 // environment at handler-entry time, returning the subset we want to
-// inject if missing from the tracee's envp. Called once per execve;
-// could be cached but it's cheap.
-func captureSupervisorPreserveSet() []string {
+// inject if missing from the tracee's envp.
+//
+// Falls back to the supervisor's own os.Environ() — sufficient for
+// LD_PRELOAD which the wrapper inherits, but UWGS_* vars are set on
+// the SPAWNED child's env (not on the wrapper itself) by main.go's
+// setEnv calls. To capture those we'd need the spawn-env list to be
+// threaded through runSystrapSupervised. That plumbing is a follow-
+// up; for now any UWGS_* present in the wrapper's own env (e.g.
+// UWGS_TRACE_SECRET that nested wrappers might re-inherit) gets
+// preserved, and LD_PRELOAD is the load-bearing one anyway since
+// dropping it silently disables interception.
+func captureSupervisorPreserveSet(extra []string) []string {
 	var out []string
 	for _, e := range os.Environ() {
 		for _, p := range envVarsToForcePreserve {
@@ -89,6 +98,39 @@ func captureSupervisorPreserveSet() []string {
 				out = append(out, e)
 				break
 			}
+		}
+	}
+	for _, e := range extra {
+		// Avoid duplicates: if extra has the same key as something
+		// we already pulled from os.Environ, prefer the extra one
+		// (it's the spawn-env value, which is what the wrapper
+		// actually set on the child).
+		eq := strings.IndexByte(e, '=')
+		if eq <= 0 {
+			continue
+		}
+		key := e[:eq+1]
+		matched := false
+		for _, p := range envVarsToForcePreserve {
+			if strings.HasPrefix(e, p) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		// Replace any existing entry with the same key.
+		replaced := false
+		for i, existing := range out {
+			if strings.HasPrefix(existing, key) {
+				out[i] = e
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			out = append(out, e)
 		}
 	}
 	return out
@@ -166,8 +208,8 @@ func envpRegArg(syscallNr uintptr) (int, bool) {
 // (the common case when the program preserves env). On error the
 // supervisor logs and continues; the child runs with whatever env it
 // got, and may not be able to participate in the wrapper's tracking.
-func preserveUWGSEnvAtExecve(pid int) error {
-	preserve := captureSupervisorPreserveSet()
+func preserveUWGSEnvAtExecve(pid int, spawnEnv []string) error {
+	preserve := captureSupervisorPreserveSet(spawnEnv)
 	if len(preserve) == 0 {
 		// Supervisor itself has nothing UWGS_-y to preserve — caller
 		// of uwgwrapper invoked us without any of the well-known env.
