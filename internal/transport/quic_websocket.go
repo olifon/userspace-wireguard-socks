@@ -8,6 +8,7 @@ package transport
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -235,40 +236,46 @@ func makeQUICWSHandler(acceptCh chan quicWSAcceptResult, closeCh chan struct{}) 
 			http.Error(w, "extended CONNECT with protocol=websocket required", http.StatusBadRequest)
 			return
 		}
-		// Flush 200 status to open the bidirectional stream.
-		w.WriteHeader(http.StatusOK)
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
-		// Hijack the HTTP/3 stream for raw bidirectional use.
-		// In http3, the ResponseWriter implements http.Hijacker for CONNECT streams.
-		hj, ok := w.(http.Hijacker)
+		streamer, ok := w.(http3.HTTPStreamer)
 		if !ok {
+			http.Error(w, "HTTP/3 stream takeover not supported", http.StatusInternalServerError)
 			return
 		}
-		conn, _, err := hj.Hijack()
-		if err != nil {
-			return
-		}
+		conn := &quicWSConn{str: streamer.HTTPStream()}
 		ws := &wsConn{conn: conn, remote: r.RemoteAddr, clientSide: false}
-		sess := &quicWSSession{ws: ws, remote: r.RemoteAddr}
-		_ = tryEnqueueAccept(acceptCh, quicWSAcceptResult{sess: sess}, closeCh,
-			func() { _ = conn.Close() },
-			func() { _ = conn.Close() },
-		)
+		sess := &quicWSSession{ws: ws, remote: r.RemoteAddr, done: make(chan struct{})}
+		if tryEnqueueAccept(acceptCh, quicWSAcceptResult{sess: sess}, closeCh,
+			func() { _ = sess.Close() },
+			func() { _ = sess.Close() },
+		) {
+			select {
+			case <-sess.done:
+			case <-closeCh:
+				_ = sess.Close()
+			}
+		}
 	}
 }
 
-// --- quicWSConn adapts http3.RequestStream to net.Conn for wsConn ---
+// --- quicWSConn adapts HTTP/3 streams to net.Conn for wsConn ---
 
-// quicWSConn wraps an http3.RequestStream so it satisfies net.Conn.
+// quicWSConn wraps an HTTP/3 stream so it satisfies net.Conn.
 // Deadlines are controlled at the QUIC connection level; per-stream deadlines
-// are forwarded to the RequestStream's SetDeadline method.
+// are forwarded to the stream's SetDeadline method.
 type quicWSConn struct {
-	str *http3.RequestStream
+	str quicWSStream
 }
 
 var _ net.Conn = (*quicWSConn)(nil)
+
+type quicWSStream interface {
+	io.Reader
+	io.Writer
+	io.Closer
+	SetDeadline(time.Time) error
+	SetReadDeadline(time.Time) error
+	SetWriteDeadline(time.Time) error
+}
 
 func (c *quicWSConn) Read(b []byte) (int, error)         { return c.str.Read(b) }
 func (c *quicWSConn) Write(b []byte) (int, error)        { return c.str.Write(b) }
@@ -291,6 +298,7 @@ type quicWSSession struct {
 	qconn  *quic.Conn     // nil on server side
 	pc     net.PacketConn // nil on server side
 	remote string
+	done   chan struct{}
 	once   sync.Once
 }
 
@@ -301,6 +309,9 @@ func (s *quicWSSession) RemoteAddr() string           { return s.remote }
 func (s *quicWSSession) Close() error {
 	var first error
 	s.once.Do(func() {
+		if s.done != nil {
+			defer close(s.done)
+		}
 		if err := s.ws.conn.Close(); err != nil {
 			first = err
 		}

@@ -120,6 +120,15 @@ jobs:
           set -euo pipefail
           UWGS_SOAK=1 UWGS_SOAK_SECONDS=15 go test ./tests/soak -run TestLoopbackImpairedChattySOCKSSoak -count=1
 
+      - name: Transport adversarial soak
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          UWGS_TRANSPORT_SOAK=1 UWGS_TRANSPORT_SOAK_SECONDS=15 \
+            go test -count=1 -timeout 240s \
+              -run TestTransportAdversarialSoakMatrix ./internal/transport
+
       # Race-detector run on the concurrency-sensitive packages.
       # Runs on every release-CI platform because different runtimes
       # (sched/M:N mapping, libc/syscall behavior) surface different

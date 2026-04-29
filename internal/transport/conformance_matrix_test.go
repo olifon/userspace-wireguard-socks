@@ -170,6 +170,42 @@ func TestTransportConformanceMatrix(t *testing.T) {
 			bidi:        true,
 			dialTimeout: 10 * time.Second,
 		},
+		{
+			name: "quic-websocket",
+			make: func(t *testing.T) transportPair {
+				skipQUICOnRestrictedGVisor(t)
+				ca := newTestCA(t)
+				serverCert, serverKey := ca.issueLeaf(t, "quic-ws-server", nil, []net.IP{net.ParseIP("127.0.0.1")}, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth})
+				serverMgr := newCertManagerFromFiles(t, serverCert, serverKey)
+
+				server := transport.NewQUICWebSocketTransport(
+					"quic-ws-server",
+					loopbackDialer{},
+					[]string{"127.0.0.1"},
+					serverMgr,
+					transport.TLSConfig{},
+					"/wireguard",
+					"",
+					"",
+				)
+				client := transport.NewQUICWebSocketTransport(
+					"quic-ws-client",
+					loopbackDialer{},
+					nil,
+					nil,
+					transport.TLSConfig{
+						VerifyPeer: true,
+						CAFile:     ca.caFile,
+					},
+					"/wireguard",
+					"quic-ws-server",
+					"",
+				)
+				return transportPair{server: server, client: client}
+			},
+			bidi:        true,
+			dialTimeout: 10 * time.Second,
+		},
 	}
 
 	for _, tc := range cases {

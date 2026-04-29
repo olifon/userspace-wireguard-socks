@@ -33,6 +33,8 @@ type wrapperArtifacts struct {
 	wrapper      string
 	preload      string
 	stub         string
+	epollNB      string
+	threadedKill string
 	mixed        string
 	raw          string
 	rawmixLib    string
@@ -910,6 +912,8 @@ func buildWrapperArtifacts(t *testing.T) wrapperArtifacts {
 		wrapper:      filepath.Join(tmp, "uwgwrapper"),
 		preload:      filepath.Join(tmp, "uwgpreload.so"),
 		stub:         filepath.Join(tmp, "stub_client"),
+		epollNB:      filepath.Join(tmp, "epoll_nonblock_repro"),
+		threadedKill: filepath.Join(tmp, "threaded_tracee_death"),
 		mixed:        filepath.Join(tmp, "mixed_client"),
 		raw:          filepath.Join(tmp, "raw_client"),
 		rawmixLib:    filepath.Join(tmp, "librawmix_helpers.so"),
@@ -923,6 +927,8 @@ func buildWrapperArtifacts(t *testing.T) wrapperArtifacts {
 	run(t, repo, "bash", "preload/build_phase1.sh", embeddedPreload)
 	run(t, repo, "bash", "preload/build_phase1.sh", art.preload)
 	run(t, repo, "gcc", "-O2", "-Wall", "-Wextra", "-o", art.stub, "tests/preload/testdata/stub_client.c")
+	run(t, repo, "gcc", "-O2", "-Wall", "-Wextra", "-o", art.epollNB, "tests/preload/testdata/epoll_nonblock_repro.c")
+	run(t, repo, "gcc", "-O2", "-Wall", "-Wextra", "-pthread", "-o", art.threadedKill, "tests/preload/testdata/threaded_tracee_death.c")
 	run(t, repo, "gcc", "-O2", "-Wall", "-Wextra", "-o", art.mixed, "tests/preload/testdata/mixed_client.c")
 	run(t, repo, "gcc", "-shared", "-fPIC", "-O2", "-Wall", "-Wextra", "-o", art.rawmixLib, "tests/preload/testdata/rawmix_helpers.c")
 	run(t, repo, "gcc", "-O2", "-Wall", "-Wextra", "-pthread", "-I", "tests/preload/testdata", "-L", tmp, "-Wl,-rpath,$ORIGIN", "-o", art.rawmixClient, "tests/preload/testdata/rawmix_client.c", "-lrawmix_helpers")
