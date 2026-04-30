@@ -65,6 +65,13 @@ type meshACLResponse struct {
 	Outbound []acl.Rule `json:"outbound,omitempty"`
 }
 
+// meshNetsResponse carries the IP prefixes the mesh control server has
+// allocated to the requesting peer. The client uses these as the destination
+// filter for packets received from dynamically discovered (P2P) peers.
+type meshNetsResponse struct {
+	Prefixes []string `json:"prefixes"`
+}
+
 type meshAuthResult struct {
 	PeerPublicKey string
 	PeerIndex     int
@@ -305,6 +312,7 @@ func (e *Engine) startMeshControlServer() error {
 	mux.HandleFunc("/v1/challenge", e.handleMeshControlChallenge)
 	mux.HandleFunc("/v1/peers", e.handleMeshControlPeers)
 	mux.HandleFunc("/v1/acls", e.handleMeshControlACLs)
+	mux.HandleFunc("/v1/nets", e.handleMeshControlNets)
 	mux.HandleFunc("/v1/subscribe", e.handleMeshControlNotImplemented)
 
 	server := e.proxyHTTPServer(e.meshControlRateLimit(mux))
@@ -496,6 +504,53 @@ func (e *Engine) handleMeshControlACLs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(sealed)
+}
+
+func (e *Engine) handleMeshControlNets(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if e.meshAuth == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "mesh control is not available")
+		return
+	}
+	authRes, err := e.meshAuth.Verify(r)
+	if err != nil {
+		writeAPIError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	resp, err := e.meshNetsForRequester(authRes.PeerPublicKey)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	payload, err := json.Marshal(resp)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	sealed, err := meshSealRandom(payload, authRes.SharedSecret, meshBodyContextLabel)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(sealed)
+}
+
+// meshNetsForRequester returns the IP prefixes the server has allocated to
+// the requesting peer (its AllowedIPs as configured on the server).
+func (e *Engine) meshNetsForRequester(requester string) (meshNetsResponse, error) {
+	peer, _, ok := e.meshPeerConfig(requester)
+	if !ok {
+		return meshNetsResponse{}, errors.New("peer not found")
+	}
+	prefixes := append([]string(nil), peer.AllowedIPs...)
+	sort.Strings(prefixes)
+	return meshNetsResponse{Prefixes: prefixes}, nil
 }
 
 func (e *Engine) handleMeshControlNotImplemented(w http.ResponseWriter, r *http.Request) {
@@ -715,6 +770,21 @@ func (e *Engine) runMeshPolling() {
 					if err == nil {
 						err = e.applyMeshACLsWithDefault(parent.PublicKey, aclResp.Default, aclResp.Inbound, aclResp.Outbound)
 					}
+				}
+				if err == nil {
+					var netsResp meshNetsResponse
+					netsResp, err = client.fetchNets(ctx, remote)
+					if err == nil {
+						err = e.applyMeshSelfPrefixes(parent.PublicKey, netsResp.Prefixes)
+					}
+				}
+				// Only mark this parent ready once ALL three fetches have
+				// succeeded in the same poll cycle. Dynamic peer packets are
+				// denied until this flag is set (deny-until-ready).
+				if err == nil {
+					e.meshACLMu.Lock()
+					e.meshParentReady[parent.PublicKey] = true
+					e.meshACLMu.Unlock()
 				}
 			} else {
 				err = errors.New("no local WireGuard address for mesh control")
@@ -1171,6 +1241,32 @@ func (e *Engine) reconcileDynamicPeersWithStatic() {
 
 func (e *Engine) applyMeshACLs(parentPublicKey string, rules []acl.Rule) error {
 	return e.applyMeshACLsWithDefault(parentPublicKey, acl.Deny, rules, nil)
+}
+
+// applyMeshSelfPrefixes stores the IP prefixes the mesh control server
+// allocated to this node for the given parent. Called after a successful
+// /v1/nets fetch in the polling loop.
+func (e *Engine) applyMeshSelfPrefixes(parentKey string, raw []string) error {
+	prefixes := make([]netip.Prefix, 0, len(raw))
+	for _, s := range raw {
+		p, err := netip.ParsePrefix(s)
+		if err != nil {
+			a, aerr := netip.ParseAddr(s)
+			if aerr != nil {
+				return fmt.Errorf("invalid mesh nets prefix %q: %w", s, err)
+			}
+			bits := 32
+			if a.Is6() {
+				bits = 128
+			}
+			p = netip.PrefixFrom(a, bits)
+		}
+		prefixes = append(prefixes, p.Masked())
+	}
+	e.meshACLMu.Lock()
+	e.meshSelfPrefixesByParent[parentKey] = prefixes
+	e.meshACLMu.Unlock()
+	return nil
 }
 
 func (e *Engine) applyMeshACLsWithDefault(parentPublicKey string, def acl.Action, inboundRules, outboundRules []acl.Rule) error {
@@ -1836,5 +1932,43 @@ func (c *meshControlClient) fetchACLs(ctx context.Context, remote netip.AddrPort
 	out.Default = inList.Default
 	out.Inbound = inList.Rules
 	out.Outbound = outList.Rules
+	return out, nil
+}
+
+func (c *meshControlClient) fetchNets(ctx context.Context, remote netip.AddrPort) (meshNetsResponse, error) {
+	challenge, err := c.fetchChallenge(ctx)
+	if err != nil {
+		return meshNetsResponse{}, err
+	}
+	token, secret, err := c.bearerToken(remote, challenge)
+	if err != nil {
+		return meshNetsResponse{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.controlURL.ResolveReference(&url.URL{Path: "/v1/nets"}).String(), nil)
+	if err != nil {
+		return meshNetsResponse{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return meshNetsResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return meshNetsResponse{}, fmt.Errorf("mesh nets status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	sealed, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return meshNetsResponse{}, err
+	}
+	plain, err := meshOpen(sealed, secret, meshBodyContextLabel)
+	if err != nil {
+		return meshNetsResponse{}, err
+	}
+	var out meshNetsResponse
+	if err := json.Unmarshal(plain, &out); err != nil {
+		return meshNetsResponse{}, err
+	}
 	return out, nil
 }

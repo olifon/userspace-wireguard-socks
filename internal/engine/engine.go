@@ -79,11 +79,21 @@ type Engine struct {
 	relayFlowPeers map[string]int
 	relayLastSweep time.Time
 
-	meshACLMu        sync.Mutex
-	meshACLsIn       map[string]acl.List
-	meshACLsOut      map[string]acl.List
-	meshACLFlows     map[string]map[relayFlowKey]*relayFlow
-	meshACLLastSweep map[string]time.Time
+	meshACLMu              sync.Mutex
+	meshACLsIn             map[string]acl.List
+	meshACLsOut            map[string]acl.List
+	meshACLFlows           map[string]map[relayFlowKey]*relayFlow
+	meshACLLastSweep       map[string]time.Time
+	// meshSelfPrefixesByParent holds the IP ranges the mesh control server
+	// allocated to this node, keyed by the parent's public key. Used to filter
+	// inbound packets from dynamic peers: only destinations within these ranges
+	// are accepted. Populated by /v1/nets responses; nil entry means not yet
+	// fetched for that parent.
+	meshSelfPrefixesByParent map[string][]netip.Prefix
+	// meshParentReady is true once a full successful poll cycle (peers + acls
+	// + nets) has completed for that parent. Packets from its dynamic peers
+	// are denied until this is set.
+	meshParentReady map[string]bool
 
 	listenersMu sync.Mutex
 	listeners   []net.Listener
@@ -201,10 +211,12 @@ func New(cfg config.Config, logger *log.Logger) (*Engine, error) {
 		relACL:             acl.List{Default: cfg.ACL.RelayDefault, Rules: cfg.ACL.Relay},
 		relayFlows:         make(map[relayFlowKey]*relayFlow),
 		relayFlowPeers:     make(map[string]int),
-		meshACLsIn:         make(map[string]acl.List),
-		meshACLsOut:        make(map[string]acl.List),
-		meshACLFlows:       make(map[string]map[relayFlowKey]*relayFlow),
-		meshACLLastSweep:   make(map[string]time.Time),
+		meshACLsIn:               make(map[string]acl.List),
+		meshACLsOut:              make(map[string]acl.List),
+		meshACLFlows:             make(map[string]map[relayFlowKey]*relayFlow),
+		meshACLLastSweep:         make(map[string]time.Time),
+		meshSelfPrefixesByParent: make(map[string][]netip.Prefix),
+		meshParentReady:          make(map[string]bool),
 		addrs:              make(map[string]string),
 		listenerMap:        make(map[string]net.Listener),
 		pconnMap:           make(map[string]net.PacketConn),
@@ -2389,7 +2401,54 @@ func (e *Engine) allowTunnelPacket(packet []byte) bool {
 			return false
 		}
 	}
+	// Dynamic peer destination filter: a P2P peer discovered via mesh control
+	// must only send packets whose destination is within this node's
+	// server-allocated address range (fetched via /v1/nets). This prevents a
+	// malicious-but-legitimately-provisioned peer from injecting packets to
+	// arbitrary destinations over the direct path. Static peers are operator-
+	// controlled and are not subject to this filter. Denied until the
+	// allocation has been fetched from the mesh control server (deny-until-
+	// ready), ensuring there is no trust window between P2P discovery and the
+	// first successful poll cycle.
+	if parentKey, isDynamic := e.isDynamicPeerAndParent(src.Addr()); isDynamic {
+		if !e.meshSelfAllowsDst(dst.Addr(), parentKey) {
+			return false
+		}
+	}
 	return true
+}
+
+// isDynamicPeerAndParent returns the parent public key and true if ip belongs
+// to a dynamically discovered mesh peer. Returns false for static peers.
+func (e *Engine) isDynamicPeerAndParent(ip netip.Addr) (string, bool) {
+	key := e.peerKeyForIP(ip)
+	e.dynamicMu.RLock()
+	dp, ok := e.dynamicPeers[key]
+	e.dynamicMu.RUnlock()
+	if !ok {
+		return "", false
+	}
+	return dp.ParentPublicKey, true
+}
+
+// meshSelfAllowsDst returns true if dst is within the IP ranges the mesh
+// control server allocated to this node for the given parent. Returns false
+// if the allocation has not yet been fetched (deny-until-ready).
+func (e *Engine) meshSelfAllowsDst(dst netip.Addr, parentKey string) bool {
+	dst = dst.Unmap()
+	e.meshACLMu.Lock()
+	prefixes := e.meshSelfPrefixesByParent[parentKey]
+	ready := e.meshParentReady[parentKey]
+	e.meshACLMu.Unlock()
+	if !ready {
+		return false
+	}
+	for _, p := range prefixes {
+		if p.Contains(dst) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Engine) tunnelAddrBlocked(ip netip.Addr) bool {
