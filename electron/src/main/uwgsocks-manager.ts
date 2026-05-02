@@ -125,8 +125,7 @@ export class UwgSocksManager {
       `  config_file: ${JSON.stringify(wgConfigPath)}`,
       `  mtu: ${conn.mtu ?? 1420}`,
       `proxy:`,
-      `  socks5:`,
-      `    listen: "127.0.0.1:${socksPort}"`,
+      `  socks5: "127.0.0.1:${socksPort}"`,
       `api:`,
       `  listen: "127.0.0.1:${apiPort}"`,
     ].join('\n')
