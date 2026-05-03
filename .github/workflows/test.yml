@@ -184,7 +184,7 @@ jobs:
         run: |
           $zip = Join-Path $env:RUNNER_TEMP 'wintun.zip'
           $dir = Join-Path $env:RUNNER_TEMP 'wintun'
-          Invoke-WebRequest -Uri 'https://www.wintun.net/builds/wintun-0.14.1.zip' -OutFile $zip
+          Invoke-WebRequest -Uri 'https://www.wintun.net/builds/wintun-0.14.1.zip' -OutFile $zip -TimeoutSec 60
           Expand-Archive -LiteralPath $zip -DestinationPath $dir -Force
           Copy-Item (Join-Path $dir 'wintun\bin\amd64\wintun.dll') 'C:\Windows\System32\wintun.dll' -Force
 
@@ -193,7 +193,7 @@ jobs:
         shell: powershell
         run: |
           $env:UWG_TEST_REAL_TUN = '1'
-          go test ./internal/tun -run TestRealWindowsTUNConfigureSmallRoute -count=1
+          go test ./internal/tun -run TestRealWindowsTUNConfigureSmallRoute -count=1 -timeout 90s
 
   test-lite:
     name: lite ${{ matrix.name }}

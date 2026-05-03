@@ -156,6 +156,14 @@ flowchart TB
 
 ## Documentation
 
+Full docs at [docs/README.md](docs/README.md). The docs directory is split into:
+
+- **howto/** — task-shaped recipes (simple client, mesh, TURN ingress, Minecraft soak, etc)
+- **features/** — what `uwgsocks` does (tunneling, transports, proxies, mesh, relay/ACLs, transparent wrapper, host-TUN)
+- **operations/** — running it in production (deployment, observability, runbook)
+- **reference/** — YAML schema, API endpoints, wire formats
+- **contributing/** — testing, architecture, security conventions
+
 Start with the guided flow:
 
 - [How-To Index](docs/howto/README.md)
@@ -195,19 +203,6 @@ Deep reference docs:
 
 See [docs/reference/compatibility.md](docs/reference/compatibility.md) for the
 current matrix and caveats.
-
-## Documentation
-
-Full docs at [docs/README.md](docs/README.md). Structure:
-
-- **features/** — what `uwgsocks` does (tunneling, transports,
-  proxies, mesh, relay/ACLs, transparent wrapper, host-TUN).
-- **operations/** — running it in production (deployment,
-  observability, runbook).
-- **reference/** — YAML schema, API endpoints, wire formats.
-- **contributing/** — testing, architecture, security conventions.
-- **howto/** — task-shaped recipes (simple client, mesh, TURN
-  ingress, Minecraft soak, etc).
 
 ## Companion Project
 
