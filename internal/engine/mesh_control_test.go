@@ -936,3 +936,4 @@ func TestMeshControlRateLimiter(t *testing.T) {
 		t.Fatal("inner handler was never reached; rate limiter is failing closed")
 	}
 }
+

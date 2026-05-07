@@ -1301,11 +1301,41 @@ func (e *Engine) applyMeshACLsWithDefault(parentPublicKey string, def acl.Action
 }
 
 func (e *Engine) meshInboundACLAllowed(meta relayPacketMeta) bool {
+	// Relay ACLs govern peer-to-peer traffic; they do not restrict the static
+	// parent server's own packets (mesh polling responses, keepalives). Only
+	// apply the ACL check when the source is a dynamic (mesh-discovered) peer.
+	if !e.isKnownDynamicPeerIP(meta.src.Addr()) {
+		return true
+	}
 	parent, rules, _, _, ok := e.meshACLListsForPeerIP(meta.src.Addr())
 	if !ok {
 		return true
 	}
 	return e.allowMeshACLTracked(parent, rules, meta, time.Now())
+}
+
+// isKnownDynamicPeerIP returns true if ip belongs to a dynamically discovered
+// mesh peer (by scanning dynamicPeers AllowedIPs directly, independent of
+// whether peerRoutes has been updated).
+func (e *Engine) isKnownDynamicPeerIP(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	e.dynamicMu.RLock()
+	defer e.dynamicMu.RUnlock()
+	for _, dp := range e.dynamicPeers {
+		if dp == nil {
+			continue
+		}
+		for _, raw := range dp.Peer.AllowedIPs {
+			prefix, ok := meshParseCIDROrAddr(raw)
+			if !ok {
+				continue
+			}
+			if prefix.Masked().Contains(ip) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (e *Engine) meshAllowLocalACL(meta relayPacketMeta) bool {

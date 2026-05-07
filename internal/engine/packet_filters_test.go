@@ -389,18 +389,20 @@ func TestMeshInboundACLAppliesToStaticParentAndDynamicChildSources(t *testing.T)
 		},
 	}
 	if err := e.applyMeshACLsWithDefault("parent", acl.Deny, []acl.Rule{
-		{Action: acl.Allow, Source: "100.64.50.1/32", Destination: "100.64.50.9/32", DestPort: "80", Protocol: "tcp"},
 		{Action: acl.Allow, Source: "100.64.50.2/32", Destination: "100.64.50.9/32", DestPort: "80", Protocol: "tcp"},
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
 
+	// The static parent (mesh control server) is never filtered by relay ACLs;
+	// relay ACLs govern peer-to-peer traffic, not the server's own packets.
 	if !e.allowTunnelPacket(testIPv4TCPPacketFlags("100.64.50.1", "100.64.50.9", 40000, 80, tcpFlagSYN)) {
-		t.Fatal("mesh inbound ACL did not allow static parent packet matching rule")
+		t.Fatal("mesh inbound ACL blocked static parent on port 80")
 	}
-	if e.allowTunnelPacket(testIPv4TCPPacketFlags("100.64.50.1", "100.64.50.9", 40000, 81, tcpFlagSYN)) {
-		t.Fatal("mesh inbound ACL allowed static parent packet outside rule")
+	if !e.allowTunnelPacket(testIPv4TCPPacketFlags("100.64.50.1", "100.64.50.9", 40000, 81, tcpFlagSYN)) {
+		t.Fatal("mesh inbound ACL incorrectly filtered static parent (server) traffic")
 	}
+	// Dynamic children are filtered by relay ACLs.
 	if !e.allowTunnelPacket(testIPv4TCPPacketFlags("100.64.50.2", "100.64.50.9", 40000, 80, tcpFlagSYN)) {
 		t.Fatal("mesh inbound ACL did not allow dynamic child packet matching rule")
 	}

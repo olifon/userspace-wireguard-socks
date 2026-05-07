@@ -2414,8 +2414,10 @@ func (e *Engine) allowTunnelPacket(packet []byte) bool {
 		return false
 	}
 	if e.localAddrContains(dst.Addr()) {
-		if meta, ok := parseRelayPacket(packet); ok && !e.meshInboundACLAllowed(meta) {
-			return false
+		if meta, ok := parseRelayPacket(packet); ok {
+			if !e.meshInboundACLAllowed(meta) {
+				return false
+			}
 		}
 	}
 	// Dynamic peer destination filter: a P2P peer discovered via mesh control
