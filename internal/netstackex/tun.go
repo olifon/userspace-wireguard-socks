@@ -97,7 +97,7 @@ func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (tun.Device,
 		stack:          stack.New(opts),
 		events:         make(chan tun.Event, 10),
 		closed:         make(chan struct{}),
-		incomingPacket: make(chan *buffer.View),
+		incomingPacket: make(chan *buffer.View, 64),
 		dnsServers:     dnsServers,
 		mtu:            mtu,
 	}
