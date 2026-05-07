@@ -354,10 +354,18 @@ func (e *Engine) Start() error {
 		e.updateTURNPermissions()
 		bind = tb
 	} else if e.cfg.WireGuard.ListenPort == nil {
-		// The custom outbound-only bind keeps Linux clients fully rootless and
-		// avoids a fixed host UDP listener. On Windows and macOS, the standard
-		// bind with port 0 is more interoperable for the live UDP client path.
-		if runtime.GOOS == "linux" || runtime.GOOS == "android" {
+		// OutboundOnlyBind gives each peer its own connected UDP socket, which
+		// keeps Linux clients fully rootless with no fixed host listener. But
+		// connected sockets can only receive from their one remote address, so
+		// every peer gets a different ephemeral source port. Mesh-control
+		// advertises the source port the server observed (socket A's port), but
+		// when the client later connects to a dynamic peer it uses socket B with
+		// a different port — the advertised endpoint is unreachable for P2P.
+		// When any peer has a ControlURL (mesh discovery), fall through to
+		// StdNetBind so all WireGuard traffic shares one socket and one source
+		// port, matching how kernel WireGuard behaves with a random listen port.
+		needsSharedSocket := e.cfgHasMeshControlURL()
+		if (runtime.GOOS == "linux" || runtime.GOOS == "android") && !needsSharedSocket {
 			bind = e.newOutboundOnlyBind()
 		} else {
 			bind = &wgbind.ResolverBind{Inner: conn.NewStdNetBind(), Resolve: e.resolveWireGuardEndpointHost}
@@ -504,6 +512,15 @@ func (e *Engine) transportDirectDialerFactory() func(cfg transport.Config) (tran
 		}
 		return e.transportDirectDialer(cfg.IPv6Translate, prefix), nil
 	}
+}
+
+func (e *Engine) cfgHasMeshControlURL() bool {
+	for _, p := range e.cfg.WireGuard.Peers {
+		if p.ControlURL != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Engine) newOutboundOnlyBind() conn.Bind {
