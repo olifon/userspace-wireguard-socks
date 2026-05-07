@@ -6,10 +6,13 @@
 package preload_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -56,12 +59,28 @@ func TestChromiumRealInternetSmoke(t *testing.T) {
 	if chromeBin == "" {
 		t.Skip("no chromium binary found")
 	}
-	// Snap-confined chromium (/snap/bin/chromium) can't load LD_PRELOAD from
-	// /tmp and fails with missing libpxbackend / dbus errors in headless mode.
-	// The snap wrapper is a launcher, not the real binary — skip rather than
-	// produce a misleading failure.
-	if strings.HasPrefix(chromeBin, "/snap/") {
-		t.Skipf("snap-confined chromium (%s) not usable in headless CI; install a non-snap build or use chrome-headless-shell", chromeBin)
+	// Snap-confined chromium can't load LD_PRELOAD from /tmp and fails with
+	// missing libpxbackend / dbus errors in headless mode. On Ubuntu Noble,
+	// chromium-browser is a shell script at /usr/bin/chromium-browser calling
+	// /snap/bin/chromium — it's not a symlink, so a path-prefix check misses
+	// it. Detect via: (a) symlink resolves into /snap/, or (b) small text
+	// file whose body references /snap/.
+	isSnapBin := func(p string) bool {
+		if strings.Contains(p, "/snap/") {
+			return true
+		}
+		if real, err := filepath.EvalSymlinks(p); err == nil && strings.Contains(real, "/snap/") {
+			return true
+		}
+		if fi, err := os.Stat(p); err == nil && fi.Size() < 4096 {
+			if content, err := os.ReadFile(p); err == nil && bytes.Contains(content, []byte("/snap/")) {
+				return true
+			}
+		}
+		return false
+	}
+	if isSnapBin(chromeBin) {
+		t.Skipf("snap-confined chromium (%s) not usable in headless CI; install chrome-headless-shell", chromeBin)
 	}
 
 	// Pick a free TCP port for the proxy listener.

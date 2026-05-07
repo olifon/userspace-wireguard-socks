@@ -85,12 +85,22 @@ jobs:
           for bin in chromium chromium-browser; do
             if command -v "$bin" >/dev/null 2>&1; then
               resolved=$(command -v "$bin")
-              # Ubuntu Noble's chromium-browser package is a snap launcher
-              # (/snap/bin/chromium). Snap-confined binaries can't load
-              # LD_PRELOAD from /tmp and fail with missing libpxbackend /
-              # dbus errors in headless mode. Skip if it resolves to snap.
-              if echo "$resolved" | grep -q "^/snap/"; then
-                echo "Skipping snap-confined $bin ($resolved) — not usable in headless CI"
+              # Skip snap-confined wrappers. On Ubuntu Noble, chromium-browser
+              # is a shell script at /usr/bin/chromium-browser that calls
+              # /snap/bin/chromium — it is NOT a symlink, so a ^/snap/ path
+              # check silently misses it. Detect by: (a) resolved symlink path
+              # starts with /snap/, or (b) the file is a small text script
+              # containing /snap/ in its body.
+              resolved_real=$(readlink -f "$resolved" 2>/dev/null || echo "$resolved")
+              is_snap=false
+              if echo "$resolved_real" | grep -q "^/snap/"; then
+                is_snap=true
+              elif [ -f "$resolved" ] && file "$resolved" 2>/dev/null | grep -q "text" \
+                   && grep -q "/snap/" "$resolved" 2>/dev/null; then
+                is_snap=true
+              fi
+              if $is_snap; then
+                echo "Skipping snap-confined wrapper at $resolved ($resolved_real) — not usable in headless CI"
                 continue
               fi
               echo "UWGS_CHROME_BIN=$resolved" >> "$GITHUB_ENV"
