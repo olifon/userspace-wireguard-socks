@@ -56,6 +56,13 @@ func TestChromiumRealInternetSmoke(t *testing.T) {
 	if chromeBin == "" {
 		t.Skip("no chromium binary found")
 	}
+	// Snap-confined chromium (/snap/bin/chromium) can't load LD_PRELOAD from
+	// /tmp and fails with missing libpxbackend / dbus errors in headless mode.
+	// The snap wrapper is a launcher, not the real binary — skip rather than
+	// produce a misleading failure.
+	if strings.HasPrefix(chromeBin, "/snap/") {
+		t.Skipf("snap-confined chromium (%s) not usable in headless CI; install a non-snap build or use chrome-headless-shell", chromeBin)
+	}
 
 	// Pick a free TCP port for the proxy listener.
 	proxyPort := freeTCPPort(t)

@@ -82,11 +82,21 @@ jobs:
           sudo apt-get install -y --no-install-recommends chromium chromium-driver \
             || sudo apt-get install -y --no-install-recommends chromium-browser \
             || true
-          if command -v chromium >/dev/null 2>&1; then
-            echo "UWGS_CHROME_BIN=$(command -v chromium)" >> "$GITHUB_ENV"
-          elif command -v chromium-browser >/dev/null 2>&1; then
-            echo "UWGS_CHROME_BIN=$(command -v chromium-browser)" >> "$GITHUB_ENV"
-          fi
+          for bin in chromium chromium-browser; do
+            if command -v "$bin" >/dev/null 2>&1; then
+              resolved=$(command -v "$bin")
+              # Ubuntu Noble's chromium-browser package is a snap launcher
+              # (/snap/bin/chromium). Snap-confined binaries can't load
+              # LD_PRELOAD from /tmp and fail with missing libpxbackend /
+              # dbus errors in headless mode. Skip if it resolves to snap.
+              if echo "$resolved" | grep -q "^/snap/"; then
+                echo "Skipping snap-confined $bin ($resolved) — not usable in headless CI"
+                continue
+              fi
+              echo "UWGS_CHROME_BIN=$resolved" >> "$GITHUB_ENV"
+              break
+            fi
+          done
 
       - name: Run chromium real-internet smoke
         if: runner.os == 'Linux'
@@ -131,7 +141,7 @@ jobs:
             | python3 -c 'import json,sys; d=json.load(sys.stdin); print([x["url"] for x in d["channels"]["Stable"]["downloads"]["chrome-headless-shell"] if x["platform"]=="linux64"][0])')
           curl -sSL "$URL" -o chs.zip
           unzip -q chs.zip
-          BIN=$(find . -name chrome-headless-shell -executable | head -1)
+          BIN=$(find "$RUNNER_TEMP/chs" -name chrome-headless-shell -executable | head -1)
           echo "UWGS_CHROME_BIN_SUPERVISED=$BIN" >> "$GITHUB_ENV"
           echo "got chrome-headless-shell at $BIN"
 
