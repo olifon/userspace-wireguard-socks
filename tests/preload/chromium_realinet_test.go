@@ -116,7 +116,6 @@ func TestChromiumRealInternetSmoke(t *testing.T) {
 				"--disable-software-rasterizer",
 				"--disable-dev-shm-usage",
 				"--no-zygote",
-				"--virtual-time-budget=10000",
 				fmt.Sprintf("--proxy-server=http://127.0.0.1:%d", proxyPort),
 				"--dump-dom",
 				tc.url,

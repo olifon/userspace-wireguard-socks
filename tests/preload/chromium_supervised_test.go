@@ -144,14 +144,17 @@ func TestChromiumSystrapSupervisedRealInternet(t *testing.T) {
 			//       model the supervisor is meant to handle. If
 			//       --no-zygote was load-bearing before, that's
 			//       what systrap-supervised exists to remove.
-			//   - --virtual-time-budget=10000: keep at 8000;
-			//       gives JS a moment to settle.
+			//   - --virtual-time-budget: omitted. Virtual-time budget
+			//       causes Chrome to dump the initial empty DOM before
+			//       the proxy connection through the systrap-supervised
+			//       wrapper can be established. Real-time wait + the
+			//       90s context deadline is the correct approach for
+			//       real-internet tests.
 			args := []string{
 				"--headless",
 				"--no-sandbox",
 				"--disable-gpu",
 				"--disable-dev-shm-usage",
-				"--virtual-time-budget=8000",
 				fmt.Sprintf("--proxy-server=http://127.0.0.1:%d", proxyPort),
 				"--dump-dom",
 				tc.url,

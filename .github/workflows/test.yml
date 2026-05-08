@@ -70,73 +70,11 @@ jobs:
           set -euo pipefail
           go test ./tests/preload/... || go test ./tests/preload/...
 
-      - name: Install chromium for real-internet smoke
-        if: runner.os == 'Linux'
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Headless chromium-style binary; chromium-browser pulls in
-          # the snap on some runners, so we use the apt package.
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends chromium chromium-driver \
-            || sudo apt-get install -y --no-install-recommends chromium-browser \
-            || true
-          for bin in chromium chromium-browser; do
-            if command -v "$bin" >/dev/null 2>&1; then
-              resolved=$(command -v "$bin")
-              # Skip snap-confined wrappers. On Ubuntu Noble, chromium-browser
-              # is a shell script at /usr/bin/chromium-browser that calls
-              # /snap/bin/chromium — it is NOT a symlink, so a ^/snap/ path
-              # check silently misses it. Detect by: (a) resolved symlink path
-              # starts with /snap/, or (b) the file is a small text script
-              # containing /snap/ in its body.
-              resolved_real=$(readlink -f "$resolved" 2>/dev/null || echo "$resolved")
-              is_snap=false
-              if echo "$resolved_real" | grep -q "^/snap/"; then
-                is_snap=true
-              elif [ -f "$resolved" ] && file "$resolved" 2>/dev/null | grep -q "text" \
-                   && grep -q "/snap/" "$resolved" 2>/dev/null; then
-                is_snap=true
-              fi
-              if $is_snap; then
-                echo "Skipping snap-confined wrapper at $resolved ($resolved_real) — not usable in headless CI"
-                continue
-              fi
-              echo "UWGS_CHROME_BIN=$resolved" >> "$GITHUB_ENV"
-              break
-            fi
-          done
-
-      - name: Run chromium real-internet smoke
-        if: runner.os == 'Linux'
-        # GH-runner-environment quirks (snap-confined chromium, dbus,
-        # GCM probes hitting deprecated Google endpoints) historically
-        # produce flakes unrelated to the wrapper. Continue-on-error so
-        # CI signal stays useful even when the runner env misbehaves;
-        # local + self-hosted runs surface real regressions.
-        continue-on-error: true
-        env:
-          UWGS_RUN_CHROMIUM_REAL_INTERNET: "1"
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -z "${UWGS_CHROME_BIN:-}" ]; then
-            echo "no chromium binary detected; skipping smoke"
-            exit 0
-          fi
-          go test -count=1 -timeout 240s -run TestChromiumRealInternetSmoke -v ./tests/preload/
-
-      # The "Final Boss" smoke: chromium under systrap-supervised
-      # against real-internet (example.com → wikipedia → youtube)
-      # with the zygote ACTIVE and no UWGS_DISABLE_SECCOMP. This
-      # is the load-bearing chromium fork+exec validation; it
-      # subsumes the simpler chromium real-internet smoke above
-      # but we keep both for now (the simpler one runs against
-      # apt-installed chromium; this one needs chrome-headless-
-      # shell because apt-installed chromium is snap-confined and
-      # can't load LD_PRELOAD from /tmp).
-      - name: Install chrome-headless-shell for supervised smoke
+      # Both chromium smoke tests use chrome-headless-shell from Chrome for
+      # Testing (linux64 only). Apt-installed chromium on Ubuntu Noble is a
+      # snap wrapper that cannot load LD_PRELOAD from /tmp and does not work
+      # in headless CI — we never install it.
+      - name: Install chrome-headless-shell
         if: runner.os == 'Linux' && matrix.name == 'linux-amd64'
         continue-on-error: true
         shell: bash
@@ -144,17 +82,37 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/chs"
           cd "$RUNNER_TEMP/chs"
-          # Get the latest stable chrome-headless-shell linux64
-          # tarball URL and unpack it. linux64 only — Chrome for
-          # Testing doesn't ship arm64.
+          # Get the latest stable chrome-headless-shell linux64 tarball.
+          # linux64 only — Chrome for Testing doesn't ship arm64.
           URL=$(curl -sSL https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json \
             | python3 -c 'import json,sys; d=json.load(sys.stdin); print([x["url"] for x in d["channels"]["Stable"]["downloads"]["chrome-headless-shell"] if x["platform"]=="linux64"][0])')
           curl -sSL "$URL" -o chs.zip
           unzip -q chs.zip
           BIN=$(find "$RUNNER_TEMP/chs" -name chrome-headless-shell -executable | head -1)
+          echo "UWGS_CHROME_BIN=$BIN" >> "$GITHUB_ENV"
           echo "UWGS_CHROME_BIN_SUPERVISED=$BIN" >> "$GITHUB_ENV"
           echo "got chrome-headless-shell at $BIN"
 
+      - name: Run chromium real-internet smoke
+        if: runner.os == 'Linux' && matrix.name == 'linux-amd64'
+        # chrome-headless-shell is linux64-only; arm64 skips this step.
+        # GH-runner network quirks can produce flakes; continue-on-error so
+        # CI signal stays useful. Self-hosted runs surface real regressions.
+        continue-on-error: true
+        env:
+          UWGS_RUN_CHROMIUM_REAL_INTERNET: "1"
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${UWGS_CHROME_BIN:-}" ]; then
+            echo "no chrome-headless-shell detected; skipping smoke"
+            exit 0
+          fi
+          go test -count=1 -timeout 240s -run TestChromiumRealInternetSmoke -v ./tests/preload/
+
+      # The "Final Boss" smoke: chromium under systrap-supervised
+      # against real-internet (example.com → wikipedia → youtube)
+      # with the zygote ACTIVE and no UWGS_DISABLE_SECCOMP.
       - name: Run chromium-supervised real-internet smoke (final boss)
         if: runner.os == 'Linux' && matrix.name == 'linux-amd64'
         # Chrome-for-testing download flakes + GH-runner network
@@ -171,8 +129,7 @@ jobs:
             echo "chrome-headless-shell not installed; skipping supervised smoke"
             exit 0
           fi
-          UWGS_CHROME_BIN="$UWGS_CHROME_BIN_SUPERVISED" \
-            go test -count=1 -timeout 360s -run TestChromiumSystrapSupervisedRealInternet -v ./tests/preload/
+          go test -count=1 -timeout 360s -run TestChromiumSystrapSupervisedRealInternet -v ./tests/preload/
 
       - name: Run standalone TURN tests
         shell: bash
