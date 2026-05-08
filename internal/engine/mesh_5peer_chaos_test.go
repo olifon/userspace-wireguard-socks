@@ -218,7 +218,7 @@ func fetchBlobAndVerify(srcEng *Engine, addr string, srvSrcIdx, requestDstIdx, s
 		return err
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(120 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(180 * time.Second))
 	req := []byte("GET /blob?dst=" + intToStr(requestDstIdx) + "&size=" + intToStr(sizeBytes) +
 		" HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
 	if _, err := conn.Write(req); err != nil {

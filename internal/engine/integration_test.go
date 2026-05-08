@@ -2471,11 +2471,10 @@ func TestStressImpairedNetworkAndAPIMutation(t *testing.T) {
 			defer wg.Done()
 			conn := retryDial(t, dialer, target)
 			defer conn.Close()
-			// 60s was tight under -race on macOS (768KB ping-pong
-			// over WG+SOCKS5 with race-detector overhead exceeded
-			// the budget intermittently). 180s covers the worst
-			// case while still failing fast on a real hang.
-			_ = conn.SetDeadline(time.Now().Add(180 * time.Second))
+			// Scale with the race-detector budget: 30s × 1 = 30s
+			// normal, 30s × 10 = 300s under -race. 180s (hardcoded)
+			// was tight on macOS+race and failed at 183s.
+			_ = conn.SetDeadline(time.Now().Add(30 * time.Second * testDeadlineScale))
 			payload := bytes.Repeat([]byte{byte('a' + i)}, bytesPerStream)
 			writeErr := make(chan error, 1)
 			go func() {
