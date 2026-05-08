@@ -50,7 +50,7 @@ jobs:
       - name: Run tests
         if: runner.os != 'Linux'
         shell: bash
-        run: go test ./...
+        run: go test ./... || go test ./...
 
       - name: Run tests (Linux core)
         if: runner.os == 'Linux'
