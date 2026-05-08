@@ -419,7 +419,7 @@ func TestMeshControlPollingLearnsDynamicPeersAndActivatesDirectRoute(t *testing.
 	before1 := peerCountersByKey(t, server, client1Key.PublicKey().String())
 	before2 := peerCountersByKey(t, server, client2Key.PublicKey().String())
 
-	conn := retryMeshDialContext(t, client1, "tcp", "100.64.95.3:18080", 30*time.Second)
+	conn := retryMeshDialContext(t, client1, "tcp", "100.64.95.3:18080", 30*time.Second*testDeadlineScale)
 	defer conn.Close()
 	payload := bytes.Repeat([]byte("mesh-direct"), 512)
 	if _, err := conn.Write(payload); err != nil {

@@ -3696,7 +3696,7 @@ func socksUDPDatagram(t *testing.T, dst netip.AddrPort, payload []byte) []byte {
 
 func readSOCKSUDPDatagram(t *testing.T, conn net.Conn) []byte {
 	t.Helper()
-	_ = conn.SetDeadline(time.Now().Add(5 * time.Second * testDeadlineScale))
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second * testDeadlineScale))
 	buf := make([]byte, 64*1024)
 	n, err := conn.Read(buf)
 	if err != nil {

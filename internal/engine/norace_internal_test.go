@@ -3,3 +3,4 @@
 package engine
 
 const testRaceBuild = false
+const testDeadlineScale = 1

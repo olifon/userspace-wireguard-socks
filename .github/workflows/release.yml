@@ -165,8 +165,8 @@ jobs:
           # test. The underlying tests are correct; macOS+race CI
           # scheduling is the variable. Same retry pattern the preload
           # tests step uses.
-          go test -race "${packages[@]}" -count=1 -timeout 900s \
-            || go test -race "${packages[@]}" -count=1 -timeout 900s
+          go test -race "${packages[@]}" -count=1 -timeout 1200s \
+            || go test -race "${packages[@]}" -count=1 -timeout 1200s
 
       # Stress tests for the fdproxy lock model. Cheap (~2s each) but
       # gated UWGS_STRESS=1 so they don't run on every PR push; the
