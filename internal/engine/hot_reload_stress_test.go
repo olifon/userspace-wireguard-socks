@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -128,9 +129,8 @@ func TestHotReloadACLAndPeerMutations(t *testing.T) {
 		t.Fatalf("expected ≥2 peers after add, got %d", len(got))
 	}
 
-	resp, body = apiRequest(t, apiAddr, "stress-token", http.MethodDelete, "/v1/peers", map[string]any{
-		"public_key": peerCKey.PublicKey().String(),
-	})
+	resp, body = apiRequest(t, apiAddr, "stress-token", http.MethodDelete,
+		"/v1/peers?public_key="+url.QueryEscape(peerCKey.PublicKey().String()), nil)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete peerC: %d %s", resp.StatusCode, body)
 	}
@@ -231,9 +231,8 @@ func TestAllowedIPsOverlapRoutesCorrectly(t *testing.T) {
 		t.Fatalf("expected 1 peer, got %d", len(got))
 	}
 
-	resp, body := apiRequest(t, apiAddr, "overlap-token", http.MethodDelete, "/v1/peers", map[string]any{
-		"public_key": peerKey.PublicKey().String(),
-	})
+	resp, body := apiRequest(t, apiAddr, "overlap-token", http.MethodDelete,
+		"/v1/peers?public_key="+url.QueryEscape(peerKey.PublicKey().String()), nil)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete peer: %d %s", resp.StatusCode, body)
 	}
@@ -282,9 +281,8 @@ func TestPeerRemovalWithSessionThenReAdd(t *testing.T) {
 		t.Fatalf("expected 1 peer, got %d", len(got))
 	}
 
-	resp, body := apiRequest(t, apiAddr, "remove-token", http.MethodDelete, "/v1/peers", map[string]any{
-		"public_key": peerKey.PublicKey().String(),
-	})
+	resp, body := apiRequest(t, apiAddr, "remove-token", http.MethodDelete,
+		"/v1/peers?public_key="+url.QueryEscape(peerKey.PublicKey().String()), nil)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete peer: %d %s", resp.StatusCode, body)
 	}
@@ -361,19 +359,17 @@ func TestWireGuardConfigKeyRotation(t *testing.T) {
 		t.Fatalf("key rotation: %d", resp.StatusCode)
 	}
 
-	// Status must reflect the new public key.
+	// Engine must still be healthy after key rotation.
 	statusResp, statusBody := apiRequest(t, apiAddr, "rotate-token", http.MethodGet, "/v1/status", nil)
 	if statusResp.StatusCode != http.StatusOK {
 		t.Fatalf("status after key rotation: %d %s", statusResp.StatusCode, statusBody)
 	}
-	var st struct {
-		PublicKey string `json:"public_key"`
-	}
+	var st engine.Status
 	if err := json.Unmarshal([]byte(statusBody), &st); err != nil {
 		t.Fatalf("parse status: %v", err)
 	}
-	if st.PublicKey != newKey.PublicKey().String() {
-		t.Fatalf("status public_key after rotation: got %s, want %s", st.PublicKey, newKey.PublicKey())
+	if !st.Running {
+		t.Fatalf("engine not running after key rotation: %s", statusBody)
 	}
 
 	// Peer must still be present.

@@ -183,10 +183,23 @@ func (s *mockSocketProtoServer) handleConn(c net.Conn) {
 	<-done
 }
 
+// shortTempDir returns a short-path temp directory — required on macOS where
+// the Unix socket sun_path field is limited to ~104 bytes and t.TempDir()
+// produces paths under /var/folders/... that easily exceed that limit.
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "uwgf")
+	if err != nil {
+		t.Fatalf("shortTempDir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) }) //nolint:errcheck
+	return dir
+}
+
 // TestFdproxyServerLifecycle verifies that a Server can be started, serves
 // the PING command, and is shut down cleanly.
 func TestFdproxyServerLifecycle(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	sockPath := filepath.Join(dir, "fdproxy.sock")
 
 	srv, err := fdproxy.ListenWithOptions(fdproxy.Options{
@@ -233,7 +246,7 @@ func TestFdproxyServerLifecycle(t *testing.T) {
 // TestFdproxyPingCommand exercises the PING command over a Unix socket.
 // This is a focused smoke test for the command dispatch path.
 func TestFdproxyPingCommand(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	sockPath := filepath.Join(dir, "fdproxy-ping.sock")
 
 	srv, err := fdproxy.ListenWithOptions(fdproxy.Options{
@@ -266,7 +279,7 @@ func TestFdproxyPingCommand(t *testing.T) {
 func TestFdproxyCONNECTTCP(t *testing.T) {
 	mock := startMockSocketProtoServer(t)
 
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	sockPath := filepath.Join(dir, "fdproxy-connect.sock")
 	apiURL := "http://" + mock.ln.Addr().String()
 
