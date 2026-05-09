@@ -959,6 +959,7 @@ func buildWrapperArtifacts(t *testing.T) wrapperArtifacts {
 		t.Fatalf("mkdir embedded preload dir: %v", err)
 	}
 	run(t, repo, "bash", "preload/build_phase1.sh", embeddedPreload)
+	run(t, repo, "bash", "preload/build_ptloader.sh", embeddedPreloadDir)
 	run(t, repo, "bash", "preload/build_phase1.sh", art.preload)
 	run(t, repo, "gcc", "-O2", "-Wall", "-Wextra", "-o", art.stub, "tests/preload/testdata/stub_client.c")
 	run(t, repo, "gcc", "-O2", "-Wall", "-Wextra", "-o", art.epollNB, "tests/preload/testdata/epoll_nonblock_repro.c")

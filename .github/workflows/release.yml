@@ -49,6 +49,13 @@ jobs:
               bash ./preload/build_phase1.sh cmd/uwgwrapper/assets/uwgpreload.so'
           sudo chown -R "$(id -u):$(id -g)" cmd/uwgwrapper/assets
 
+      - name: Build Linux uwgwrapper ptloader asset
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ./preload/build_ptloader.sh cmd/uwgwrapper/assets
+
       - name: Run tests
         if: runner.os != 'Linux'
         shell: bash
@@ -393,6 +400,13 @@ jobs:
               bash ./preload/build_phase1.sh cmd/uwgwrapper/assets/uwgpreload.so'
           sudo chown -R "$(id -u):$(id -g)" cmd/uwgwrapper/assets
 
+      - name: Build Linux uwgwrapper ptloader asset
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ./preload/build_ptloader.sh cmd/uwgwrapper/assets
+
       - name: Run lite tests
         shell: bash
         run: |
@@ -674,6 +688,13 @@ jobs:
         with:
           version: 0.14.1
 
+      # Build ptloader first: tests call `go build ./cmd/uwgwrapper` which
+      # requires the embedded ptloader asset to be present.
+      - name: Build uwgwrapper ptloader asset
+        run: |
+          set -euo pipefail
+          bash ./preload/build_ptloader.sh cmd/uwgwrapper/assets
+
       # Run preload and wrapper tests before building the release artifact.
       # gnu: run tests on the host runner, but build the shipped preload asset later in
       #      a bullseye container for an older glibc baseline.
@@ -856,6 +877,7 @@ jobs:
                    git init -q . 2>/dev/null || true; \
                    go version; \
                    gcc --version | head -1; \
+                   bash ./preload/build_ptloader.sh cmd/uwgwrapper/assets; \
                    go test -buildvcs=false -count=1 -timeout 600s ./tests/preload/... || \
                      go test -buildvcs=false -count=1 -timeout 600s ./tests/preload/...'
 

@@ -61,6 +61,7 @@ func buildPhase1Artifacts(t *testing.T) wrapperArtifacts {
 		t.Fatalf("mkdir embedded preload dir: %v", err)
 	}
 	run(t, repo, "bash", "preload/build_phase1.sh", embeddedPreload)
+	run(t, repo, "bash", "preload/build_ptloader.sh", embeddedPreloadDir)
 	run(t, repo, "bash", "preload/build_phase1.sh", art.preload)
 	run(t, repo, "gcc", "-O2", "-Wall", "-Wextra", "-o", art.stub, "tests/preload/testdata/stub_client.c")
 	buildWithEnv(t, repo, map[string]string{"CGO_ENABLED": "0"}, "go", "build", "-o", art.wrapper, "./cmd/uwgwrapper")

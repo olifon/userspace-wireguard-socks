@@ -24,8 +24,9 @@
 #ifndef UWG_FREESTANDING  /* libc shim is only for the .so build */
 
 #include <signal.h>
-#include <sys/syscall.h>
+#include <stddef.h>
 #include <stdint.h>
+#include <sys/syscall.h>
 
 #include "../core/syscall.h"
 

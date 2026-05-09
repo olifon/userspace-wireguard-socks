@@ -50,6 +50,13 @@ jobs:
               bash ./preload/build_phase1.sh cmd/uwgwrapper/assets/uwgpreload.so'
           sudo chown -R "$(id -u):$(id -g)" cmd/uwgwrapper/assets
 
+      - name: Build Linux uwgwrapper ptloader asset
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ./preload/build_ptloader.sh cmd/uwgwrapper/assets
+
       - name: Run tests
         if: runner.os != 'Linux'
         shell: bash
