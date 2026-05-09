@@ -12,8 +12,8 @@
  *      applies own RELATIVE relocations via uwg_apply_own_relocations(base),
  *      then calls uwg_ptloader_run(initial_sp).
  *   3. uwg_ptloader_run: reads the .uwgcfg global (now safe after relocs),
- *      patches AT_PHDR/AT_PHNUM in the auxv stack, re-arms CLOEXEC on
- *      cfg.interp_fd, calls uwg_core_init(), then jumps to AT_ENTRY.
+ *      patches AT_PHDR/AT_PHNUM/AT_BASE in the auxv stack, re-arms CLOEXEC
+ *      on cfg.interp_fd, calls uwg_core_init(), then jumps to AT_ENTRY.
  *   4. Assembly stub: restores initial_sp (as stack pointer) and jumps to
  *      the return value of uwg_ptloader_start (= AT_ENTRY).
  *
@@ -31,6 +31,24 @@
  *   segments (appended at EOF), so AT_PHDR arrives as 0 (non-PIE) or
  *   AT_BASE (PIE — the ELF header address, not the phdr table). We fix
  *   both cases from the cfg struct before jumping to AT_ENTRY.
+ *
+ * AT_BASE patching for static-PIE (ET_DYN) binaries:
+ *   When PT_INTERP is present the kernel sets AT_BASE to the interpreter's
+ *   (ptloader's) load base, not the main binary's.  Musl's _start_c uses
+ *   AT_BASE to self-relocate: if AT_BASE != 0 it trusts that value as the
+ *   load_bias and applies DT_RELA relocations with it.  If the value is
+ *   wrong (it gets ptloader's base instead of the main binary's), all global
+ *   pointer fixups land at garbage addresses → SIGSEGV on first dereference.
+ *
+ *   The correct fix is to force AT_BASE back to 0.  Musl's AT_BASE=0 path
+ *   uses AT_PHDR to find the main binary's program headers, computes the
+ *   actual load_bias from there, and applies DT_RELA correctly.  We already
+ *   patch AT_PHDR to the correct phdr table address (cfg.phdr_base_vma +
+ *   cfg.original_e_phoff + load_bias), so the AT_BASE=0 path gets a valid
+ *   AT_PHDR and succeeds.
+ *
+ *   ET_EXEC (non-PIE) binaries are unaffected: their startup code does not
+ *   use AT_BASE for self-relocation since all addresses are absolute.
  */
 
 #include <elf.h>
@@ -153,26 +171,7 @@ unsigned long uwg_ptloader_start(void *initial_sp) {
 /* Step 3: main ptloader logic (after relocations applied).           */
 /* ------------------------------------------------------------------ */
 
-/* Debug: write 8-byte hex to stderr */
-static void dbg_hex(const char *label, int label_len, unsigned long val) {
-    char buf[32];
-    int i;
-    /* copy label */
-    for (i = 0; i < label_len && i < 16; i++) buf[i] = label[i];
-    /* write hex */
-    buf[i++] = '0'; buf[i++] = 'x';
-    for (int sh = 60; sh >= 0; sh -= 4) {
-        int nibble = (int)((val >> sh) & 0xf);
-        buf[i++] = (char)(nibble < 10 ? '0' + nibble : 'a' + nibble - 10);
-    }
-    buf[i++] = '\n';
-    uwg_syscall3(SYS_write, 2, (long)buf, i);
-}
-
 static unsigned long uwg_ptloader_run(void *initial_sp) {
-    static const char dbg_start[] = "PTL:run\n";
-    uwg_syscall3(SYS_write, 2, (long)dbg_start, sizeof(dbg_start)-1);
-
     long *sp   = (long *)initial_sp;
     long  argc = *sp;
     long **ep  = (long **)(sp + 1) + argc + 1;
@@ -194,57 +193,26 @@ static unsigned long uwg_ptloader_run(void *initial_sp) {
         }
     }
 
-    /* Compute correct AT_PHDR from the cfg struct.
-     *
-     * correct_AT_PHDR = phdr_base_vma + original_e_phoff + load_bias
-     *
-     * where:
-     *   phdr_base_vma = (p_vaddr - p_offset) of the PT_LOAD containing
-     *                   the original e_phoff. Stored in cfg by Go patcher.
-     *     - For ET_EXEC (non-PIE): typically 0x400000 (no ASLR).
-     *     - For ET_DYN  (PIE):     typically 0 (first PT_LOAD at p_vaddr=0).
-     *
-     *   load_bias = ASLR shift applied to the main binary's load address.
-     *     - For ET_EXEC: 0  (AT_ENTRY == e_entry, no ASLR).
-     *     - For ET_DYN:  AT_ENTRY - e_entry_in_file.
-     *
-     * Our patched binary moved e_phoff to EOF (not within any PT_LOAD),
-     * so the kernel could not set AT_PHDR; we fix it here.
-     *
-     * AT_BASE: when a PT_INTERP is present the kernel sets AT_BASE to the
-     * interpreter's (ptloader's) load base, not the main binary's.  For
-     * static-PIE (ET_DYN) binaries the runtime startup code (musl's
-     * _dlstart_c, glibc's dl_relocate_static_pie) reads AT_BASE to find its
-     * own load bias and apply RELATIVE relocations.  We must patch AT_BASE to
-     * the main binary's actual load bias so the startup code relocates its own
-     * globals correctly.  For ET_EXEC (non-PIE) this is a no-op: the startup
-     * code doesn't need AT_BASE since all addresses are absolute.
-     */
-    {
-        static const char dbg_magic[] = "PTL:magic_check\n";
-        uwg_syscall3(SYS_write, 2, (long)dbg_magic, sizeof(dbg_magic)-1);
-        dbg_hex("at_entry=", 9, at_entry);
-        dbg_hex("at_base=", 8, at_base_ptr ? (unsigned long)*at_base_ptr : 0xdeadbeef);
-    }
     if (uwg_ptloader_cfg_data.magic == UWG_PTLOADER_MAGIC) {
-        static const char dbg_ok[] = "PTL:magic_ok\n";
-        uwg_syscall3(SYS_write, 2, (long)dbg_ok, sizeof(dbg_ok)-1);
-        dbg_hex("pie=", 4, uwg_ptloader_cfg_data.e_type_is_pie);
         unsigned long load_bias = 0;
         if (uwg_ptloader_cfg_data.e_type_is_pie && at_entry) {
             load_bias = at_entry - uwg_ptloader_cfg_data.e_entry_in_file;
         }
-        dbg_hex("load_bias=", 10, load_bias);
+
+        /* Patch AT_PHDR: correct_phdr = phdr_base_vma + original_e_phoff +
+         * load_bias.  The kernel left AT_PHDR wrong because we moved e_phoff
+         * past all PT_LOAD segments (appended at EOF). */
         unsigned long correct_phdr =
             uwg_ptloader_cfg_data.phdr_base_vma +
             uwg_ptloader_cfg_data.original_e_phoff +
             load_bias;
         if (at_phdr_ptr)  *at_phdr_ptr  = (long)correct_phdr;
         if (at_phnum_ptr) *at_phnum_ptr = (long)uwg_ptloader_cfg_data.original_e_phnum;
-        if (at_base_ptr && uwg_ptloader_cfg_data.e_type_is_pie) {
-            dbg_hex("patching AT_BASE=", 17, load_bias);
-            *at_base_ptr = (long)load_bias;
-        }
+
+        /* Patch AT_BASE to 0 for static-PIE (ET_DYN) binaries.
+         * See file-level comment for full rationale. */
+        if (at_base_ptr && uwg_ptloader_cfg_data.e_type_is_pie)
+            *at_base_ptr = 0;
 
         /* Re-arm CLOEXEC on interp_fd: the kernel un-CLOEXEC'd it so
          * the interpreter could be loaded; we re-arm it so it doesn't
@@ -256,30 +224,14 @@ static unsigned long uwg_ptloader_run(void *initial_sp) {
             uwg_ptloader_my_fd = ifd;
         }
     }
-    {
-        static const char dbg_post_cfg[] = "PTL:post_cfg\n";
-        uwg_syscall3(SYS_write, 2, (long)dbg_post_cfg, sizeof(dbg_post_cfg)-1);
-    }
 
     /* Set environ for uwg_core_init to read UWGS_* env vars. */
     extern char **uwg_environ;
     /* envp follows argv (ep currently points at auxv, rewind to envp). */
     uwg_environ = (char **)((long **)(sp + 1) + argc + 1);
 
-    {
-        static const char dbg_di[] = "PTL:docker_init\n";
-        uwg_syscall3(SYS_write, 2, (long)dbg_di, sizeof(dbg_di)-1);
-    }
     uwg_ptloader_docker_init(); /* read UWGS_PTLOADER_* env vars */
-    {
-        static const char dbg_ci[] = "PTL:core_init\n";
-        uwg_syscall3(SYS_write, 2, (long)dbg_ci, sizeof(dbg_ci)-1);
-    }
     uwg_core_init();
-    {
-        static const char dbg_ret[] = "PTL:returning\n";
-        uwg_syscall3(SYS_write, 2, (long)dbg_ret, sizeof(dbg_ret)-1);
-    }
 
     return at_entry;
 }
