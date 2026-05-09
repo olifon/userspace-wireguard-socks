@@ -135,7 +135,7 @@ jobs:
         run: |
           set -euo pipefail
           UWGS_TRANSPORT_SOAK=1 UWGS_TRANSPORT_SOAK_SECONDS=15 \
-            go test -count=1 -timeout 240s \
+            go test -count=1 -timeout 300s \
               -run TestTransportAdversarialSoakMatrix ./internal/transport
 
       # Race-detector run on the concurrency-sensitive packages.

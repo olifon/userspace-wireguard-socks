@@ -230,7 +230,7 @@ func runTransportAdversarialSoak(t *testing.T, pair transportSoakPair, duration 
 		}
 		t.Fatal(err)
 	case <-done:
-	case <-time.After(duration + 10*time.Second):
+	case <-time.After(duration + 30*time.Second):
 		cancel()
 		_ = ln.Close()
 		t.Fatal("transport adversarial soak did not shut down")

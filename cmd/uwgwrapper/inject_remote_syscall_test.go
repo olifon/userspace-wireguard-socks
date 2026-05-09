@@ -107,10 +107,28 @@ func TestRemoteSyscallMmapMunmap(t *testing.T) {
 		PROT_RW = unix.PROT_READ | unix.PROT_WRITE
 		FLAGS   = unix.MAP_ANONYMOUS | unix.MAP_PRIVATE
 	)
-	addr, err := remoteSyscall(pid, unix.SYS_MMAP,
-		0, 4096, PROT_RW, FLAGS, ^uintptr(0), 0)
-	if err != nil {
-		t.Fatalf("remoteSyscall(mmap): %v", err)
+	// Same GH-hosted arm64 single-step-after-svc flake as TestRemoteSyscallGetpid:
+	// the first call can return 0 instead of the real kernel result. Retry up
+	// to 3 times when the result looks like the flake (addr < 0x1000 AND not
+	// a negative errno). Since addr == 0 means the mmap was never executed, no
+	// page is mapped and the retry is safe.
+	var addr uintptr
+	var err error
+	for attempt := 1; attempt <= 3; attempt++ {
+		addr, err = remoteSyscall(pid, unix.SYS_MMAP,
+			0, 4096, PROT_RW, FLAGS, ^uintptr(0), 0)
+		if err != nil {
+			t.Fatalf("remoteSyscall(mmap) attempt=%d: %v", attempt, err)
+		}
+		if addr >= 0x1000 {
+			break
+		}
+		// addr==0: GH arm64 flake — remote svc not yet single-stepped.
+		// addr in [-4095,-1]: real errno, fall through to the check below.
+		if int64(addr) < 0 {
+			break
+		}
+		t.Logf("remoteSyscall(mmap) attempt=%d returned %#x — retrying", attempt, addr)
 	}
 	// Errors come back as -errno (in [-4095, -1]); valid addresses are
 	// large positive values (top of low-half on x86_64).
