@@ -970,7 +970,8 @@ func buildWrapperArtifacts(t *testing.T) wrapperArtifacts {
 	run(t, repo, "gcc", "-O2", "-Wall", "-Wextra", "-o", art.nnpProbe, "tests/preload/testdata/nnp_probe.c")
 	run(t, repo, "gcc", "-O2", "-Wall", "-Wextra", "-o", art.stdioHeavy, "tests/preload/testdata/stdio_heavy.c")
 	buildWithEnv(t, repo, map[string]string{"CGO_ENABLED": "0"}, "go", "build", "-o", art.raw, "tests/preload/testdata/raw_client.go")
-	buildWithEnv(t, repo, map[string]string{"CGO_ENABLED": "0"}, "go", "build", "-o", art.wrapper, "./cmd/uwgwrapper")
+	buildWithEnv(t, repo, map[string]string{"CGO_ENABLED": "0"}, "go",
+		append(append([]string{"build"}, goBuildCoverFlag()...), "-o", art.wrapper, "./cmd/uwgwrapper")...)
 	return art
 }
 
@@ -1051,6 +1052,14 @@ func wrappedCommand(t *testing.T, art wrapperArtifacts, httpSock, transport, tar
 	cmd.Env = append([]string{}, os.Environ()...)
 	for key, value := range opts.env {
 		cmd.Env = append(cmd.Env, key+"="+value)
+	}
+	// If UWGS_COVER_BINDIR is set (by scripts/coverage.sh), give each wrapper
+	// invocation its own GOCOVERDIR so the -cover-instrumented binary writes
+	// coverage data that can later be merged with the main Go profile.
+	if coverParent := os.Getenv("UWGS_COVER_BINDIR"); coverParent != "" {
+		if runDir, err := os.MkdirTemp(coverParent, "run_"); err == nil {
+			cmd.Env = append(cmd.Env, "GOCOVERDIR="+runDir)
+		}
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	return cmd

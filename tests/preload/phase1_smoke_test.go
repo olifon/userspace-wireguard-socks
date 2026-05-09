@@ -64,8 +64,19 @@ func buildPhase1Artifacts(t *testing.T) wrapperArtifacts {
 	run(t, repo, "bash", "preload/build_ptloader.sh", embeddedPreloadDir)
 	run(t, repo, "bash", "preload/build_phase1.sh", art.preload)
 	run(t, repo, "gcc", "-O2", "-Wall", "-Wextra", "-o", art.stub, "tests/preload/testdata/stub_client.c")
-	buildWithEnv(t, repo, map[string]string{"CGO_ENABLED": "0"}, "go", "build", "-o", art.wrapper, "./cmd/uwgwrapper")
+	buildWithEnv(t, repo, map[string]string{"CGO_ENABLED": "0"}, "go",
+		append(append([]string{"build"}, goBuildCoverFlag()...), "-o", art.wrapper, "./cmd/uwgwrapper")...)
 	return art
+}
+
+// goBuildCoverFlag returns ["-cover"] when UWGS_COVER_BINDIR is set so the
+// wrapper binary writes Go coverage data to GOCOVERDIR on exit.
+// This wires into scripts/coverage.sh's binary-instrumented coverage path.
+func goBuildCoverFlag() []string {
+	if os.Getenv("UWGS_COVER_BINDIR") != "" {
+		return []string{"-cover"}
+	}
+	return nil
 }
 
 // TestPhase1SeccompPreload validates the new SIGSYS+seccomp-based
