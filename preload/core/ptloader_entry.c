@@ -153,7 +153,26 @@ unsigned long uwg_ptloader_start(void *initial_sp) {
 /* Step 3: main ptloader logic (after relocations applied).           */
 /* ------------------------------------------------------------------ */
 
+/* Debug: write 8-byte hex to stderr */
+static void dbg_hex(const char *label, int label_len, unsigned long val) {
+    char buf[32];
+    int i;
+    /* copy label */
+    for (i = 0; i < label_len && i < 16; i++) buf[i] = label[i];
+    /* write hex */
+    buf[i++] = '0'; buf[i++] = 'x';
+    for (int sh = 60; sh >= 0; sh -= 4) {
+        int nibble = (int)((val >> sh) & 0xf);
+        buf[i++] = (char)(nibble < 10 ? '0' + nibble : 'a' + nibble - 10);
+    }
+    buf[i++] = '\n';
+    uwg_syscall3(SYS_write, 2, (long)buf, i);
+}
+
 static unsigned long uwg_ptloader_run(void *initial_sp) {
+    static const char dbg_start[] = "PTL:run\n";
+    uwg_syscall3(SYS_write, 2, (long)dbg_start, sizeof(dbg_start)-1);
+
     long *sp   = (long *)initial_sp;
     long  argc = *sp;
     long **ep  = (long **)(sp + 1) + argc + 1;
@@ -162,14 +181,14 @@ static unsigned long uwg_ptloader_run(void *initial_sp) {
     long *av = (long *)ep;
 
     unsigned long at_entry = 0;
-    unsigned long at_base  = 0;
+    long         *at_base_ptr  = NULL;
     long         *at_phdr_ptr  = NULL;
     long         *at_phnum_ptr = NULL;
 
     for (long *a = av; a[0] != AT_NULL; a += 2) {
         switch (a[0]) {
         case AT_ENTRY: at_entry       = (unsigned long)a[1]; break;
-        case AT_BASE:  at_base        = (unsigned long)a[1]; break;
+        case AT_BASE:  at_base_ptr    = &a[1]; break;
         case AT_PHDR:  at_phdr_ptr    = &a[1]; break;
         case AT_PHNUM: at_phnum_ptr   = &a[1]; break;
         }
@@ -191,18 +210,41 @@ static unsigned long uwg_ptloader_run(void *initial_sp) {
      *
      * Our patched binary moved e_phoff to EOF (not within any PT_LOAD),
      * so the kernel could not set AT_PHDR; we fix it here.
+     *
+     * AT_BASE: when a PT_INTERP is present the kernel sets AT_BASE to the
+     * interpreter's (ptloader's) load base, not the main binary's.  For
+     * static-PIE (ET_DYN) binaries the runtime startup code (musl's
+     * _dlstart_c, glibc's dl_relocate_static_pie) reads AT_BASE to find its
+     * own load bias and apply RELATIVE relocations.  We must patch AT_BASE to
+     * the main binary's actual load bias so the startup code relocates its own
+     * globals correctly.  For ET_EXEC (non-PIE) this is a no-op: the startup
+     * code doesn't need AT_BASE since all addresses are absolute.
      */
+    {
+        static const char dbg_magic[] = "PTL:magic_check\n";
+        uwg_syscall3(SYS_write, 2, (long)dbg_magic, sizeof(dbg_magic)-1);
+        dbg_hex("at_entry=", 9, at_entry);
+        dbg_hex("at_base=", 8, at_base_ptr ? (unsigned long)*at_base_ptr : 0xdeadbeef);
+    }
     if (uwg_ptloader_cfg_data.magic == UWG_PTLOADER_MAGIC) {
+        static const char dbg_ok[] = "PTL:magic_ok\n";
+        uwg_syscall3(SYS_write, 2, (long)dbg_ok, sizeof(dbg_ok)-1);
+        dbg_hex("pie=", 4, uwg_ptloader_cfg_data.e_type_is_pie);
         unsigned long load_bias = 0;
         if (uwg_ptloader_cfg_data.e_type_is_pie && at_entry) {
             load_bias = at_entry - uwg_ptloader_cfg_data.e_entry_in_file;
         }
+        dbg_hex("load_bias=", 10, load_bias);
         unsigned long correct_phdr =
             uwg_ptloader_cfg_data.phdr_base_vma +
             uwg_ptloader_cfg_data.original_e_phoff +
             load_bias;
         if (at_phdr_ptr)  *at_phdr_ptr  = (long)correct_phdr;
         if (at_phnum_ptr) *at_phnum_ptr = (long)uwg_ptloader_cfg_data.original_e_phnum;
+        if (at_base_ptr && uwg_ptloader_cfg_data.e_type_is_pie) {
+            dbg_hex("patching AT_BASE=", 17, load_bias);
+            *at_base_ptr = (long)load_bias;
+        }
 
         /* Re-arm CLOEXEC on interp_fd: the kernel un-CLOEXEC'd it so
          * the interpreter could be loaded; we re-arm it so it doesn't
@@ -214,15 +256,30 @@ static unsigned long uwg_ptloader_run(void *initial_sp) {
             uwg_ptloader_my_fd = ifd;
         }
     }
-    (void)at_base; /* used implicitly via uwg_apply_own_relocations earlier */
+    {
+        static const char dbg_post_cfg[] = "PTL:post_cfg\n";
+        uwg_syscall3(SYS_write, 2, (long)dbg_post_cfg, sizeof(dbg_post_cfg)-1);
+    }
 
     /* Set environ for uwg_core_init to read UWGS_* env vars. */
     extern char **uwg_environ;
     /* envp follows argv (ep currently points at auxv, rewind to envp). */
     uwg_environ = (char **)((long **)(sp + 1) + argc + 1);
 
+    {
+        static const char dbg_di[] = "PTL:docker_init\n";
+        uwg_syscall3(SYS_write, 2, (long)dbg_di, sizeof(dbg_di)-1);
+    }
     uwg_ptloader_docker_init(); /* read UWGS_PTLOADER_* env vars */
+    {
+        static const char dbg_ci[] = "PTL:core_init\n";
+        uwg_syscall3(SYS_write, 2, (long)dbg_ci, sizeof(dbg_ci)-1);
+    }
     uwg_core_init();
+    {
+        static const char dbg_ret[] = "PTL:returning\n";
+        uwg_syscall3(SYS_write, 2, (long)dbg_ret, sizeof(dbg_ret)-1);
+    }
 
     return at_entry;
 }

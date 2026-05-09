@@ -59,6 +59,6 @@ fi
 CC="${CC:-gcc}"
 $CC $CFLAGS_BASE $CFLAGS_WARN \
     "${CORE_SRCS[@]}" "${SHIM_SRCS[@]}" \
-    -o "$OUT"
+    -o "$OUT" -ldl
 
 echo "built $OUT ($(stat -c '%s' "$OUT") bytes)"
