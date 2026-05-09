@@ -100,6 +100,22 @@ jobs:
           echo "UWGS_CHROME_BIN_SUPERVISED=$BIN" >> "$GITHUB_ENV"
           echo "got chrome-headless-shell at $BIN"
 
+      # Preload wrapper smoke: Chrome under uwgwrapper --transport=preload
+      # against a uwgsocks HTTP proxy + fallback_direct. The proxy
+      # connection goes over loopback (bypassed by the preload shim) so
+      # there is no wrapper latency on the proxy handshake — making this
+      # test reliable on GH-hosted runners. No continue-on-error.
+      - name: Run chromium preload wrapper smoke
+        if: runner.os == 'Linux' && matrix.name == 'linux-amd64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${UWGS_CHROME_BIN:-}" ]; then
+            echo "no chrome-headless-shell detected; skipping preload wrapper smoke"
+            exit 0
+          fi
+          go test -count=1 -timeout 120s -run TestChromiumPreloadWrapperSmoke -v ./tests/preload/
+
       - name: Run chromium real-internet smoke
         if: runner.os == 'Linux' && matrix.name == 'linux-amd64'
         # chrome-headless-shell is linux64-only; arm64 skips this step.

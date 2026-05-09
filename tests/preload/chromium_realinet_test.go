@@ -21,6 +21,25 @@ import (
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/testconfig"
 )
 
+// isSnapBin reports whether the given binary is snap-confined. Snap
+// chromium cannot load LD_PRELOAD from /tmp and fails in headless CI.
+// Detection covers: (a) path contains /snap/, (b) symlink resolves
+// into /snap/, (c) the file is a small shell wrapper that references /snap/.
+func isSnapBin(p string) bool {
+	if strings.Contains(p, "/snap/") {
+		return true
+	}
+	if real, err := filepath.EvalSymlinks(p); err == nil && strings.Contains(real, "/snap/") {
+		return true
+	}
+	if fi, err := os.Stat(p); err == nil && fi.Size() < 4096 {
+		if content, err := os.ReadFile(p); err == nil && bytes.Contains(content, []byte("/snap/")) {
+			return true
+		}
+	}
+	return false
+}
+
 // TestChromiumRealInternetSmoke runs headless Chromium against real
 // public URLs through a uwgsocks-hosted HTTP proxy. Validates the
 // full real-internet outbound path:
@@ -58,26 +77,6 @@ func TestChromiumRealInternetSmoke(t *testing.T) {
 	}
 	if chromeBin == "" {
 		t.Skip("no chromium binary found")
-	}
-	// Snap-confined chromium can't load LD_PRELOAD from /tmp and fails with
-	// missing libpxbackend / dbus errors in headless mode. On Ubuntu Noble,
-	// chromium-browser is a shell script at /usr/bin/chromium-browser calling
-	// /snap/bin/chromium — it's not a symlink, so a path-prefix check misses
-	// it. Detect via: (a) symlink resolves into /snap/, or (b) small text
-	// file whose body references /snap/.
-	isSnapBin := func(p string) bool {
-		if strings.Contains(p, "/snap/") {
-			return true
-		}
-		if real, err := filepath.EvalSymlinks(p); err == nil && strings.Contains(real, "/snap/") {
-			return true
-		}
-		if fi, err := os.Stat(p); err == nil && fi.Size() < 4096 {
-			if content, err := os.ReadFile(p); err == nil && bytes.Contains(content, []byte("/snap/")) {
-				return true
-			}
-		}
-		return false
 	}
 	if isSnapBin(chromeBin) {
 		t.Skipf("snap-confined chromium (%s) not usable in headless CI; install chrome-headless-shell", chromeBin)
