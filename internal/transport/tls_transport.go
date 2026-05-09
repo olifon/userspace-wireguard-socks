@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"time"
 )
 
 // TLSTransport is a connection-oriented transport that wraps the TCP 2-byte
@@ -21,6 +22,7 @@ type TLSTransport struct {
 	listenAddrs []string
 	certMgr     *CertManager
 	tlsCfg      TLSConfig
+	idleTimeout time.Duration
 }
 
 // NewTLSTransport creates a TLSTransport.
@@ -31,7 +33,16 @@ func NewTLSTransport(name string, dialer ProxyDialer, listenAddrs []string, cert
 		listenAddrs: listenAddrs,
 		certMgr:     certMgr,
 		tlsCfg:      tlsCfg,
+		idleTimeout: tcpIdleTimeout,
 	}
+}
+
+// WithIdleTimeout returns a copy of the TLSTransport with a custom idle
+// timeout.  Zero disables idle detection.  Primarily used in tests.
+func (t *TLSTransport) WithIdleTimeout(d time.Duration) *TLSTransport {
+	tr := *t
+	tr.idleTimeout = d
+	return &tr
 }
 
 func (t *TLSTransport) Name() string               { return t.name }
@@ -53,7 +64,7 @@ func (t *TLSTransport) Dial(ctx context.Context, target string) (Session, error)
 		tcpConn.Close()
 		return nil, fmt.Errorf("tls transport %s: handshake %s: %w", t.name, target, err)
 	}
-	return newStreamSession(tlsConn, target, tcpIdleTimeout), nil
+	return newStreamSession(tlsConn, target, t.idleTimeout), nil
 }
 
 // Listen binds a TLS listener.
@@ -81,7 +92,7 @@ func (t *TLSTransport) Listen(_ context.Context, port int) (Listener, error) {
 		}
 		listeners = append(listeners, ln)
 	}
-	return newStreamListener(listeners, t.name, tcpIdleTimeout, func(ctx context.Context, conn net.Conn) (net.Conn, error) {
+	return newStreamListener(listeners, t.name, t.idleTimeout, func(ctx context.Context, conn net.Conn) (net.Conn, error) {
 		tlsConn := tls.Server(conn, serverCfg)
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
 			return nil, err

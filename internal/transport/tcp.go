@@ -44,6 +44,14 @@ func NewTCPTransport(name string, dialer ProxyDialer, listenAddrs []string) *TCP
 	}
 }
 
+// WithIdleTimeout returns a copy of the TCPTransport with a custom idle
+// timeout.  Zero disables idle detection.  Primarily used in tests.
+func (t *TCPTransport) WithIdleTimeout(d time.Duration) *TCPTransport {
+	tr := *t
+	tr.idleTimeout = d
+	return &tr
+}
+
 func (t *TCPTransport) Name() string               { return t.name }
 func (t *TCPTransport) IsConnectionOriented() bool { return true }
 

@@ -58,6 +58,8 @@ type WebSocketTransport struct {
 	upgradeMode HTTPUpgradeMode
 	// advertiseHTTP3 adds Alt-Svc: h3 on HTTPS listener responses.
 	advertiseHTTP3 bool
+	// idleTimeout overrides tcpIdleTimeout for ProxyGuard sessions.
+	idleTimeout time.Duration
 }
 
 type WebSocketOption func(*WebSocketTransport)
@@ -118,6 +120,7 @@ func NewWebSocketTransport(name, scheme string, dialer ProxyDialer, listenAddrs 
 		useTLS:      scheme == "https",
 		path:        "/",
 		upgradeMode: HTTPUpgradeModeWebSocket,
+		idleTimeout: tcpIdleTimeout,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -125,6 +128,15 @@ func NewWebSocketTransport(name, scheme string, dialer ProxyDialer, listenAddrs 
 		}
 	}
 	return t
+}
+
+// WithIdleTimeout returns a copy of the WebSocketTransport with a custom idle
+// timeout for ProxyGuard sessions.  Zero disables idle detection.
+// Primarily used in tests.
+func (t *WebSocketTransport) WithIdleTimeout(d time.Duration) *WebSocketTransport {
+	tr := *t
+	tr.idleTimeout = d
+	return &tr
 }
 
 func (t *WebSocketTransport) Name() string               { return t.name }
@@ -175,7 +187,7 @@ func (t *WebSocketTransport) Dial(ctx context.Context, target string) (Session, 
 			conn.Close()
 			return nil, fmt.Errorf("ws transport %s: ProxyGuard upgrade: %w", t.name, err)
 		}
-		return newStreamSession(upgraded, target, tcpIdleTimeout), nil
+		return newStreamSession(upgraded, target, t.idleTimeout), nil
 	default:
 		wsConn, err := upgradeWebSocketClient(ctx, conn, target, scheme, t.path, t.hostHeader)
 		if err != nil {
