@@ -405,9 +405,13 @@ func TestParseOutboundProxyArg_Errors(t *testing.T) {
 // MergeWGQuick — strict mode rejects unknown keys
 // ---------------------------------------------------------------
 
+// testWGKey is a syntactically valid base64 key string (32 bytes).
+// setInterface stores it verbatim without validation; Normalize is not
+// called in these tests so the clamping requirement does not apply.
+const testWGKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
 func TestMergeWGQuickStrict_UnknownKey(t *testing.T) {
-	key := mustConfigKey(t)
-	text := "[Interface]\nPrivateKey = " + key.String() + "\nFakeKey = bad\n"
+	text := "[Interface]\nPrivateKey = " + testWGKey + "\nFakeKey = bad\n"
 	var wg WireGuard
 	if err := MergeWGQuickStrict(&wg, text); err == nil {
 		t.Error("strict mode should reject unknown interface keys")
@@ -418,8 +422,7 @@ func TestMergeWGQuick_UnknownKeyAlsoRejected(t *testing.T) {
 	// Both strict and non-strict reject unknown keys; strict additionally
 	// silently drops hook lines (PreUp/PostUp/PreDown/PostDown) rather
 	// than forwarding them to setInterface.
-	key := mustConfigKey(t)
-	text := "[Interface]\nPrivateKey = " + key.String() + "\nFakeKey = ignored\n"
+	text := "[Interface]\nPrivateKey = " + testWGKey + "\nFakeKey = ignored\n"
 	var wg WireGuard
 	if err := MergeWGQuick(&wg, text); err == nil {
 		t.Error("non-strict mode should also reject unknown interface keys")
@@ -429,8 +432,7 @@ func TestMergeWGQuick_UnknownKeyAlsoRejected(t *testing.T) {
 func TestMergeWGQuickStrict_DropsHookKeys(t *testing.T) {
 	// In strict mode the four hook keys are silently dropped rather than
 	// passed to setInterface (which would reject them as unknown).
-	key := mustConfigKey(t)
-	text := "[Interface]\nPrivateKey = " + key.String() + "\nPostUp = echo up\n"
+	text := "[Interface]\nPrivateKey = " + testWGKey + "\nPostUp = echo up\n"
 	var wgStrict WireGuard
 	if err := MergeWGQuickStrict(&wgStrict, text); err != nil {
 		t.Fatalf("strict mode should silently drop PostUp, got: %v", err)
