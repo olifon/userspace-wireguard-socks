@@ -14,7 +14,8 @@ explicitly with `--transport=...`, or let `auto` pick.
 | Mode | Libc hooks | Kernel trap (seccomp + SIGSYS) | Per-syscall ptrace | execve supervisor | Static target | Notes |
 |---|---|---|---|---|---|---|
 | `preload` | ✅ | — | — | — | ❌ | Libc-only fallback for hosts without seccomp or ptrace. Raw-asm syscalls leak past the hooks. |
-| `systrap` | ✅ | ✅ | — | — | ❌ (target itself); descendants of fork+exec into a static child also lose interception. | Recommended for **containers without ptrace** (Docker default seccomp, K8s pods without `SYS_PTRACE`). Fast: hot path stays in libc, raw-asm syscalls trap into our in-process SIGSYS handler. No tracer attached. |
+| `systrap` | ✅ | ✅ | — | — | ❌ (target itself); descendants of fork+exec into a static child also lose interception. | Recommended for **containers without ptrace** (Docker default seccomp, K8s pods without `SYS_PTRACE`) with **dynamic** targets. Fast: hot path stays in libc, raw-asm syscalls trap into our in-process SIGSYS handler. No tracer attached. |
+| `systrap-docker` | ✅ (dynamic), via ptloader (static) | ✅ | — | ✅ (via execve_docker_dispatch in ptloader) | ✅ | **Static + dynamic targets, no ptrace required.** For each exec, detects whether the binary has `PT_INTERP` (dynamic) or not (static). Static binaries are patched via ELF `PT_INTERP` injection into a memfd: `uwgptloader.so` is loaded by the kernel as the interpreter, installs SIGSYS+seccomp before `_start`, then jumps to the original entry. Dynamic binaries run via standard `LD_PRELOAD`. Entire exec chain (static→static, static→dynamic, dynamic→static) is handled without ptrace. **Requires seccomp.** Auto selects this for static targets on seccomp-yes/ptrace-no hosts. |
 | `systrap-supervised` | ✅ | ✅ | only at execve / execveat (`SECCOMP_RET_TRACE`, otherwise idle) | ✅ | ✅ | The strongest mode. Same in-process SIGSYS path as `systrap`, plus a long-running ptrace supervisor that wakes on every `execve` boundary and re-arms: dynamic→static execve injects the freestanding blob into the static child; dynamic→dynamic relies on `LD_PRELOAD` propagation. Multi-threaded execve is naturally handled (kernel guarantees only the calling thread survives execve). Requires ptrace. |
 | `systrap-static` | — | ✅ | ✅ at every execve | ✅ | ✅ | Like `systrap-supervised` but **assumes every binary is static** — no libc hooks at all. Useful when libc on the host is broken or our `.so` can't link. Requires ptrace. |
 | `ptrace-seccomp` | — | ✅ (filter only, no SIGSYS) | ✅ | ✅ | ✅ | Per-syscall ptrace; filter pre-selects the traced subset. Auto skips this when seccomp+ptrace are both available — `systrap-supervised` is faster. |
@@ -58,13 +59,14 @@ The libc-only `preload` mode and the no-ptrace `systrap` mode
 a static binary; the inherited seccomp filter without an installed
 SIGSYS handler kills the child on the first trapped syscall).
 Auto uses an ELF pre-flight (`PT_INTERP` absent) to detect this
-and either picks a ptrace-using mode or fails fast.
+and picks the strongest available mode, or fails fast.
 
 | Host shape | `auto` picks | What works |
 |---|---|---|
 | seccomp ✅, ptrace ✅ | **`systrap-supervised`** | Everything (in-process SIGSYS for the static target, blob inject for any further static descendants) |
 | seccomp ✅ or ❌, ptrace ✅ | **`ptrace-only`** | Everything (slow) |
-| ptrace ❌ | **`auto` exits with an error** explaining that no mode can intercept a static binary on this host. The user must wrap a dynamic target, run on a host that allows ptrace, or pick `--transport=preload` explicitly to accept the no-interception trade-off. | n/a |
+| seccomp ✅, ptrace ❌ (typical Docker: default seccomp, no `SYS_PTRACE`) | **`systrap-docker`** | Static + dynamic targets and exec chains without ptrace. `uwgptloader.so` is injected via `PT_INTERP` into a memfd; the kernel loads it as the interpreter, installs SIGSYS+seccomp before `_start`. |
+| seccomp ❌, ptrace ❌ | **`auto` exits with an error** explaining that no mode can intercept a static binary on this host. The user must wrap a dynamic target, run on a host that allows ptrace or seccomp, or pick `--transport=preload` to accept no-interception. | n/a |
 
 > **Kernel-availability fact.** `SECCOMP_RET_TRAP` and `SECCOMP_RET_TRACE` were added in the same kernel commit (Linux 3.5, `c2e1f2e30daa`, 2012). There is no host that ships one without the other — they're both return values of the same `seccomp(2)` syscall. So the "seccomp ✅" hosts above all support both `RET_TRAP` (powering systrap's SIGSYS path) and `RET_TRACE` (used for the execve hook in the supervisor). The independent variable is **ptrace**, which container runtimes commonly block separately from seccomp.
 
@@ -82,6 +84,14 @@ and either picks a ptrace-using mode or fails fast.
   but no execve supervisor, so static descendants of a fork+exec
   lose interception. The right pick when you know your container
   policy blocks ptrace and your workload is dynamic-only.
+- **`systrap-docker`**: containers that ban `ptrace(2)` but allow
+  `seccomp(2)` **and** the target is (or may be) a static binary.
+  Uses ELF `PT_INTERP` injection to load `uwgptloader.so` as the
+  kernel interpreter before `_start`; installs SIGSYS+seccomp
+  without ptrace. `execve_docker_dispatch` inside the ptloader
+  handles further exec chains (static→static, static→dynamic,
+  dynamic→static) automatically. `auto` selects this for static
+  targets on seccomp-yes/ptrace-no hosts.
 - **`preload`**: containers that ban both `seccomp(2)` and
   `ptrace(2)`. Libc-only. The cost is that any caller using
   raw-asm syscalls (parts of the Go runtime, some C++/Rust

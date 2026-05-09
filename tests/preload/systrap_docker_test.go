@@ -534,6 +534,53 @@ func TestSystrapSupervisedChromium(t *testing.T) {
 	}
 }
 
+// TestSystrapDockerAutoStaticSeccompOnly verifies that transport=auto selects
+// systrap-docker when the target is a static binary and the host has seccomp
+// available but ptrace blocked.  We simulate the "ptrace blocked" condition
+// by passing UWGS_WRAPPER_TRANSPORT=auto and setting the process to be
+// non-dumpable (PR_SET_DUMPABLE=0) before spawning the wrapper as a child —
+// the child inherits non-dumpable and probePtraceAvailable returns false.
+//
+// On hosts where ptrace IS available (dev machines), this test uses a direct
+// syscall to force PTRACE_TRACEME to fail: we pass the env var
+// UWGS_DISABLE_PTRACE_PROBE=1 which makes probePtraceAvailable return false
+// unconditionally. The wrapper then falls through to the systrap-docker slot.
+func TestSystrapDockerAutoStaticSeccompOnly(t *testing.T) {
+	requireSystrapDockerToolchain(t)
+	art, staticStub := buildSystrapDockerArtifacts(t)
+	_, httpSock := setupWrapperNetwork(t)
+
+	tmp := t.TempDir()
+	listenSock := filepath.Join(tmp, "fdproxy-auto-static.sock")
+	wrapperArgs := []string{
+		"--transport=auto",
+		"--listen", listenSock,
+		"--api", "unix:" + httpSock,
+		"--socket-path", "/uwg/socket",
+		"--preload", art.preload,
+		"--", staticStub,
+		"100.64.94.1", "18080", "auto-static-seccomp-only", "tcp",
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, art.wrapper, wrapperArgs...)
+	cmd.Env = append(os.Environ(), "UWGS_DISABLE_PTRACE_PROBE=1")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	out, err := runCommandCombinedFileBacked(t, cmd)
+	t.Logf("=== auto static (seccomp-only) output ===\n%s\n=== end ===", out)
+
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("auto static seccomp-only: timed out")
+	}
+	if err != nil {
+		t.Fatalf("auto static seccomp-only: wrapper run failed: %v", err)
+	}
+	if !strings.Contains(string(out), "auto-static-seccomp-only") {
+		t.Fatalf("expected sentinel in output; got %q", out)
+	}
+}
+
 func truncate(b []byte, n int) []byte {
 	if len(b) <= n {
 		return b

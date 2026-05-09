@@ -40,7 +40,13 @@ func probeSeccompAvailable() bool {
 // probePtraceAvailable returns true if this process can ptrace a
 // child. Container runtimes that block ptrace (Docker default
 // seccomp, K8s pods without SYS_PTRACE) cause this to return false.
+//
+// UWGS_DISABLE_PTRACE_PROBE=1 forces false unconditionally; used in
+// tests to exercise the seccomp-only auto cascade path.
 func probePtraceAvailable() bool {
+	if os.Getenv("UWGS_DISABLE_PTRACE_PROBE") == "1" {
+		return false
+	}
 	cmd := exec.Command(os.Args[0], "--mode=probe-ptrace")
 	cmd.Env = []string{}
 	if err := cmd.Run(); err != nil {

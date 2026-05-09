@@ -134,14 +134,14 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 	}
 	debug := verbose || os.Getenv("UWGS_WRAPPER_DEBUG") != ""
 
-	// systrap-docker with a static target calls syscall.Exec, which kills
-	// all Go OS threads except the calling one. If the fdproxy was spawned
-	// from a different OS thread, its PR_SET_PDEATHSIG fires prematurely
-	// during exec and kills fdproxy before the wrapped binary can connect.
-	// Lock this goroutine to its current OS thread so that fdproxy's parent
-	// thread IS the thread that later calls execve — that thread survives
-	// exec rather than dying and triggering pdeathsig early.
-	if transport == "systrap-docker" {
+	// systrap-docker (and auto, which may select systrap-docker for static
+	// targets) calls syscall.Exec, which kills all Go OS threads except the
+	// calling one. If the fdproxy was spawned from a different OS thread,
+	// its PR_SET_PDEATHSIG fires prematurely during exec and kills fdproxy
+	// before the wrapped binary can connect. Lock this goroutine to its
+	// current OS thread so that fdproxy's parent thread IS the thread that
+	// later calls execve — that thread survives exec.
+	if transport == "systrap-docker" || transport == "auto" {
 		runtime.LockOSThread()
 	}
 
@@ -414,9 +414,9 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 		systrapStaticRun()
 	case "systrap-docker":
 		// systrap-docker: ELF PT_INTERP injection, no ptrace required.
-		// Requires seccomp (SECCOMP_RET_TRAP). Opt-in only; NOT in
-		// auto cascade. Designed for Docker containers where ptrace(2)
-		// is blocked but seccomp BPF is available.
+		// Requires seccomp (SECCOMP_RET_TRAP). Designed for Docker
+		// containers where ptrace(2) is blocked but seccomp is available;
+		// auto selects this for static targets in that host shape.
 		if !probeSeccompAvailable() {
 			log.Fatal("systrap-docker: seccomp is not available on this host (SECCOMP_RET_TRAP requires kernel seccomp support). Use --transport=ptrace if seccomp is blocked but ptrace is allowed.")
 		}
@@ -440,36 +440,21 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 		// Auto cascade — try each mode in this order; pick the
 		// first one whose host requirements are met.
 		//
+		// Dynamic target cascade:
 		//   1. systrap-supervised   seccomp ✅ + ptrace ✅
-		//      LD_PRELOAD + seccomp + in-process SIGSYS + an
-		//      execve-only ptrace supervisor that re-arms across
-		//      dynamic↔static boundaries. Best correctness +
-		//      performance combination. Today the supervisor is
-		//      a TODO (Phase 1.5+2); this path runs plain systrap
-		//      + a heads-up log line.
-		//
 		//   2. systrap              seccomp ✅ + ptrace ❌
-		//      The common container case (Docker default seccomp
-		//      profile, K8s pods without SYS_PTRACE). Dynamic
-		//      targets work fully; static-binary descendants of
-		//      fork+exec lose interception (caveat documented in
-		//      wrapper-modes.md).
+		//   3. ptrace               seccomp ❌ + ptrace ✅
+		//   4. preload              seccomp ❌ + ptrace ❌
 		//
-		//   3. systrap-static       fallback when libc linkage to
-		//      our .so is broken on this host (rare). Treats
-		//      every binary as static; never uses libc hooks.
-		//      Requires ptrace; auto only reaches here if ptrace
-		//      is available and the systrap libc-link probe
-		//      failed. Currently we don't probe libc-link, so
-		//      auto skips this slot for now — it's left as a
-		//      reserved cascade entry for future use.
-		//
-		//   4. ptrace               seccomp ❌ + ptrace ✅
-		//      Universal slow path: every syscall round-trips
-		//      through the supervisor.
-		//
-		//   5. preload              seccomp ❌ + ptrace ❌
-		//      Libc-only. Raw-asm syscalls bypass interception.
+		// Static target cascade (pre-flight: isStaticELF):
+		//   1. systrap-supervised   seccomp ✅ + ptrace ✅
+		//      Best: in-process SIGSYS + execve supervisor.
+		//   2. ptrace               ptrace ✅ (any seccomp)
+		//      Universal slow path.
+		//   3. systrap-docker       seccomp ✅ + ptrace ❌
+		//      PT_INTERP injection. The right pick for Docker
+		//      containers that block ptrace but allow seccomp.
+		//   4. FAIL fast            neither
 		//
 		// Note: ptrace-seccomp is intentionally NOT in the auto
 		// cascade. When seccomp+ptrace are both available we
@@ -500,8 +485,15 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 					log.Fatalf("auto: ptrace-only failed for static target %q: %v", target, err)
 				}
 				return
+			case seccompOK:
+				// seccomp available but ptrace blocked (typical Docker
+				// container with default seccomp policy, no SYS_PTRACE).
+				// Use systrap-docker: inject ptloader as PT_INTERP so the
+				// kernel loads it before _start, no ptrace required.
+				systrapDockerRun(target, progArgs, env, preloadPath, shared)
+				return
 			default:
-				log.Fatalf("auto: target %q is statically linked, but this host blocks ptrace(2); only systrap-supervised or ptrace can intercept a static binary, and both require ptrace. Pick a different host or wrap a dynamic target. Note: --transport=preload (libc-only) and --transport=systrap cannot intercept static binaries.", target)
+				log.Fatalf("auto: target %q is statically linked, but this host blocks ptrace(2) and seccomp; no mode can intercept a static binary. Options: (a) use a host that allows ptrace(2) or seccomp (systrap-docker), (b) wrap a dynamic target, or (c) use --transport=preload to accept no-interception.", target)
 			}
 			return
 		}
