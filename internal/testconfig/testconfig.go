@@ -113,6 +113,11 @@ type Config struct {
 	// Flag: -uwgs-chromium-docker  Env: UWGS_RUN_CHROMIUM_DOCKER
 	ChromiumDocker bool
 
+	// PythonML enables the Python3/scikit-learn ML + network test under
+	// systrap-docker and systrap-supervised.
+	// Flag: -uwgs-python-ml  Env: UWGS_RUN_PYTHON_ML
+	PythonML bool
+
 	// Examples enables the config examples validation tests.
 	// Flag: -uwgs-examples  Env: UWG_TEST_EXAMPLES
 	Examples bool
@@ -156,6 +161,7 @@ var (
 	flagPhase1ChromeSmoke     = flag.Bool("uwgs-phase1-chrome-smoke", false, "run Phase 1 headless Chrome smoke test")
 	flagPhase2Diag            = flag.Bool("uwgs-phase2-diag", false, "run Phase 2 natural-exit hang diagnostic")
 	flagChromiumDocker        = flag.Bool("uwgs-chromium-docker", false, "run systrap-docker Chromium final boss test")
+	flagPythonML              = flag.Bool("uwgs-python-ml", false, "run Python3/scikit-learn ML + network test under systrap-docker/supervised")
 	flagExamples              = flag.Bool("uwgs-examples", false, "run config examples validation tests")
 	flagVerbose               = flag.Bool("uwgs-verbose", false, "enable verbose wrapper subprocess output")
 	flagVerboseStress         = flag.Bool("uwgs-verbose-stress", false, "enable verbose output for stress sub-tests")
@@ -256,6 +262,9 @@ func applyEnv(cfg *Config) {
 	if envBool("UWGS_RUN_CHROMIUM_DOCKER") {
 		cfg.ChromiumDocker = true
 	}
+	if envBool("UWGS_RUN_PYTHON_ML") {
+		cfg.PythonML = true
+	}
 	if envBool("UWG_TEST_EXAMPLES") {
 		cfg.Examples = true
 	}
@@ -313,6 +322,8 @@ func applyFlag(cfg *Config, f *flag.Flag) {
 		cfg.Phase2Diag = *flagPhase2Diag
 	case "uwgs-chromium-docker":
 		cfg.ChromiumDocker = *flagChromiumDocker
+	case "uwgs-python-ml":
+		cfg.PythonML = *flagPythonML
 	case "uwgs-examples":
 		cfg.Examples = *flagExamples
 	case "uwgs-verbose":
@@ -342,6 +353,7 @@ func enableAll(cfg *Config) {
 	cfg.Phase1ChromeSmoke = true
 	cfg.Phase2Diag = true
 	cfg.ChromiumDocker = true
+	cfg.PythonML = true
 	cfg.Examples = true
 	// Note: StrictStdioHotpath and VerboseStress are diagnostic modifiers,
 	// not test gates — -uwgs-all does not enable them automatically.

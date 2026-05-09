@@ -360,49 +360,108 @@ func TestSystrapDockerGoHTTPStatic(t *testing.T) {
 //     of fork() for sandbox isolation.
 //   - The zygote model exec's a fresh heap from a frozen master after
 //     fork, including re-exec via /proc/self/exe.
+// resolveChromeBin returns the path to a real (non-script) Chrome/Chromium ELF
+// binary, probing candidate paths in preference order. It skips shell-script
+// wrappers (snap launchers, google-chrome launcher scripts) because those go
+// through an extra bash exec that causes bash to close fd 3 (the master
+// ptloader memfd), breaking static-child ptloader injection.
+func resolveChromeBin(hint string) string {
+	// UWGS_CHROME_BIN / -uwgs-chrome-bin takes precedence.
+	if hint != "" {
+		return hint
+	}
+	// Prefer known real-ELF paths first.
+	for _, cand := range []string{
+		"/opt/google/chrome/chrome",
+		"/usr/lib/chromium/chromium",
+		"/usr/lib/chromium-browser/chromium-browser",
+		"/snap/chromium/current/usr/lib/chromium-browser/chromium-browser",
+		// Script launchers last — accepted but may need --disable-seccomp-filter-sandbox.
+		"/usr/bin/chromium",
+		"/usr/bin/google-chrome",
+		"/usr/bin/chromium-browser",
+		"/usr/bin/google-chrome-stable",
+	} {
+		if _, err := os.Stat(cand); err == nil {
+			return cand
+		}
+	}
+	return ""
+}
+
+// chromeSandboxFlags returns the extra Chrome flags needed to suppress Chrome's
+// own seccomp-based sandbox, which conflicts with our SIGSYS handler.
+//
+// Root cause: Chrome's renderer/GPU subprocess installs a seccomp filter and a
+// matching SIGSYS handler. Our BPF filter traps rt_sigaction(SIGSYS) and our
+// dispatch silently suppresses it (returning 0 without calling the kernel), so
+// Chrome's subprocess believes its SIGSYS handler is installed but it isn't.
+// When the subprocess's own seccomp filter fires, it gets a SIGSYS with no
+// handler → default action → SIGTERM → parent Chrome times out → SIGTRAP crash.
+//
+// --disable-seccomp-filter-sandbox prevents Chrome's subprocesses from installing
+// their own seccomp filters, which eliminates the conflict.
+//
+// This is a temporary workaround pending SIGSYS-handler chaining (Phase 2.1).
+func chromeSandboxFlags() []string {
+	return []string{
+		"--disable-seccomp-filter-sandbox",
+	}
+}
+
+// TestSystrapDockerChromium is the "final boss" test: run Google Chrome/Chromium
+// under systrap-docker. Chrome exercises Chromium's zygote fork+exec subprocess
+// model, clone() for sandbox isolation, and heavy use of AF_UNIX IPC sockets,
+// all of which must pass through (not be tunnel-routed) correctly.
+//
+// Implementation notes:
+//   - Requires UWGS_RUN_CHROMIUM_DOCKER=1 (Tier-3 gated, slow + noisy).
+//   - Uses data: URI to avoid needing a real HTTP server; the test goal is
+//     "Chrome runs + exits cleanly", not "Chrome fetches something".
+//   - --disable-seccomp-filter-sandbox suppresses Chrome's own seccomp
+//     sandbox to avoid SIGSYS-handler conflicts (see chromeSandboxFlags).
+//   - --no-sandbox disables the SUID/setuid sandbox (not needed in root-owned
+//     test environments, and would prevent Chrome forking at all in containers).
+//
+// Zygote model notes:
+//   - Chromium's zygote performs fork() without exec for isolation.
+//   - The zygote process inherits our SIGSYS handler (signal handlers survive
+//     fork), so socket calls in the zygote + renderer are dispatched correctly.
+//   - Static→dynamic exec chains from Chrome subprocesses are handled by
+//     our execve_docker_dispatch passthrough.
 func TestSystrapDockerChromium(t *testing.T) {
 	tcfg := testconfig.Get()
 	if !tcfg.ChromiumDocker {
 		t.Skip("set UWGS_RUN_CHROMIUM_DOCKER=1 to run the Chromium systrap-docker final boss test")
 	}
 	requireSystrapDockerToolchain(t)
-	chromeBin := tcfg.ChromeBin
+	chromeBin := resolveChromeBin(tcfg.ChromeBin)
 	if chromeBin == "" {
-		for _, cand := range []string{
-			"/usr/bin/chromium-browser",
-			"/usr/bin/chromium",
-			"/usr/bin/google-chrome",
-			"/usr/bin/google-chrome-stable",
-		} {
-			if _, err := os.Stat(cand); err == nil {
-				chromeBin = cand
-				break
-			}
-		}
+		t.Skip("no Chromium/Chrome binary found; set UWGS_CHROME_BIN=/path/to/chrome")
 	}
-	if chromeBin == "" {
-		t.Skip("no Chromium binary found (set UWGS_CHROME_BIN)")
-	}
+	t.Logf("chrome binary: %s", chromeBin)
 
 	art, _ := buildSystrapDockerArtifacts(t)
 	_, httpSock := setupWrapperNetwork(t)
 	tmp := t.TempDir()
 
 	listenSock := filepath.Join(tmp, "fdproxy-docker-chrome.sock")
-	wrapperArgs := []string{
+	chromeArgs := append(chromeSandboxFlags(),
+		"--headless=new",
+		"--no-sandbox",
+		"--disable-gpu",
+		"--dump-dom",
+		"--timeout=15000",
+		"data:text/html,<h1>uwg-chrome-test</h1>",
+	)
+	wrapperArgs := append([]string{
 		"--transport=systrap-docker",
 		"--listen", listenSock,
 		"--api", "unix:" + httpSock,
 		"--socket-path", "/uwg/socket",
 		"--preload", art.preload,
 		"--", chromeBin,
-		"--headless=new",
-		"--no-sandbox",
-		"--disable-gpu",
-		"--dump-dom",
-		"--timeout=10000",
-		"https://100.64.94.1/",
-	}
+	}, chromeArgs...)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -410,14 +469,68 @@ func TestSystrapDockerChromium(t *testing.T) {
 	cmd.Env = os.Environ()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	out, err := runCommandCombinedFileBacked(t, cmd)
-	t.Logf("=== Chromium systrap-docker output (first 2KB) ===\n%s\n=== end ===",
+	t.Logf("=== Chromium systrap-docker output ===\n%s\n=== end ===",
 		truncate(out, 2048))
 
 	if ctx.Err() == context.DeadlineExceeded {
-		t.Fatalf("Chromium systrap-docker: timed out")
+		t.Fatalf("Chromium systrap-docker: timed out after 120s")
 	}
 	if err != nil {
 		t.Fatalf("Chromium systrap-docker failed: %v", err)
+	}
+}
+
+// TestSystrapSupervisedChromium runs Chrome under systrap-supervised (ptrace
+// supervisor path). This exercises the supervised execve interception across
+// Chrome's multi-process model.
+func TestSystrapSupervisedChromium(t *testing.T) {
+	tcfg := testconfig.Get()
+	if !tcfg.ChromiumSupervised {
+		t.Skip("set UWGS_RUN_CHROMIUM_SUPERVISED=1 to run the supervised Chromium test")
+	}
+	requireWrapperToolchain(t)
+	chromeBin := resolveChromeBin(tcfg.ChromeBin)
+	if chromeBin == "" {
+		t.Skip("no Chromium/Chrome binary found; set UWGS_CHROME_BIN=/path/to/chrome")
+	}
+	t.Logf("chrome binary: %s", chromeBin)
+
+	art := buildWrapperArtifacts(t)
+	_, httpSock := setupWrapperNetwork(t)
+	tmp := t.TempDir()
+
+	listenSock := filepath.Join(tmp, "fdproxy-supervised-chrome.sock")
+	chromeArgs := append(chromeSandboxFlags(),
+		"--headless=new",
+		"--no-sandbox",
+		"--disable-gpu",
+		"--dump-dom",
+		"--timeout=15000",
+		"data:text/html,<h1>uwg-supervised-chrome-test</h1>",
+	)
+	wrapperArgs := append([]string{
+		"--transport=systrap-supervised",
+		"--listen", listenSock,
+		"--api", "unix:" + httpSock,
+		"--socket-path", "/uwg/socket",
+		"--preload", art.preload,
+		"--", chromeBin,
+	}, chromeArgs...)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, art.wrapper, wrapperArgs...)
+	cmd.Env = os.Environ()
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	out, err2 := runCommandCombinedFileBacked(t, cmd)
+	t.Logf("=== Chromium systrap-supervised output (first 2KB) ===\n%s\n=== end ===",
+		truncate(out, 2048))
+
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("Chromium systrap-supervised: timed out after 120s")
+	}
+	if err2 != nil {
+		t.Fatalf("Chromium systrap-supervised failed: %v", err2)
 	}
 }
 

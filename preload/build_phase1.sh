@@ -41,6 +41,9 @@ SHIM_SRCS=(
     preload/shim_libc/shim_socket.c
     preload/shim_libc/shim_syscall.c
     preload/shim_libc/shim_execve.c
+    preload/shim_libc/shim_sigprocmask.c
+    preload/shim_libc/shim_fork.c
+    preload/shim_libc/shim_posix_spawn.c
 )
 
 OUT="${1:-preload/uwgpreload-phase1.so}"

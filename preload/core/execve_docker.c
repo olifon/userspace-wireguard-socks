@@ -480,7 +480,11 @@ long uwg_execve_docker_dispatch(const char *path,
 passthrough:
     uwg_syscall2(SYS_munmap, mm, UWG_DOCKER_BUF_TOTAL);
     uwg_syscall1(SYS_close, fd);
-    /* Unblock SIGSYS for the same reason as in uwg_docker_patch_exec. */
+    /* Unblock SIGSYS: we're invoked from the SIGSYS handler (no
+     * SA_NODEFER), so SIGSYS is auto-masked for the handler's duration.
+     * The new process image inherits the signal mask across execve; if
+     * we don't unblock, the child starts with SIGSYS blocked and any
+     * subsequent seccomp trap kills it before our handler can run. */
     {
         uint64_t _sigsys_mask = (uint64_t)1 << (SIGSYS - 1);
         uwg_syscall4(SYS_rt_sigprocmask, SIG_UNBLOCK,

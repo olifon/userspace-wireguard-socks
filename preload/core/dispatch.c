@@ -89,7 +89,6 @@ long uwg_dispatch(long nr, long a1, long a2, long a3,
         }
         return uwg_passthrough_syscall5(SYS_execveat, a1, a2, a3, a4, a5);
 #endif
-
     /* --- handler-protection --- */
     case SYS_rt_sigaction:
         /* Reject SIGSYS sigaction silently (return success). Other
@@ -99,6 +98,27 @@ long uwg_dispatch(long nr, long a1, long a2, long a3,
             return 0;
         }
         return uwg_passthrough_syscall4(SYS_rt_sigaction, a1, a2, a3, a4);
+
+    case SYS_rt_sigprocmask: {
+        /* Strip SIGSYS from SIG_BLOCK / SIG_SETMASK operations so no
+         * code path — whether PLT syscall() shim, Chrome's own signal
+         * management, or glibc internals — can accidentally block the
+         * signal our seccomp trap handler relies on.
+         *
+         * On 64-bit Linux the kernel sigset is exactly one unsigned
+         * long (8 bytes, 64 signals). SIGSYS=31 is bit 30 of word 0. */
+        int how = (int)a1;
+        const unsigned long *set = (const unsigned long *)a2;
+        long ssz = a4;
+        if (set != NULL && ssz > 0 &&
+                (how == 0 /* SIG_BLOCK */ || how == 2 /* SIG_SETMASK */)) {
+            unsigned long fset = set[0] & ~((unsigned long)1 << (31 - 1));
+            return uwg_passthrough_syscall4(SYS_rt_sigprocmask,
+                                            (long)how, (long)&fset,
+                                            a3, ssz);
+        }
+        return uwg_passthrough_syscall4(SYS_rt_sigprocmask, a1, a2, a3, a4);
+    }
 
     default:
         /* Unknown syscall — pass through to the kernel with the

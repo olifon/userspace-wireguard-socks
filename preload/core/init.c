@@ -139,8 +139,6 @@ int uwg_core_init(void) {
     int seccomp_disabled = disable && (*disable == '1');
 
     if (uwg_bypass_secret == 0 && !seccomp_disabled) {
-        /* No secret → can't install a working filter. Fail closed
-         * unless explicitly opted out. */
         return -22; /* -EINVAL */
     }
 
@@ -177,8 +175,9 @@ int uwg_core_init(void) {
     }
 
     /* (4) SIGSYS handler — must be installed BEFORE the filter,
-     * otherwise the kernel could deliver a SIGSYS that lands on the
-     * default handler and kills the process. */
+     * and must ALWAYS be reinstalled even when the filter is
+     * inherited across execve (signal handlers reset on exec,
+     * seccomp filters do not). */
     rc = uwg_install_sigsys_handler();
     if (rc < 0) return rc;
 
@@ -199,14 +198,13 @@ int uwg_core_init(void) {
         uwg_ptloader_docker_init();
     }
 
-    /* Skip duplicate install across execve: the kernel inherits
+    /* Skip duplicate filter install across execve: the kernel inherits
      * seccomp filters across execve, so when the child's preload
      * constructor runs the parent's filter is already in place.
      * Stacking a second identical filter works (kernel allows N
      * filters) but burns cycles on every syscall. UWGS_SECCOMP_INSTALLED=1
-     * in the inherited env tells us the parent already installed; the
-     * SIGSYS handler still needs reinstalling (signal handlers ARE reset
-     * on execve), but the filter we can skip. */
+     * in the inherited env tells us to skip filter install only —
+     * the SIGSYS handler was already reinstalled above (step 4). */
     const char *already = uwg_getenv("UWGS_SECCOMP_INSTALLED");
     if (already && *already == '1') {
         return 0;
