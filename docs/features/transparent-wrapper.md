@@ -48,7 +48,7 @@ that can actually intercept this target:
 | Host shape | `auto` picks | What works | What doesn't |
 |---|---|---|---|
 | seccomp ✅, ptrace ✅ | **`systrap-supervised`** | Everything: dynamic, dynamic→static execve, dynamic→dynamic execve, multi-threaded execve, fork+exec trees | (nothing) |
-| seccomp ✅, ptrace ❌ (typical container: Docker default seccomp, K8s pods w/o `SYS_PTRACE`) | **`systrap`** (no ptrace) | The dynamic target itself; fork+exec into other dynamic binaries (`LD_PRELOAD` re-arms via the dynamic linker) | Descendants that `execve` into a static binary lose interception (seccomp filter inherited but no SIGSYS handler → child killed on first trapped syscall) |
+| seccomp ✅, ptrace ❌ (typical container: Docker default seccomp, K8s pods w/o `SYS_PTRACE`) | **`systrap-docker`** (PT_INTERP injection, no ptrace) | The dynamic target and any static or dynamic exec descendants (`uwgptloader.so` is injected via `PT_INTERP` into a memfd; the entire exec chain is covered without ptrace) | (nothing) |
 | seccomp ❌, ptrace ✅ (sandbox-inside-sandbox edge cases) | **`ptrace`** (auto-picks ptrace-seccomp / ptrace-only inside) | Everything (slow — every syscall round-trips through the tracer) | (nothing) |
 | seccomp ❌, ptrace ❌ (very restricted container) | **`preload`** (libc-only) | Libc-routed network calls in the dynamic target | Raw-asm syscalls (Go runtime internals, some C++/Rust net code), descendants that exec into anything bypassing libc |
 

@@ -70,6 +70,8 @@ func main() {
 	flag.BoolVar(&allowLowBind, "allow-lowbind", getenv("UWGS_FDPROXY_ALLOW_LOWBIND", "0") != "0", "allow fdproxy-managed ports below 1024")
 	flag.StringVar(&stdioConnect, "stdio-connect", getenv("UWGS_STDIO_CONNECT", ""), "connect a tunnel TCP target and bridge stdin/stdout; useful as SSH ProxyCommand")
 	flag.BoolVar(&verbose, "v", false, "enable wrapper diagnostics")
+	var forcePreload bool
+	flag.BoolVar(&forcePreload, "force-preload", false, "suppress error when --transport=preload is used against a static binary (interception will be absent)")
 	flag.Parse()
 
 	switch mode {
@@ -80,7 +82,7 @@ func main() {
 			}
 			return
 		}
-		runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, transport, forceLoopbackDNS, spawnFDProxy, noNewPrivileges, allowBind, allowLowBind, verbose)
+		runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, transport, forceLoopbackDNS, spawnFDProxy, noNewPrivileges, allowBind, allowLowBind, verbose, forcePreload)
 	case "fdproxy":
 		runFDProxy(api, apiToken, socketPath, listenPath, allowBind, allowLowBind, verbose || os.Getenv("UWGS_WRAPPER_DEBUG") != "")
 	case "stdio":
@@ -108,7 +110,7 @@ func main() {
 	}
 }
 
-func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, transport string, forceLoopbackDNS, spawnFDProxy, noNewPrivileges, allowBind, allowLowBind, verbose bool) {
+func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, transport string, forceLoopbackDNS, spawnFDProxy, noNewPrivileges, allowBind, allowLowBind, verbose, forcePreload bool) {
 	if flag.NArg() == 0 {
 		fmt.Fprintf(os.Stderr, "usage: uwgwrapper [flags] -- program [args...]\n")
 		flag.PrintDefaults()
@@ -400,6 +402,9 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 	// works at all.
 	switch transport {
 	case "preload":
+		if isStaticELF(target) && !forcePreload {
+			log.Fatalf("transport=preload: target %q is a statically-linked binary; LD_PRELOAD has no effect on static binaries and interception will be absent. Use --transport=systrap-docker (seccomp OK), --transport=systrap-supervised (ptrace OK), or --transport=systrap-static. Pass --force-preload to override.", target)
+		}
 		libcOnlyRun()
 	case "systrap":
 		systrapRun()
@@ -442,7 +447,10 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 		//
 		// Dynamic target cascade:
 		//   1. systrap-supervised   seccomp ✅ + ptrace ✅
-		//   2. systrap              seccomp ✅ + ptrace ❌
+		//   2. systrap-docker       seccomp ✅ + ptrace ❌
+		//      PT_INTERP injection; preferred over plain systrap because
+		//      it survives execve into static children (bash scripts,
+		//      sub-commands). The common Docker + no-ptrace shape.
 		//   3. ptrace               seccomp ❌ + ptrace ✅
 		//   4. preload              seccomp ❌ + ptrace ❌
 		//
@@ -504,7 +512,12 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 			// process + execve-only ptrace supervisor).
 			systrapSupervisedRun()
 		case seccompOK:
-			systrapRun()
+			// systrap-docker is preferred over plain systrap when ptrace
+			// is blocked: PT_INTERP injection survives execve into static
+			// children, whereas plain systrap loses interception at any
+			// statically-linked exec boundary.
+			systrapDockerRun(target, progArgs, env, preloadPath, shared)
+			return
 		case ptraceOK:
 			// Try ptrace-seccomp first (it tries with-seccomp,
 			// which fails-fast if seccomp is blocked, then
