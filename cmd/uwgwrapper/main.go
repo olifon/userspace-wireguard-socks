@@ -394,8 +394,8 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 	//   - ptrace-only          Per-syscall ptrace, no seccomp.
 	//   - ptrace               ptrace-seccomp → ptrace-only fallback.
 	//
-	// auto ordering favors correctness then speed:
-	//   systrap → ptrace-seccomp → ptrace-only → preload (libc-only)
+	// auto ordering favors correctness then speed (dynamic target):
+	//   systrap-supervised → systrap-docker → ptrace → preload
 	//
 	// preload (libc-only) is last because raw-asm syscalls leak past
 	// the libc hooks; it's a fallback for hosts where nothing else
