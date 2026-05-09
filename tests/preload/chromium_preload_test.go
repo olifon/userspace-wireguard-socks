@@ -8,84 +8,85 @@ package preload_test
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/netip"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
-	"github.com/reindertpelsma/userspace-wireguard-socks/internal/config"
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/testconfig"
 )
 
-// TestChromiumPreloadWrapperSmoke runs headless Chromium under
-// uwgwrapper --transport=preload against a uwgsocks HTTP proxy with
-// fallback_direct enabled, navigating to a real-internet URL.
+// TestChromiumPreloadWrapperSmoke validates the --transport=preload wrapper
+// end-to-end using headless Chrome on linux-amd64.
 //
-// Design:
-//   - Chrome is launched under the preload wrapper (LD_PRELOAD loaded).
-//   - Chrome's proxy connection goes to 127.0.0.1:proxyPort; the
-//     preload shim bypasses loopback connects, so the proxy TCP
-//     handshake goes directly via kernel — zero wrapper latency.
-//   - uwgsocks handles the HTTP CONNECT and dials the origin via
-//     fallback_direct.
-//   - No --virtual-time-budget: Chrome waits for real I/O to complete.
-//   - --no-zygote: Chrome stays single-process so LD_PRELOAD remains
-//     in effect without requiring supervised exec re-arm.
+// Design: two uwgsocks instances share a WireGuard tunnel. A Go HTTP server
+// listens on the SERVER's tunnel address (100.64.94.1:18095). Chrome runs
+// under the CLIENT's preload wrapper and navigates to that URL directly.
 //
-// Gated on UWGS_CHROME_BIN only (set by CI when chrome-headless-shell
-// is installed). No extra env var gate. Snap-confined binaries are
-// skipped (LD_PRELOAD from /tmp is blocked by snap confinement).
+//   - No --proxy-server. Chrome connects to 100.64.94.1:18095 (non-loopback).
+//   - The preload intercepts the connect and routes it: fdproxy →
+//     client-uwgsocks → WireGuard tunnel → server-uwgsocks → Go HTTP server.
+//   - This exercises the real preload socket-intercept path.
+//   - No real internet needed. Reliable on GH-hosted runners.
+//
+// Gated on UWGS_CHROME_BIN only. No continue-on-error. Snap-confined
+// binaries are skipped (LD_PRELOAD from /tmp is blocked by snap confinement).
 func TestChromiumPreloadWrapperSmoke(t *testing.T) {
 	requirePhase1Toolchain(t)
 
 	tcfg := testconfig.Get()
 	chromeBin := tcfg.ChromeBin
 	if chromeBin == "" {
-		t.Skip("set UWGS_CHROME_BIN to a Chrome/headless_shell binary to run the preload wrapper smoke")
+		t.Skip("set UWGS_CHROME_BIN to run the preload wrapper smoke")
 	}
 	if isSnapBin(chromeBin) {
 		t.Skipf("snap-confined chromium (%s) cannot load LD_PRELOAD from /tmp; install chrome-headless-shell", chromeBin)
 	}
 
 	art := buildPhase1Artifacts(t)
-	proxyPort := freeTCPPort(t)
-	httpSock := filepath.Join(t.TempDir(), "http.sock")
 
-	// Single uwgsocks: HTTP proxy on TCP (for Chrome's CONNECT requests)
-	// and HTTP listener on Unix socket (for the wrapper's fdproxy).
-	// FallbackDirect is true in config.Default() — no WG peers needed.
-	cfg := config.Default()
-	cfg.WireGuard.PrivateKey = mustKey(t).String()
-	cfg.WireGuard.Addresses = []string{"100.64.99.1/32"}
-	cfg.Proxy.HTTP = fmt.Sprintf("127.0.0.1:%d", proxyPort)
-	cfg.Proxy.HTTPListeners = []string{"unix:" + httpSock}
-	cfg.SocketAPI.Bind = true
-	_ = mustStart(t, cfg)
-	waitTCPPort(t, fmt.Sprintf("127.0.0.1:%d", proxyPort), 5*time.Second)
-	waitPath(t, httpSock)
+	// Server + client WireGuard pair. The client's httpSock is what
+	// wrappedCommand passes as --api to uwgwrapper (fdproxy uses it).
+	serverEng, httpSock := setupWrapperNetwork(t)
 
+	// HTTP server on the server's tunnel side.
+	const tunnelPort = 18095
+	ln, err := serverEng.ListenTCP(netip.MustParseAddrPort(fmt.Sprintf("100.64.94.1:%d", tunnelPort)))
+	if err != nil {
+		t.Fatalf("ListenTCP: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	httpSrv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprint(w, "<html><head></head><body>Preload Smoke OK</body></html>")
+		}),
+	}
+	go func() { _ = httpSrv.Serve(ln) }()
+	t.Cleanup(func() { _ = httpSrv.Close() })
+
+	targetURL := fmt.Sprintf("http://100.64.94.1:%d/", tunnelPort)
+
+	// Minimal headless Chrome flags. --no-zygote keeps Chrome
+	// single-process on Linux so LD_PRELOAD stays in effect across
+	// fork boundaries without requiring systrap-supervised re-arm.
+	// UWGS_DNS_MODE=none disables port-53 diversion — Chrome's
+	// background DNS queries are irrelevant here (no public names
+	// are resolved) and diverting them to the fdproxy DNS endpoint
+	// when no dns_server is configured silently fails the navigation.
 	chromeArgs := []string{
 		"--headless",
 		"--no-sandbox",
 		"--disable-gpu",
 		"--disable-dev-shm-usage",
-		"--disable-features=DBus,VizDisplayCompositor",
-		"--disable-software-rasterizer",
 		"--no-zygote",
-		fmt.Sprintf("--proxy-server=http://127.0.0.1:%d", proxyPort),
 		"--dump-dom",
-		"https://example.com/",
+		targetURL,
 	}
 
-	// UWGS_DNS_MODE=none: Chrome's internal async DNS resolver makes raw
-	// UDP connects to port 53 which the preload (full mode by default)
-	// would divert to the fdproxy DNS endpoint. With --proxy-server, all
-	// web DNS is handled by the proxy, so there is no reason to intercept
-	// Chrome's background DNS queries — and intercepting them causes the
-	// navigation to fail silently (empty DOM, no error) when the test
-	// uwgsocks instance has no dns_server configured.
 	base := wrappedCommand(t, art, httpSock, "preload", chromeBin, chromeArgs, wrapperRunOptions{
 		env: map[string]string{"UWGS_DNS_MODE": "none"},
 	})
@@ -95,17 +96,17 @@ func TestChromiumPreloadWrapperSmoke(t *testing.T) {
 	cmd.Env = append([]string{}, base.Env...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	out, err := runCommandCombinedFileBacked(t, cmd)
+	out, runErr := runCommandCombinedFileBacked(t, cmd)
 	t.Logf("=== chromium under preload (%d bytes, err=%v) ===\n%s\n=== end ===",
-		len(out), err, abbrev(out, 1000))
+		len(out), runErr, abbrev(out, 1000))
 
 	if ctx.Err() == context.DeadlineExceeded {
-		t.Fatalf("chromium under preload timed out — proxy or network unavailable")
+		t.Fatalf("chromium under preload timed out")
 	}
-	if err != nil {
-		t.Fatalf("chromium under preload exited non-zero: %v", err)
+	if runErr != nil {
+		t.Fatalf("chromium under preload exited non-zero: %v", runErr)
 	}
-	if !strings.Contains(string(out), "Example Domain") {
-		t.Fatalf("expected 'Example Domain' in DOM output; got: %s", abbrev(out, 500))
+	if !strings.Contains(string(out), "Preload Smoke OK") {
+		t.Fatalf("expected 'Preload Smoke OK' in DOM output; got: %s", abbrev(out, 500))
 	}
 }

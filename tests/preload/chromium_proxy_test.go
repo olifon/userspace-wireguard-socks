@@ -53,19 +53,18 @@ func TestChromiumProxySmoke(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// --no-zygote avoids the zygote fork+exec model (not needed for a
-	// single-navigate-and-dump test). --disable-features=DBus prevents
-	// long retry loops in stripped CI containers (and snap-confined
-	// chromium on Ubuntu arm64). No --virtual-time-budget so Chrome
-	// waits for the real proxy I/O to complete before dumping the DOM.
+	// Minimal flag set validated against the chromium supervised test:
+	// --disable-software-rasterizer and --no-zygote are intentionally
+	// omitted. The former prevents Chrome's headless compositor from
+	// initialising (--disable-gpu + --disable-software-rasterizer =
+	// no render backend → empty DOM on all platforms). The latter
+	// breaks Chrome's headless renderer on macOS. No --virtual-time-budget
+	// so Chrome waits for real proxy I/O to complete before dumping the DOM.
 	args := []string{
 		"--headless",
 		"--no-sandbox",
 		"--disable-gpu",
 		"--disable-dev-shm-usage",
-		"--disable-features=DBus,VizDisplayCompositor",
-		"--disable-software-rasterizer",
-		"--no-zygote",
 		fmt.Sprintf("--proxy-server=http://127.0.0.1:%d", proxyPort),
 		"--dump-dom",
 		"https://example.com/",
