@@ -134,6 +134,27 @@ const int *uwg_seccomp_traced_list(size_t *n);
  * injection per static-vs-dynamic. */
 extern int uwg_seccomp_supervised_flag;
 
+/* Set by uwg_core_init() based on UWGS_SYSTRAP_DOCKER=1. When 1, the
+ * seccomp filter adds execve/execveat to SECCOMP_RET_TRAP (not RET_TRACE),
+ * and execve_docker.c provides the ptloader-injection dispatch. */
+extern int uwg_seccomp_docker_flag;
+
+/* systrap-docker execve/execveat dispatch. See execve_docker.c. */
+long uwg_execve_docker_dispatch(const char *path,
+                                 const char * const *argv,
+                                 const char * const *envp);
+long uwg_execveat_docker_dispatch(int dirfd, const char *path,
+                                   const char * const *argv,
+                                   const char * const *envp,
+                                   int flags);
+
+/* Read UWGS_PTLOADER_FD/CFG_OFF/SIZE env vars. Called from uwg_core_init(). */
+void uwg_ptloader_docker_init(void);
+
+/* fd of this process's ptloader memfd (set by ptloader_entry.c for
+ * re-exec detection in execve_docker.c; -1 when not running as PT_INTERP). */
+extern int uwg_ptloader_my_fd;
+
 /* Shared state operations — see shared_state.c. */
 struct tracked_fd; /* defined in preload/shared_state.h */
 int uwg_state_init(void);

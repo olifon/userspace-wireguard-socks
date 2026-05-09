@@ -9,6 +9,8 @@ on:
 permissions:
   contents: write
   packages: write
+  id-token: write
+  attestations: write
 
 jobs:
   release-test:
@@ -892,6 +894,11 @@ jobs:
 
       - name: Show release contents
         run: ls -lh dist
+
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'dist/*'
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
