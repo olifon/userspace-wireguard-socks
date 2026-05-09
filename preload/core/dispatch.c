@@ -69,6 +69,27 @@ long uwg_dispatch(long nr, long a1, long a2, long a3,
     case SYS_pread64:     return uwg_pread((int)a1, (void *)a2, (size_t)a3, (int64_t)a4);
     case SYS_pwrite64:    return uwg_pwrite((int)a1, (const void *)a2, (size_t)a3, (int64_t)a4);
 
+    /* --- execve interception (systrap-docker mode) --- */
+#ifdef SYS_execve
+    case SYS_execve:
+        if (uwg_seccomp_docker_flag) {
+            return uwg_execve_docker_dispatch((const char *)a1,
+                                              (const char * const *)a2,
+                                              (const char * const *)a3);
+        }
+        return uwg_passthrough_syscall3(SYS_execve, a1, a2, a3);
+#endif
+#ifdef SYS_execveat
+    case SYS_execveat:
+        if (uwg_seccomp_docker_flag) {
+            return uwg_execveat_docker_dispatch((int)a1, (const char *)a2,
+                                                (const char * const *)a3,
+                                                (const char * const *)a4,
+                                                (int)a5);
+        }
+        return uwg_passthrough_syscall5(SYS_execveat, a1, a2, a3, a4, a5);
+#endif
+
     /* --- handler-protection --- */
     case SYS_rt_sigaction:
         /* Reject SIGSYS sigaction silently (return success). Other

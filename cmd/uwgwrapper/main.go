@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -132,6 +133,17 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 		listenPath = filepath.Join(os.TempDir(), fmt.Sprintf("uwgfdproxy-%d.sock", os.Getpid()))
 	}
 	debug := verbose || os.Getenv("UWGS_WRAPPER_DEBUG") != ""
+
+	// systrap-docker with a static target calls syscall.Exec, which kills
+	// all Go OS threads except the calling one. If the fdproxy was spawned
+	// from a different OS thread, its PR_SET_PDEATHSIG fires prematurely
+	// during exec and kills fdproxy before the wrapped binary can connect.
+	// Lock this goroutine to its current OS thread so that fdproxy's parent
+	// thread IS the thread that later calls execve — that thread survives
+	// exec rather than dying and triggering pdeathsig early.
+	if transport == "systrap-docker" {
+		runtime.LockOSThread()
+	}
 
 	var fdproxyCmd *exec.Cmd
 	if spawnFDProxy {
@@ -400,6 +412,15 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 		systrapSupervisedRun()
 	case "systrap-static":
 		systrapStaticRun()
+	case "systrap-docker":
+		// systrap-docker: ELF PT_INTERP injection, no ptrace required.
+		// Requires seccomp (SECCOMP_RET_TRAP). Opt-in only; NOT in
+		// auto cascade. Designed for Docker containers where ptrace(2)
+		// is blocked but seccomp BPF is available.
+		if !probeSeccompAvailable() {
+			log.Fatal("systrap-docker: seccomp is not available on this host (SECCOMP_RET_TRAP requires kernel seccomp support). Use --transport=ptrace if seccomp is blocked but ptrace is allowed.")
+		}
+		systrapDockerRun(target, progArgs, env, preloadPath, shared)
 	case "ptrace-seccomp":
 		if err := traceSimple(); err != nil {
 			log.Fatalf("ptrace-seccomp mode failed: %v", err)
@@ -507,7 +528,7 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 			libcOnlyRun()
 		}
 	default:
-		log.Fatalf("unsupported transport %q (supported: auto, systrap, systrap-static, preload, ptrace-seccomp, ptrace-only, ptrace)", transport)
+		log.Fatalf("unsupported transport %q (supported: auto, systrap, systrap-static, systrap-docker, preload, ptrace-seccomp, ptrace-only, ptrace)", transport)
 	}
 }
 

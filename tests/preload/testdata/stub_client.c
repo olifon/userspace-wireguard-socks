@@ -1298,5 +1298,6 @@ int main(int argc, char **argv) {
         rc = tcp_no_poll ? echo_connected_nopoll(fd, argv[3]) : echo_connected(fd, argv[3]);
     }
     close(fd);
+    fflush(stdout);
     return rc;
 }

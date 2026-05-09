@@ -193,6 +193,25 @@ static const int uwg_traced_syscalls_unsupervised[] = {0};
  * RET_TRACE list. */
 int uwg_seccomp_supervised_flag = 0;
 
+/* Docker flag — set by uwg_core_init() when UWGS_SYSTRAP_DOCKER=1.
+ * When 1, the seccomp filter adds execve/execveat to SECCOMP_RET_TRAP
+ * so the in-process SIGSYS handler can intercept them without ptrace. */
+int uwg_seccomp_docker_flag = 0;
+
+/* execve/execveat → SECCOMP_RET_TRAP for systrap-docker mode.
+ * Mutually exclusive with the supervised-trace list (a given process
+ * runs either supervised or docker, not both). */
+static const int uwg_trapped_docker_syscalls[] = {
+#ifdef SYS_execve
+    SYS_execve,
+#endif
+#ifdef SYS_execveat
+    SYS_execveat,
+#endif
+};
+#define UWG_N_TRAPPED_DOCKER \
+    (sizeof(uwg_trapped_docker_syscalls) / sizeof(uwg_trapped_docker_syscalls[0]))
+
 /*
  * Filter program build buffer. Sized to comfortably hold:
  *   - 2 instr arch check
@@ -261,6 +280,18 @@ static int uwg_build_filter(struct uwg_filter_prog *p, uint64_t bypass_secret,
         uwg_emit(p, (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
                                                  traced[i], 0, 1));
         uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRACE));
+    }
+
+    /* (3b) execve / execveat → RET_TRAP (docker mode, mutually exclusive
+     * with supervised mode). No ptrace tracer needed; the in-process
+     * SIGSYS handler intercepts and calls uwg_execve_docker_dispatch. */
+    if (uwg_seccomp_docker_flag) {
+        for (size_t i = 0; i < UWG_N_TRAPPED_DOCKER; i++) {
+            uwg_emit(p, (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
+                                                     uwg_trapped_docker_syscalls[i],
+                                                     0, 1));
+            uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP));
+        }
     }
 
     /* (4) trapped syscalls → SECCOMP_RET_TRAP */

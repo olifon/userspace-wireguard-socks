@@ -190,6 +190,15 @@ int uwg_core_init(void) {
     const char *sup = uwg_getenv("UWGS_SUPERVISED");
     uwg_seccomp_supervised_flag = (sup && *sup == '1') ? 1 : 0;
 
+    /* UWGS_SYSTRAP_DOCKER=1: add execve/execveat to SECCOMP_RET_TRAP
+     * so the in-process SIGSYS handler can intercept them and inject
+     * the ptloader for static-binary children (no ptrace required). */
+    const char *docker = uwg_getenv("UWGS_SYSTRAP_DOCKER");
+    uwg_seccomp_docker_flag = (docker && *docker == '1') ? 1 : 0;
+    if (uwg_seccomp_docker_flag) {
+        uwg_ptloader_docker_init();
+    }
+
     /* Skip duplicate install across execve: the kernel inherits
      * seccomp filters across execve, so when the child's preload
      * constructor runs the parent's filter is already in place.
