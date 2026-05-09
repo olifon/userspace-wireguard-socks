@@ -8,7 +8,6 @@ package preload_test
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -222,13 +221,3 @@ func TestChromiumSystrapSupervisedRealInternet(t *testing.T) {
 	}
 }
 
-func abbrev(b []byte, max int) string {
-	if len(b) <= max {
-		return string(b)
-	}
-	return string(b[:max/2]) + "\n…\n" + string(b[len(b)-max/2:])
-}
-
-// Reuse waitPath / runCommandCombinedFileBacked / freeTCPPort /
-// waitTCPPort / mustKey / mustStart from existing helpers.
-var _ = net.Listen

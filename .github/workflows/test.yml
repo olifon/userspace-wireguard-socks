@@ -77,48 +77,139 @@ jobs:
           set -euo pipefail
           go test ./tests/preload/... || go test ./tests/preload/...
 
-      # Both chromium smoke tests use chrome-headless-shell from Chrome for
-      # Testing (linux64 only). Apt-installed chromium on Ubuntu Noble is a
-      # snap wrapper that cannot load LD_PRELOAD from /tmp and does not work
-      # in headless CI — we never install it.
-      - name: Install chrome-headless-shell
+      # ── Chrome installation ─────────────────────────────────────────────────
+      # linux-amd64: chrome-headless-shell from Chrome for Testing (linux64).
+      # linux-arm64: google-chrome-stable arm64 deb (Google's official arm64
+      #   build; available since Chrome 119). Falls back gracefully if the
+      #   download fails (continue-on-error).
+      # macOS: chrome-headless-shell from Chrome for Testing (mac-arm64 or
+      #   mac-x64 auto-detected from uname -m). Quarantine attr removed so
+      #   Gatekeeper doesn't block execution.
+      # Windows: chrome-headless-shell from Chrome for Testing (win64).
+      # ─────────────────────────────────────────────────────────────────────
+      - name: Install chrome (linux-amd64)
         if: runner.os == 'Linux' && matrix.name == 'linux-amd64'
         continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/chs"
-          cd "$RUNNER_TEMP/chs"
-          # Get the latest stable chrome-headless-shell linux64 tarball.
-          # linux64 only — Chrome for Testing doesn't ship arm64.
           URL=$(curl -sSL https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json \
             | python3 -c 'import json,sys; d=json.load(sys.stdin); print([x["url"] for x in d["channels"]["Stable"]["downloads"]["chrome-headless-shell"] if x["platform"]=="linux64"][0])')
-          curl -sSL "$URL" -o chs.zip
-          unzip -q chs.zip
+          curl -sSL "$URL" -o "$RUNNER_TEMP/chs/chs.zip"
+          unzip -q "$RUNNER_TEMP/chs/chs.zip" -d "$RUNNER_TEMP/chs"
           BIN=$(find "$RUNNER_TEMP/chs" -name chrome-headless-shell -executable | head -1)
           echo "UWGS_CHROME_BIN=$BIN" >> "$GITHUB_ENV"
           echo "UWGS_CHROME_BIN_SUPERVISED=$BIN" >> "$GITHUB_ENV"
-          echo "got chrome-headless-shell at $BIN"
+          echo "installed chrome-headless-shell at $BIN"
 
-      # Preload wrapper smoke: Chrome under uwgwrapper --transport=preload
-      # against a uwgsocks HTTP proxy + fallback_direct. The proxy
-      # connection goes over loopback (bypassed by the preload shim) so
-      # there is no wrapper latency on the proxy handshake — making this
-      # test reliable on GH-hosted runners. No continue-on-error.
+      - name: Install chrome (linux-arm64)
+        if: runner.os == 'Linux' && matrix.name == 'linux-arm64'
+        # Google Chrome stable for arm64 is available since Chrome 119.
+        # Falls back gracefully: if the download or install fails the
+        # proxy smoke step self-skips (UWGS_CHROME_BIN stays unset).
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSL https://dl.google.com/linux/direct/google-chrome-stable_current_arm64.deb \
+            -o /tmp/chrome-arm64.deb
+          sudo apt-get install -y /tmp/chrome-arm64.deb
+          BIN=$(which google-chrome-stable || which google-chrome || true)
+          if [ -n "$BIN" ]; then
+            echo "UWGS_CHROME_BIN=$BIN" >> "$GITHUB_ENV"
+            echo "installed google-chrome-stable at $BIN"
+          fi
+
+      - name: Install chrome (macOS)
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "arm64" ]; then
+            CHS_PLATFORM="mac-arm64"
+          else
+            CHS_PLATFORM="mac-x64"
+          fi
+          mkdir -p "$RUNNER_TEMP/chs"
+          URL=$(curl -sSL https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print([x['url'] for x in d['channels']['Stable']['downloads']['chrome-headless-shell'] if x['platform']=='$CHS_PLATFORM'][0])")
+          curl -sSL "$URL" -o "$RUNNER_TEMP/chs/chs.zip"
+          unzip -q "$RUNNER_TEMP/chs/chs.zip" -d "$RUNNER_TEMP/chs"
+          BIN=$(find "$RUNNER_TEMP/chs" -name chrome-headless-shell | head -1)
+          chmod +x "$BIN"
+          # Remove macOS quarantine so Gatekeeper doesn't block execution.
+          xattr -dr com.apple.quarantine "$BIN" 2>/dev/null || true
+          echo "UWGS_CHROME_BIN=$BIN" >> "$GITHUB_ENV"
+          echo "installed chrome-headless-shell ($CHS_PLATFORM) at $BIN"
+
+      - name: Install chrome (Windows)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = "$env:RUNNER_TEMP\chs"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $json = Invoke-RestMethod 'https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json'
+          $url = ($json.channels.Stable.downloads.'chrome-headless-shell' | Where-Object { $_.platform -eq 'win64' }).url
+          Invoke-WebRequest -Uri $url -OutFile "$dir\chs.zip"
+          Expand-Archive -Path "$dir\chs.zip" -DestinationPath $dir -Force
+          $bin = (Get-ChildItem -Recurse -Filter 'chrome-headless-shell.exe' $dir | Select-Object -First 1).FullName
+          echo "UWGS_CHROME_BIN=$bin" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "installed chrome-headless-shell at $bin"
+
+      # ── Chromium smoke tests ────────────────────────────────────────────────
+      # Preload wrapper smoke (linux-amd64 only): Chrome under
+      # uwgwrapper --transport=preload. The proxy connect goes over
+      # loopback (bypassed by the preload shim) — zero wrapper latency,
+      # reliably passes on GH-hosted runners. No continue-on-error.
       - name: Run chromium preload wrapper smoke
         if: runner.os == 'Linux' && matrix.name == 'linux-amd64'
         shell: bash
         run: |
           set -euo pipefail
           if [ -z "${UWGS_CHROME_BIN:-}" ]; then
-            echo "no chrome-headless-shell detected; skipping preload wrapper smoke"
+            echo "no chrome binary detected; skipping preload wrapper smoke"
             exit 0
           fi
           go test -count=1 -timeout 120s -run TestChromiumPreloadWrapperSmoke -v ./tests/preload/
 
+      # Proxy smoke (all platforms): Chrome WITHOUT a wrapper, directly
+      # against the uwgsocks HTTP proxy. Runs wherever UWGS_CHROME_BIN
+      # is set. No continue-on-error on linux-amd64 and macOS where the
+      # binary is chrome-headless-shell from Chrome for Testing (reliable).
+      # linux-arm64 uses google-chrome-stable which may have env-specific
+      # quirks; arm64 step has continue-on-error.
+      - name: Run chromium proxy smoke (linux-amd64, macOS, Windows)
+        if: (runner.os == 'Linux' && matrix.name == 'linux-amd64') || runner.os == 'macOS' || runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${UWGS_CHROME_BIN:-}" ]; then
+            echo "no chrome binary detected; skipping proxy smoke"
+            exit 0
+          fi
+          go test -count=1 -timeout 90s -run TestChromiumProxySmoke -v ./tests/preload/
+
+      - name: Run chromium proxy smoke (linux-arm64)
+        if: runner.os == 'Linux' && matrix.name == 'linux-arm64'
+        # google-chrome-stable on arm64 may behave differently in GH
+        # runner environments; keep continue-on-error until validated.
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${UWGS_CHROME_BIN:-}" ]; then
+            echo "no chrome binary detected; skipping proxy smoke"
+            exit 0
+          fi
+          go test -count=1 -timeout 90s -run TestChromiumProxySmoke -v ./tests/preload/
+
       - name: Run chromium real-internet smoke
         if: runner.os == 'Linux' && matrix.name == 'linux-amd64'
-        # chrome-headless-shell is linux64-only; arm64 skips this step.
         # GH-runner network quirks can produce flakes; continue-on-error so
         # CI signal stays useful. Self-hosted runs surface real regressions.
         continue-on-error: true

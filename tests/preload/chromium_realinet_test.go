@@ -6,13 +6,9 @@
 package preload_test
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"net"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -20,25 +16,6 @@ import (
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/config"
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/testconfig"
 )
-
-// isSnapBin reports whether the given binary is snap-confined. Snap
-// chromium cannot load LD_PRELOAD from /tmp and fails in headless CI.
-// Detection covers: (a) path contains /snap/, (b) symlink resolves
-// into /snap/, (c) the file is a small shell wrapper that references /snap/.
-func isSnapBin(p string) bool {
-	if strings.Contains(p, "/snap/") {
-		return true
-	}
-	if real, err := filepath.EvalSymlinks(p); err == nil && strings.Contains(real, "/snap/") {
-		return true
-	}
-	if fi, err := os.Stat(p); err == nil && fi.Size() < 4096 {
-		if content, err := os.ReadFile(p); err == nil && bytes.Contains(content, []byte("/snap/")) {
-			return true
-		}
-	}
-	return false
-}
 
 // TestChromiumRealInternetSmoke runs headless Chromium against real
 // public URLs through a uwgsocks-hosted HTTP proxy. Validates the
@@ -82,7 +59,6 @@ func TestChromiumRealInternetSmoke(t *testing.T) {
 		t.Skipf("snap-confined chromium (%s) not usable in headless CI; install chrome-headless-shell", chromeBin)
 	}
 
-	// Pick a free TCP port for the proxy listener.
 	proxyPort := freeTCPPort(t)
 
 	// Spawn a proxy-only uwgsocks: HTTP listener + fallback_direct so
@@ -142,28 +118,4 @@ func TestChromiumRealInternetSmoke(t *testing.T) {
 			t.Logf("%s: OK (%d bytes of DOM)", tc.url, len(out))
 		})
 	}
-}
-
-func freeTCPPort(t *testing.T) int {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-	return ln.Addr().(*net.TCPAddr).Port
-}
-
-func waitTCPPort(t *testing.T, addr string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		conn, err := net.Dial("tcp", addr)
-		if err == nil {
-			conn.Close()
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatalf("port %s not listening within %s", addr, timeout)
 }

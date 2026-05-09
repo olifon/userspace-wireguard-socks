@@ -79,7 +79,16 @@ func TestChromiumPreloadWrapperSmoke(t *testing.T) {
 		"https://example.com/",
 	}
 
-	base := wrappedCommand(t, art, httpSock, "preload", chromeBin, chromeArgs, wrapperRunOptions{})
+	// UWGS_DNS_MODE=none: Chrome's internal async DNS resolver makes raw
+	// UDP connects to port 53 which the preload (full mode by default)
+	// would divert to the fdproxy DNS endpoint. With --proxy-server, all
+	// web DNS is handled by the proxy, so there is no reason to intercept
+	// Chrome's background DNS queries — and intercepting them causes the
+	// navigation to fail silently (empty DOM, no error) when the test
+	// uwgsocks instance has no dns_server configured.
+	base := wrappedCommand(t, art, httpSock, "preload", chromeBin, chromeArgs, wrapperRunOptions{
+		env: map[string]string{"UWGS_DNS_MODE": "none"},
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, base.Path, base.Args[1:]...)
