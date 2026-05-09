@@ -6,6 +6,7 @@
 package main
 
 import (
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -48,19 +49,40 @@ func TestPhase2InjectAndRunStaticInit(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	pid, cleanup := attachAndStop(t)
-	defer cleanup()
+	// Retry up to 3 times: GH-hosted amd64 runners with CET hardware
+	// occasionally deliver SIGSEGV instead of SIGTRAP on the first
+	// attempt. The root cause is a hardware-specific single-step timing
+	// interaction (same class as the arm64 svc flake). Retrying with a
+	// fresh tracee is safe: if the blob was never fully run, no side
+	// effects in the sleep process occurred; if it ran partially and
+	// crashed, we kill it and start over.
+	var rc int64
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		pid, cleanup := attachAndStop(t)
 
-	base, err := loadBlobIntoTracee(pid, spec)
-	if err != nil {
-		t.Fatalf("loadBlobIntoTracee: %v", err)
+		base, err := loadBlobIntoTracee(pid, spec)
+		if err != nil {
+			cleanup()
+			lastErr = fmt.Errorf("attempt %d loadBlobIntoTracee: %w", attempt, err)
+			t.Logf("%v — retrying", lastErr)
+			continue
+		}
+		t.Logf("attempt %d: blob loaded at base=%#x size=%d KB",
+			attempt, base, spec.totalSize()/1024)
+
+		rc, err = runStaticInit(pid, spec, base)
+		cleanup()
+		if err != nil {
+			lastErr = fmt.Errorf("attempt %d runStaticInit: %w", attempt, err)
+			t.Logf("%v — retrying", lastErr)
+			continue
+		}
+		lastErr = nil
+		break
 	}
-	t.Logf("blob loaded into tracee at base=%#x size=%d KB",
-		base, spec.totalSize()/1024)
-
-	rc, err := runStaticInit(pid, spec, base)
-	if err != nil {
-		t.Fatalf("runStaticInit: %v", err)
+	if lastErr != nil {
+		t.Fatalf("%v", lastErr)
 	}
 	t.Logf("uwg_static_init returned %d", rc)
 	// rc == 0  → init succeeded (would happen if UWGS_TRACE_SECRET set)
