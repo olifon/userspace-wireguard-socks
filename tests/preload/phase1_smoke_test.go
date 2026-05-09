@@ -69,16 +69,6 @@ func buildPhase1Artifacts(t *testing.T) wrapperArtifacts {
 	return art
 }
 
-// goBuildCoverFlag returns ["-cover"] when UWGS_COVER_BINDIR is set so the
-// wrapper binary writes Go coverage data to GOCOVERDIR on exit.
-// This wires into scripts/coverage.sh's binary-instrumented coverage path.
-func goBuildCoverFlag() []string {
-	if os.Getenv("UWGS_COVER_BINDIR") != "" {
-		return []string{"-cover"}
-	}
-	return nil
-}
-
 // TestPhase1SeccompPreload validates the new SIGSYS+seccomp-based
 // preload (preload/uwgpreload-phase1.so, built from preload/core/*)
 // against a real uwgsocks engine + fdproxy.

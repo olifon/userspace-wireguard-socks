@@ -975,6 +975,17 @@ func buildWrapperArtifacts(t *testing.T) wrapperArtifacts {
 	return art
 }
 
+// goBuildCoverFlag returns ["-cover"] when UWGS_COVER_BINDIR is set so the
+// wrapper binary writes Go coverage data to GOCOVERDIR on exit.
+// Defined here (!windows) rather than phase1_smoke_test.go (linux-only) so
+// it is visible to ptrace_test.go on macOS and other non-Linux platforms.
+func goBuildCoverFlag() []string {
+	if os.Getenv("UWGS_COVER_BINDIR") != "" {
+		return []string{"-cover"}
+	}
+	return nil
+}
+
 func setupWrapperNetwork(t *testing.T) (*engine.Engine, string) {
 	t.Helper()
 
