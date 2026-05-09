@@ -17,18 +17,10 @@ import (
 	"os/exec"
 	"runtime"
 	"syscall"
-	_ "embed"
-
 	"golang.org/x/sys/unix"
 
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/uwgshared"
 )
-
-//go:embed assets/uwgptloader-amd64.so
-var embeddedPtloaderAMD64 []byte
-
-//go:embed assets/uwgptloader-arm64.so
-var embeddedPtloaderARM64 []byte
 
 // uwgPtloaderCfg mirrors struct uwg_ptloader_cfg in preload/core/ptloader_cfg.h.
 // Exactly 48 bytes; layout must match the C struct exactly.
@@ -52,20 +44,10 @@ type uwgPtloaderCfg struct {
 const uwgPtloaderMagic = uint64(0x5557474346470001)
 
 func selectPtloaderBytes() ([]byte, error) {
-	switch runtime.GOARCH {
-	case "amd64":
-		if len(embeddedPtloaderAMD64) == 0 {
-			return nil, errors.New("embedded ptloader-amd64.so missing")
-		}
-		return embeddedPtloaderAMD64, nil
-	case "arm64":
-		if len(embeddedPtloaderARM64) == 0 {
-			return nil, errors.New("embedded ptloader-arm64.so missing")
-		}
-		return embeddedPtloaderARM64, nil
-	default:
-		return nil, fmt.Errorf("systrap-docker: unsupported arch %s", runtime.GOARCH)
+	if len(embeddedPtloaderBytes) == 0 {
+		return nil, fmt.Errorf("embedded ptloader-%s.so missing (run build_ptloader.sh first)", runtime.GOARCH)
 	}
+	return embeddedPtloaderBytes, nil
 }
 
 // findPtloaderCfgSection returns the file offset and size of the .uwgcfg
