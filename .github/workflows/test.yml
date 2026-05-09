@@ -213,6 +213,13 @@ jobs:
               bash ./preload/build_phase1.sh cmd/uwgwrapper/assets/uwgpreload.so'
           sudo chown -R "$(id -u):$(id -g)" cmd/uwgwrapper/assets
 
+      - name: Build Linux uwgwrapper ptloader asset
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ./preload/build_ptloader.sh cmd/uwgwrapper/assets
+
       - name: Run lite tests
         shell: bash
         run: |
@@ -254,6 +261,7 @@ jobs:
               apk add --no-cache gcc musl-dev linux-headers git bash file >/dev/null
               export PATH=/usr/local/go/bin:$PATH GOTOOLCHAIN=auto
               git init -q . 2>/dev/null || true
+              bash ./preload/build_ptloader.sh cmd/uwgwrapper/assets
               # Slim test set: lock primitives + Phase 2 Go-static (the
               # paths we know work under musl). The arm64+musl+static-PIE
               # +C corner case is documented as a known limitation in
