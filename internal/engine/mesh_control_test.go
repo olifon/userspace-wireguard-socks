@@ -394,6 +394,15 @@ func TestMeshControlPollingLearnsDynamicPeersAndActivatesDirectRoute(t *testing.
 	forceMeshDynamicActive(t, client1, client2Key.PublicKey().String())
 	forceMeshDynamicActive(t, client2, client1Key.PublicKey().String())
 
+	// Wait for the direct WireGuard handshake between the two clients.
+	// Without this, the echo test runs over the relay (no direct endpoint
+	// is known yet), and then after the echo the handshake completes —
+	// meshPeerHasDirectHandshake fires true and the relay-counter
+	// assertion incorrectly fails. Under -race on macOS this race is
+	// reliably reproduced.
+	waitMeshDirectHandshakeWithTimeout(t, client1, client2Key.PublicKey().String())
+	waitMeshDirectHandshakeWithTimeout(t, client2, client1Key.PublicKey().String())
+
 	ln, err := client2.ListenTCP(netip.MustParseAddrPort("100.64.95.3:18080"))
 	if err != nil {
 		t.Fatal(err)
@@ -786,6 +795,25 @@ func waitDynamicPeerStatus(t *testing.T, eng *Engine, publicKey string) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for dynamic peer %s", publicKey)
+}
+
+// waitMeshDirectHandshakeWithTimeout waits for a dynamic peer to have a
+// completed WireGuard handshake (i.e. the direct path is actually usable).
+// It uses testDeadlineScale so it stays stable under -race. If the handshake
+// does not complete within the window, it skips rather than fails — the
+// relay-counter assertion in the caller is guarded by meshPeerHasDirectHandshake
+// anyway, so skipping here is semantically equivalent to the "else t.Logf"
+// branch in that assertion.
+func waitMeshDirectHandshakeWithTimeout(t *testing.T, eng *Engine, publicKey string) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second * testDeadlineScale)
+	for time.Now().Before(deadline) {
+		if meshPeerHasDirectHandshake(t, eng, publicKey) {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Logf("direct handshake for %s not established within timeout; relay counter assertion will be skipped", publicKey)
 }
 
 func waitMeshDynamicActive(t *testing.T, eng *Engine, publicKey string) {

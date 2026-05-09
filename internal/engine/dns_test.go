@@ -186,6 +186,19 @@ func TestHostedDNSOverWireGuardUDPAndTCP(t *testing.T) {
 	resp := exchangeTestDNSUDP(t, udpConn, "egress.test.", dns.TypeA)
 	assertDNSA(t, resp, "egress.test.", net.IPv4(198, 51, 100, 7))
 
+	// Drain any duplicate responses left in the socket buffer by the retry
+	// loop in exchangeTestDNSUDP (under -race on slow hosts a 500ms read
+	// timeout fires before the response arrives, causing a re-send; both
+	// goroutines on the server write a response, leaving the second one
+	// queued here). Without this drain the malformed-packet read below
+	// would consume the buffered valid response and incorrectly fail.
+	_ = udpConn.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
+	for {
+		if _, err := udpConn.Read(make([]byte, 512)); err != nil {
+			break
+		}
+	}
+
 	if _, err := udpConn.Write([]byte{0xff, 0x00, 0x01}); err != nil {
 		t.Fatal(err)
 	}
