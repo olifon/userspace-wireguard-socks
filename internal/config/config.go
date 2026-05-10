@@ -548,6 +548,14 @@ type MeshControl struct {
 	Listen string `yaml:"listen"`
 	// Rotate auth challenges on this interval.
 	ChallengeRotateSeconds int `yaml:"challenge_rotate_seconds"`
+	// KeepaliveSubnet is the reserved IPv4 range from which per-peer probe
+	// addresses are allocated. Each dynamic P2P peer gets a /32 from this
+	// subnet added to its WireGuard AllowedIPs so that a probe packet sent
+	// to that address travels through the WireGuard session (bumping the TX
+	// counter and keeping the session alive) without needing ICMP or a real
+	// service. The first host address in the subnet is the probe source.
+	// Defaults to "250.0.0.0/8". Set to "" to disable.
+	KeepaliveSubnet string `yaml:"keepalive_subnet"`
 	// Only advertise recently active peers.
 	ActivePeerWindowSeconds int `yaml:"active_peer_window_seconds"`
 	// NotifyWindowSeconds is how far in the future a mesh
@@ -643,6 +651,7 @@ func Default() Config {
 			NotifyWindowSeconds:         120,
 			NotifyMinIntervalSeconds:    60,
 			SubscribeMaxLifetimeSeconds: 300,
+			KeepaliveSubnet:             "250.0.0.0/8",
 		},
 	}
 }

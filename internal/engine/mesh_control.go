@@ -57,6 +57,9 @@ type meshDiscoveredPeer struct {
 	PSK        string   `json:"psk,omitempty"`
 	MeshAccept bool     `json:"mesh_accept_acls,omitempty"`
 	MeshTrust  string   `json:"mesh_trust,omitempty"`
+	// Type describes the P2P role declared by this peer via POST /v1/p2p.
+	// Values: "client", "p2p-maybe", "p2p", "remote". Empty is "p2p-maybe".
+	Type string `json:"type,omitempty"`
 }
 
 type meshACLResponse struct {
@@ -83,6 +86,26 @@ type dynamicPeer struct {
 	ParentPublicKey string
 	Active          bool
 	LastControl     time.Time
+	// PeerType is the P2P role for this peer as reported by the mesh control
+	// server. One of "client", "p2p-maybe", "p2p", "remote". Empty = "p2p-maybe".
+	PeerType string
+	// ActiveOnHandshake is the LastHandshakeTimeSec that triggered Active=true.
+	// Prevents re-activation on the same stale handshake after a grace failure.
+	ActiveOnHandshake int64
+	// ActiveSince and GraceRxSnap track the confirmation window: once Active is
+	// set, ReceiveBytes must grow before the next poll or the path is rejected.
+	// ActiveSince is zeroed once the grace period is confirmed.
+	ActiveSince time.Time
+	GraceRxSnap uint64
+	// LastRxGrow is the last time ReceiveBytes increased while Active. Used for
+	// the 30s no-RX inactive condition.
+	LastRxGrow time.Time
+	// PrevTxSnap and PrevRxSnap are updated each poll for growth detection.
+	PrevTxSnap uint64
+	PrevRxSnap uint64
+	// KeepaliveIP is the allocated address in keepaliveSubnet used to probe
+	// this peer's direct path. Zero means none allocated or peer is "remote".
+	KeepaliveIP netip.Addr
 }
 
 type meshAuthenticator interface {
@@ -313,6 +336,7 @@ func (e *Engine) startMeshControlServer() error {
 	mux.HandleFunc("/v1/peers", e.handleMeshControlPeers)
 	mux.HandleFunc("/v1/acls", e.handleMeshControlACLs)
 	mux.HandleFunc("/v1/nets", e.handleMeshControlNets)
+	mux.HandleFunc("/v1/p2p", e.handleMeshControlP2P)
 	mux.HandleFunc("/v1/subscribe", e.handleMeshControlNotImplemented)
 
 	server := e.proxyHTTPServer(e.meshControlRateLimit(mux))
@@ -561,6 +585,63 @@ func (e *Engine) handleMeshControlNotImplemented(w http.ResponseWriter, r *http.
 	})
 }
 
+// handleMeshControlP2P lets authenticated peers declare their P2P capability.
+// POST /v1/p2p with body {"p2p":"active"} (or disable/passive/remote/server).
+// The declaration is stored server-side and reflected in subsequent /v1/peers
+// responses as the "type" field for that peer.
+func (e *Engine) handleMeshControlP2P(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if e.meshAuth == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "mesh control is not available")
+		return
+	}
+	authRes, err := e.meshAuth.Verify(r)
+	if err != nil {
+		writeAPIError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	var req struct {
+		P2P string `json:"p2p"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 256)).Decode(&req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	switch req.P2P {
+	case "disable", "passive", "active", "server", "remote":
+	default:
+		writeAPIError(w, http.StatusBadRequest, `p2p must be one of: disable, passive, active, remote`)
+		return
+	}
+	// "server" is an alias for "remote" — same semantics, kept for compat.
+	if req.P2P == "server" {
+		req.P2P = "remote"
+	}
+	e.meshP2PMu.Lock()
+	e.meshP2PDecls[authRes.PeerPublicKey] = req.P2P
+	e.meshP2PMu.Unlock()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// peerTypeFromDeclaration maps a stored p2p declaration to the type string
+// returned in /v1/peers responses.
+func peerTypeFromDeclaration(decl string) string {
+	switch decl {
+	case "remote":
+		return "remote"
+	case "active":
+		return "p2p"
+	case "disable":
+		return "client"
+	default: // "passive" or not yet declared
+		return "p2p-maybe"
+	}
+}
+
 func (e *Engine) meshPeersForRequester(requester string) ([]meshDiscoveredPeer, error) {
 	status, err := e.Status()
 	if err != nil {
@@ -580,6 +661,12 @@ func (e *Engine) meshPeersForRequester(requester string) ([]meshDiscoveredPeer, 
 	if window <= 0 {
 		window = 120 * time.Second
 	}
+
+	e.meshP2PMu.RLock()
+	requesterDecl := e.meshP2PDecls[requester]
+	e.meshP2PMu.RUnlock()
+	requesterDisabled := requesterDecl == "disable"
+
 	now := time.Now()
 	statusByKey := make(map[string]PeerStatus, len(status.Peers))
 	for _, st := range status.Peers {
@@ -607,6 +694,17 @@ func (e *Engine) meshPeersForRequester(requester string) ([]meshDiscoveredPeer, 
 		if last := time.Unix(st.LastHandshakeTimeSec, st.LastHandshakeTimeNsec); now.Sub(last) > window {
 			continue
 		}
+
+		e.meshP2PMu.RLock()
+		peerDecl := e.meshP2PDecls[peer.PublicKey]
+		e.meshP2PMu.RUnlock()
+		peerType := peerTypeFromDeclaration(peerDecl)
+
+		// A requester that declared "disable" only receives remote peers.
+		if requesterDisabled && peerType != "remote" {
+			continue
+		}
+
 		allowed := slices.Clone(peer.AllowedIPs)
 		sort.Strings(allowed)
 		psk, err := e.meshPairPSK(requester, peer.PublicKey)
@@ -621,6 +719,7 @@ func (e *Engine) meshPeersForRequester(requester string) ([]meshDiscoveredPeer, 
 			PSK:        base64.StdEncoding.EncodeToString(psk),
 			MeshAccept: peer.MeshAcceptACLs,
 			MeshTrust:  string(peer.MeshTrust),
+			Type:       peerType,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].PublicKey < out[j].PublicKey })
@@ -819,12 +918,14 @@ func (e *Engine) applyMeshDiscoveredPeers(parent config.Peer, discovered []meshD
 		staticKeys[peer.PublicKey] = struct{}{}
 	}
 	type update struct {
-		key  string
-		peer config.Peer
+		key         string
+		peer        config.Peer
+		keepaliveIP netip.Addr
 	}
 	type candidate struct {
-		key  string
-		peer config.Peer
+		key      string
+		peer     config.Peer
+		peerType string // from disc.Type
 	}
 	candidateIndex := make(map[string]int, len(discovered))
 	candidates := make([]candidate, 0, len(discovered))
@@ -858,10 +959,11 @@ func (e *Engine) applyMeshDiscoveredPeers(parent config.Peer, discovered []meshD
 		}
 		if idx, ok := candidateIndex[disc.PublicKey]; ok {
 			candidates[idx].peer = peer
+			candidates[idx].peerType = disc.Type
 			continue
 		}
 		candidateIndex[disc.PublicKey] = len(candidates)
-		candidates = append(candidates, candidate{key: disc.PublicKey, peer: peer})
+		candidates = append(candidates, candidate{key: disc.PublicKey, peer: peer, peerType: disc.Type})
 	}
 	var upserts []update
 	var removals []string
@@ -893,7 +995,22 @@ func (e *Engine) applyMeshDiscoveredPeers(parent config.Peer, discovered []meshD
 		}
 		dp.Peer = peer
 		dp.LastControl = now
-		upserts = append(upserts, update{key: cand.key, peer: peer})
+		// Update peer type from server's current declaration.
+		if cand.peerType != "" {
+			dp.PeerType = cand.peerType
+		} else if dp.PeerType == "" {
+			dp.PeerType = "p2p-maybe"
+		}
+		// Allocate a keepalive probe IP for non-remote peers that don't have
+		// one yet. Remote peers are forced-active and don't need probing.
+		if dp.PeerType != "remote" && !dp.KeepaliveIP.IsValid() {
+			if ip := e.allocKeepaliveIPLocked(cand.key); ip.IsValid() {
+				dp.KeepaliveIP = ip
+			} else if e.keepaliveSubnet.IsValid() {
+				e.log.Printf("mesh: keepalive subnet %s exhausted, no probe IP for %s", e.keepaliveSubnet, cand.key)
+			}
+		}
+		upserts = append(upserts, update{key: cand.key, peer: peer, keepaliveIP: dp.KeepaliveIP})
 	}
 	e.dynamicMu.Unlock()
 
@@ -911,7 +1028,7 @@ func (e *Engine) applyMeshDiscoveredPeers(parent config.Peer, discovered []meshD
 		if !stillTracked {
 			continue
 		}
-		if err := e.upsertDynamicPeerDevice(up.peer); err != nil {
+		if err := e.upsertDynamicPeerDevice(up.peer, up.keepaliveIP); err != nil {
 			return err
 		}
 	}
@@ -1057,9 +1174,12 @@ func meshParseCIDROrAddr(raw string) (netip.Prefix, bool) {
 	return netip.Prefix{}, false
 }
 
-func (e *Engine) upsertDynamicPeerDevice(peer config.Peer) error {
+func (e *Engine) upsertDynamicPeerDevice(peer config.Peer, keepaliveIP netip.Addr) error {
 	if e.dev == nil {
 		return nil
+	}
+	if keepaliveIP.IsValid() {
+		peer.AllowedIPs = append(append([]string(nil), peer.AllowedIPs...), keepaliveIP.String()+"/32")
 	}
 	uapi, err := peerUAPI(peer, false, nil, "")
 	if err != nil {
@@ -1097,6 +1217,7 @@ func (e *Engine) reconcileDynamicPeerPriority() error {
 	type orderedDynamic struct {
 		parentIndex int
 		peer        config.Peer
+		keepaliveIP netip.Addr
 	}
 	var active []orderedDynamic
 	e.dynamicMu.RLock()
@@ -1107,6 +1228,7 @@ func (e *Engine) reconcileDynamicPeerPriority() error {
 		active = append(active, orderedDynamic{
 			parentIndex: e.meshStaticPeerIndex(dp.ParentPublicKey, static),
 			peer:        dp.Peer,
+			keepaliveIP: dp.KeepaliveIP,
 		})
 	}
 	e.dynamicMu.RUnlock()
@@ -1155,7 +1277,11 @@ func (e *Engine) reconcileDynamicPeerPriority() error {
 		}
 	}
 	for _, item := range active {
-		uapi, err := peerUAPI(item.peer, false, nil, "")
+		p := item.peer
+		if item.keepaliveIP.IsValid() {
+			p.AllowedIPs = append(append([]string(nil), item.peer.AllowedIPs...), item.keepaliveIP.String()+"/32")
+		}
+		uapi, err := peerUAPI(p, false, nil, "")
 		if err != nil {
 			return err
 		}
@@ -1175,19 +1301,93 @@ func (e *Engine) meshStaticPeerIndex(publicKey string, peers []config.Peer) int 
 	return len(peers)
 }
 
-// wgDeadPathTimeout is KEEPALIVE_TIMEOUT + REKEY_TIMEOUT from the WireGuard
-// spec (10s + 5s). If we sent data to a peer but the handshake hasn't
-// refreshed within this window, the direct path is dead.
-const wgDeadPathTimeout = 15 * time.Second
+// allocKeepaliveIPLocked allocates a unique address in e.keepaliveSubnet for
+// the given peer key. Must be called with e.dynamicMu held (write lock).
+// Returns a zero Addr if the subnet is not configured or is exhausted.
+func (e *Engine) allocKeepaliveIPLocked(peerKey string) netip.Addr {
+	if !e.keepaliveSubnet.IsValid() || !e.keepaliveSrcIP.IsValid() {
+		return netip.Addr{}
+	}
+	// Build set of addresses already in use by other peers.
+	inUse := make(map[netip.Addr]struct{}, len(e.dynamicPeers)+1)
+	inUse[e.keepaliveSrcIP] = struct{}{}
+	for k, dp := range e.dynamicPeers {
+		if k != peerKey && dp != nil && dp.KeepaliveIP.IsValid() {
+			inUse[dp.KeepaliveIP] = struct{}{}
+		}
+	}
+	// Deterministic candidate derived from peer key bytes (byte-aligned
+	// prefixes only; falls through to scan for non-aligned subnets).
+	keyBytes, err := base64.StdEncoding.DecodeString(peerKey)
+	if err == nil && len(keyBytes) > 0 {
+		if candidate := e.keepaliveIPFromKeyBytes(keyBytes); candidate.IsValid() {
+			if _, used := inUse[candidate]; !used {
+				return candidate
+			}
+		}
+	}
+	// Linear scan starting just after the source address.
+	candidate := e.keepaliveSrcIP.Next()
+	for e.keepaliveSubnet.Contains(candidate) {
+		if _, used := inUse[candidate]; !used {
+			return candidate
+		}
+		next := candidate.Next()
+		if !next.IsValid() {
+			break
+		}
+		candidate = next
+	}
+	return netip.Addr{} // exhausted
+}
+
+// keepaliveIPFromKeyBytes derives a deterministic address within
+// e.keepaliveSubnet from peer key bytes. Only works for byte-aligned IPv4
+// prefix lengths (/8, /16, /24). Returns a zero Addr otherwise.
+func (e *Engine) keepaliveIPFromKeyBytes(key []byte) netip.Addr {
+	if !e.keepaliveSubnet.Addr().Is4() {
+		return netip.Addr{}
+	}
+	prefixBits := e.keepaliveSubnet.Bits()
+	if prefixBits%8 != 0 || prefixBits >= 32 {
+		return netip.Addr{}
+	}
+	a4 := e.keepaliveSubnet.Addr().As4()
+	prefixBytes := prefixBits / 8
+	for i := 0; i < 4-prefixBytes && i < len(key); i++ {
+		b := key[i]
+		if b == 0 {
+			b = 1 // avoid the network address byte
+		}
+		a4[prefixBytes+i] = b
+	}
+	candidate := netip.AddrFrom4(a4)
+	if !e.keepaliveSubnet.Contains(candidate) || candidate == e.keepaliveSrcIP {
+		return netip.Addr{}
+	}
+	return candidate
+}
+
+const (
+	// wgDeadPathTimeout is KEEPALIVE_TIMEOUT + REKEY_TIMEOUT (10s + 5s).
+	// If we have sent data but the handshake hasn't refreshed within this
+	// window, the direct path is dead.
+	wgDeadPathTimeout = 15 * time.Second
+	// wgDeadPathTimeoutP2P is the tighter dead-path window for "p2p" peers
+	// that are expected to send their own keepalives promptly.
+	wgDeadPathTimeoutP2P = 3 * time.Second
+	// dynPeerGraceWindow is the confirmation window after a new handshake.
+	// ReceiveBytes must grow before the next poll or the path is rejected.
+	dynPeerGraceWindow = 5 * time.Second
+	// dynPeerNoRxTimeout marks a peer inactive if no data has arrived for
+	// this long while the peer is considered active.
+	dynPeerNoRxTimeout = 30 * time.Second
+)
 
 func (e *Engine) refreshDynamicPeerActivity() {
 	status, err := e.Status()
 	if err != nil {
 		return
-	}
-	window := time.Duration(e.cfg.MeshControl.ActivePeerWindowSeconds) * time.Second
-	if window <= 0 {
-		window = 120 * time.Second
 	}
 	now := time.Now()
 	byKey := make(map[string]PeerStatus, len(status.Peers))
@@ -1197,23 +1397,81 @@ func (e *Engine) refreshDynamicPeerActivity() {
 	changed := false
 	e.dynamicMu.Lock()
 	for key, dp := range e.dynamicPeers {
-		st, ok := byKey[key]
-		var active bool
-		if ok && st.HasHandshake {
-			handshakeAge := now.Sub(time.Unix(st.LastHandshakeTimeSec, st.LastHandshakeTimeNsec))
-			// Normal rekey-cycle check: handshake must be recent enough.
-			withinWindow := handshakeAge <= window
-			// Fast dead-path check: if we sent data since the last poll but
-			// the handshake hasn't refreshed within KEEPALIVE+REKEY_TIMEOUT,
-			// the direct path is dead — don't wait for the full window.
-			prevTx := e.dynamicPeerTxSnap[key]
-			e.dynamicPeerTxSnap[key] = st.TransmitBytes
-			txGrew := st.TransmitBytes > prevTx
-			deadPath := txGrew && handshakeAge > wgDeadPathTimeout
-			active = withinWindow && !deadPath
+		// "remote" peers are always considered active — they have stable
+		// public endpoints and manage their own session liveness.
+		if dp.PeerType == "remote" {
+			if !dp.Active {
+				dp.Active = true
+				changed = true
+			}
+			continue
 		}
-		if dp.Active != active {
-			dp.Active = active
+
+		st, ok := byKey[key]
+		if !ok || !st.HasHandshake {
+			if dp.Active {
+				dp.Active = false
+				dp.ActiveSince = time.Time{}
+				changed = true
+			}
+			continue
+		}
+
+		handshakeAge := now.Sub(time.Unix(st.LastHandshakeTimeSec, st.LastHandshakeTimeNsec))
+		txGrew := st.TransmitBytes > dp.PrevTxSnap
+		rxGrew := st.ReceiveBytes > dp.PrevRxSnap
+		dp.PrevTxSnap = st.TransmitBytes
+		dp.PrevRxSnap = st.ReceiveBytes
+
+		if !dp.Active {
+			// Activate on a new handshake that's fresher than the last one
+			// that triggered activation (prevents re-activation on the same
+			// stale handshake after a grace-period failure).
+			if st.LastHandshakeTimeSec != dp.ActiveOnHandshake && handshakeAge < 120*time.Second {
+				dp.Active = true
+				dp.ActiveOnHandshake = st.LastHandshakeTimeSec
+				dp.ActiveSince = now
+				dp.GraceRxSnap = st.ReceiveBytes
+				dp.LastRxGrow = now
+				changed = true
+			}
+			continue
+		}
+
+		// --- Active peer: check for failure conditions ---
+
+		// 1. Grace-period confirmation: RxBytes must grow before the next
+		//    poll after activation (dynPeerGraceWindow = 5s, but effective
+		//    resolution is the polling interval ~15s).
+		if !dp.ActiveSince.IsZero() && now.Sub(dp.ActiveSince) >= dynPeerGraceWindow {
+			if st.ReceiveBytes <= dp.GraceRxSnap {
+				dp.Active = false
+				dp.ActiveSince = time.Time{}
+				changed = true
+				continue
+			}
+			dp.ActiveSince = time.Time{} // confirmed
+		}
+
+		// 2. Dead-path: we sent data but the handshake hasn't refreshed.
+		deadPathTimeout := wgDeadPathTimeout
+		if dp.PeerType == "p2p" {
+			deadPathTimeout = wgDeadPathTimeoutP2P
+		}
+		if txGrew && handshakeAge > deadPathTimeout {
+			dp.Active = false
+			dp.ActiveSince = time.Time{}
+			changed = true
+			continue
+		}
+
+		// 3. No-RX timeout: no data has arrived for dynPeerNoRxTimeout.
+		if rxGrew {
+			dp.LastRxGrow = now
+		}
+		if !dp.LastRxGrow.IsZero() && now.Sub(dp.LastRxGrow) >= dynPeerNoRxTimeout {
+			dp.Active = false
+			dp.ActiveSince = time.Time{}
 			changed = true
 		}
 	}

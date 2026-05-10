@@ -308,8 +308,9 @@ func forceMeshDynamicEndpoint(eng *Engine, publicKey, endpoint string) error {
 	}
 	dp.Peer.Endpoint = endpoint
 	peer := dp.Peer
+	keepaliveIP := dp.KeepaliveIP
 	eng.dynamicMu.Unlock()
-	if err := eng.upsertDynamicPeerDevice(peer); err != nil {
+	if err := eng.upsertDynamicPeerDevice(peer, keepaliveIP); err != nil {
 		return err
 	}
 	return eng.reconcileDynamicPeerPriority()

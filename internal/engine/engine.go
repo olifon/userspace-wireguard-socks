@@ -106,9 +106,14 @@ type Engine struct {
 	forwardNext  int
 	forwardNames map[string]forwardRuntime
 
-	dynamicMu       sync.RWMutex
-	dynamicPeers    map[string]*dynamicPeer
-	dynamicPeerTxSnap map[string]uint64 // TX byte snapshots for dead-path detection; guarded by dynamicMu
+	dynamicMu    sync.RWMutex
+	dynamicPeers map[string]*dynamicPeer
+
+	meshP2PMu    sync.RWMutex
+	meshP2PDecls map[string]string // peer public key → p2p declaration; guarded by meshP2PMu
+
+	keepaliveSubnet netip.Prefix // parsed from MeshControl.KeepaliveSubnet; zero if disabled
+	keepaliveSrcIP  netip.Addr   // first host address in keepaliveSubnet
 
 	socksUDPMu         sync.Mutex
 	socksUDPRelayPorts map[string]map[int]struct{}
@@ -222,8 +227,8 @@ func New(cfg config.Config, logger *log.Logger) (*Engine, error) {
 		listenerMap:        make(map[string]net.Listener),
 		pconnMap:           make(map[string]net.PacketConn),
 		forwardNames:       make(map[string]forwardRuntime),
-		dynamicPeers:      make(map[string]*dynamicPeer),
-		dynamicPeerTxSnap: make(map[string]uint64),
+		dynamicPeers: make(map[string]*dynamicPeer),
+		meshP2PDecls: make(map[string]string),
 		socksUDPRelayPorts: make(map[string]map[int]struct{}),
 		connTable:          make(map[int64]*trackedConn),
 		closed:             make(chan struct{}),
@@ -240,6 +245,12 @@ func New(cfg config.Config, logger *log.Logger) (*Engine, error) {
 	}
 	if cfg.DNSServer.MaxInflight > 0 {
 		e.dnsSem = make(chan struct{}, cfg.DNSServer.MaxInflight)
+	}
+	if subnet := cfg.MeshControl.KeepaliveSubnet; subnet != "" {
+		if prefix, err := netip.ParsePrefix(subnet); err == nil {
+			e.keepaliveSubnet = prefix.Masked()
+			e.keepaliveSrcIP = e.keepaliveSubnet.Addr().Next()
+		}
 	}
 	return e, nil
 }
