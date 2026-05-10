@@ -1122,18 +1122,31 @@ func (e *Engine) reconcileDynamicPeerPriority() error {
 	e.cfgMu.RUnlock()
 	for _, parent := range static {
 		hasChild := false
+		var inactiveChildIPs []string
 		e.dynamicMu.RLock()
 		for _, dp := range e.dynamicPeers {
-			if dp != nil && dp.ParentPublicKey == parent.PublicKey {
-				hasChild = true
-				break
+			if dp == nil || dp.ParentPublicKey != parent.PublicKey {
+				continue
+			}
+			hasChild = true
+			if !dp.Active {
+				// Claim inactive child's IPs under the parent so
+				// wireguard-go routes them to the relay hub rather
+				// than the unreachable direct endpoint. When the
+				// child is active it is pushed after the parent and
+				// wins the trie for equal-length prefixes.
+				inactiveChildIPs = append(inactiveChildIPs, dp.Peer.AllowedIPs...)
 			}
 		}
 		e.dynamicMu.RUnlock()
 		if !hasChild {
 			continue
 		}
-		uapi, err := peerUAPI(parent, false, transports, defaultTransport)
+		pushParent := parent
+		if len(inactiveChildIPs) > 0 {
+			pushParent.AllowedIPs = append(append([]string(nil), parent.AllowedIPs...), inactiveChildIPs...)
+		}
+		uapi, err := peerUAPI(pushParent, false, transports, defaultTransport)
 		if err != nil {
 			return err
 		}
@@ -1162,6 +1175,11 @@ func (e *Engine) meshStaticPeerIndex(publicKey string, peers []config.Peer) int 
 	return len(peers)
 }
 
+// wgDeadPathTimeout is KEEPALIVE_TIMEOUT + REKEY_TIMEOUT from the WireGuard
+// spec (10s + 5s). If we sent data to a peer but the handshake hasn't
+// refreshed within this window, the direct path is dead.
+const wgDeadPathTimeout = 15 * time.Second
+
 func (e *Engine) refreshDynamicPeerActivity() {
 	status, err := e.Status()
 	if err != nil {
@@ -1180,7 +1198,20 @@ func (e *Engine) refreshDynamicPeerActivity() {
 	e.dynamicMu.Lock()
 	for key, dp := range e.dynamicPeers {
 		st, ok := byKey[key]
-		active := ok && st.HasHandshake && now.Sub(time.Unix(st.LastHandshakeTimeSec, st.LastHandshakeTimeNsec)) <= window
+		var active bool
+		if ok && st.HasHandshake {
+			handshakeAge := now.Sub(time.Unix(st.LastHandshakeTimeSec, st.LastHandshakeTimeNsec))
+			// Normal rekey-cycle check: handshake must be recent enough.
+			withinWindow := handshakeAge <= window
+			// Fast dead-path check: if we sent data since the last poll but
+			// the handshake hasn't refreshed within KEEPALIVE+REKEY_TIMEOUT,
+			// the direct path is dead — don't wait for the full window.
+			prevTx := e.dynamicPeerTxSnap[key]
+			e.dynamicPeerTxSnap[key] = st.TransmitBytes
+			txGrew := st.TransmitBytes > prevTx
+			deadPath := txGrew && handshakeAge > wgDeadPathTimeout
+			active = withinWindow && !deadPath
+		}
 		if dp.Active != active {
 			dp.Active = active
 			changed = true

@@ -875,6 +875,21 @@ func forceMeshDynamicActive(t *testing.T, eng *Engine, publicKey string) {
 	}
 }
 
+func forceMeshDynamicInactive(t *testing.T, eng *Engine, publicKey string) {
+	t.Helper()
+	eng.dynamicMu.Lock()
+	dp := eng.dynamicPeers[publicKey]
+	if dp == nil {
+		eng.dynamicMu.Unlock()
+		t.Fatalf("dynamic peer %s not found", publicKey)
+	}
+	dp.Active = false
+	eng.dynamicMu.Unlock()
+	if err := eng.reconcileDynamicPeerPriority(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func meshPeerHasDirectHandshake(t *testing.T, eng *Engine, publicKey string) bool {
 	t.Helper()
 	st, err := eng.Status()

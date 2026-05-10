@@ -69,9 +69,9 @@ import (
 //  10. Optional restoration phase: clear the chaos, wait for the
 //     direct path to re-handshake, assert dp.Active=true again.
 //
-// Wall time: ~3-5 minutes (chaos detection budget is 280s plus
-// ~30s of setup + transfers). Wait time is fundamentally bounded
-// by wireguard-go's 120s rekey cycle — no shortcut available.
+// Wall time: ~60-90s (setup + transfers + up to 60s detection budget).
+// Detection relies on TX-byte growth (persistent keepalive=1 fires
+// immediately) + wgDeadPathTimeout (15s), not the 120s rekey cycle.
 //
 // Gated by UWGS_RUN_MESH_CHAOS=1; -short skips it.
 func TestMeshChaosResume_RelayFailoverOn100PercentDrop(t *testing.T) {
@@ -234,12 +234,15 @@ func TestMeshChaosResume_RelayFailoverOn100PercentDrop(t *testing.T) {
 	proxyDirectAB.SetPolicy(chaosPolicy{LossRate: 1.0})
 
 	// Wait for the engine to detect the dead direct path.
-	// refreshDynamicPeerActivity runs at the end of each 15s
-	// mesh-poll cycle. With ActivePeerWindowSeconds=120 (default,
-	// matched to wireguard-go's rekey cadence), worst-case
-	// detection: 120s (between-rekey edge) + 120s (window) +
-	// 15s (poll cadence) = 255s. Set a generous 280s budget.
-	const failoverBudget = 280 * time.Second
+	// refreshDynamicPeerActivity runs at the end of each mesh-poll
+	// cycle (manually driven every 2s below). With persistent
+	// keepalive=1, A sends to B every second, so TX bytes for B's
+	// session grow immediately after the chaos flip. The fast
+	// dead-path check (wgDeadPathTimeout=15s: KEEPALIVE+REKEY_TIMEOUT)
+	// fires once handshake age exceeds 15s AND TX bytes grew since
+	// the last poll. Worst case: ~15s dead-path threshold + one 2s
+	// poll interval = ~17s. Budget 60s for timing variance.
+	const failoverBudget = 60 * time.Second
 	deadline := time.Now().Add(failoverBudget)
 	var aFailedOver, bFailedOver bool
 	for time.Now().Before(deadline) {

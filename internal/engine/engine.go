@@ -106,8 +106,9 @@ type Engine struct {
 	forwardNext  int
 	forwardNames map[string]forwardRuntime
 
-	dynamicMu    sync.RWMutex
-	dynamicPeers map[string]*dynamicPeer
+	dynamicMu       sync.RWMutex
+	dynamicPeers    map[string]*dynamicPeer
+	dynamicPeerTxSnap map[string]uint64 // TX byte snapshots for dead-path detection; guarded by dynamicMu
 
 	socksUDPMu         sync.Mutex
 	socksUDPRelayPorts map[string]map[int]struct{}
@@ -221,7 +222,8 @@ func New(cfg config.Config, logger *log.Logger) (*Engine, error) {
 		listenerMap:        make(map[string]net.Listener),
 		pconnMap:           make(map[string]net.PacketConn),
 		forwardNames:       make(map[string]forwardRuntime),
-		dynamicPeers:       make(map[string]*dynamicPeer),
+		dynamicPeers:      make(map[string]*dynamicPeer),
+		dynamicPeerTxSnap: make(map[string]uint64),
 		socksUDPRelayPorts: make(map[string]map[int]struct{}),
 		connTable:          make(map[int64]*trackedConn),
 		closed:             make(chan struct{}),

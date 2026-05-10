@@ -582,10 +582,19 @@ Chaos test files (all `//go:build !lite`, gated by `UWGS_RUN_MESH_CHAOS=1`,
 ### Mesh-control timing gotcha
 
 `MeshControl.ActivePeerWindowSeconds` defaults to 120 — DO NOT lower it for
-test convenience. Values < ~120 conflict with wireguard-go's 120s rekey
-cadence: `LastHandshakeTime` fluctuates above the window between rekeys, so
-the hub intermittently stops advertising peers and clients drop them from
-their dynamic-peer table mid-session. 120s is the smallest stable window.
+test convenience. This window governs two separate things with different
+constraints:
+
+1. **Hub peer advertisement** (`meshPeersForRequester`): must stay ≥ 120s.
+   Values below wireguard-go's 180s rekey interval cause `LastHandshakeTime`
+   to fluctuate above the window between rekeys, so the hub intermittently
+   stops advertising peers and clients drop them from their dynamic-peer table.
+
+2. **Client dead-path detection** (`refreshDynamicPeerActivity`): uses a
+   separate fast check — if TX bytes grew since the last poll AND the handshake
+   age exceeds `wgDeadPathTimeout` (KEEPALIVE + REKEY_TIMEOUT = 15s), the peer
+   is immediately marked inactive, independent of `ActivePeerWindowSeconds`.
+   The relay chaos test therefore detects failover in ~15–20s, not 120–280s.
 
 ### Other test gates
 
