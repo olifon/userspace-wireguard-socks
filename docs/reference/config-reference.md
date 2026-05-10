@@ -486,6 +486,34 @@ coordination.md for the full protocol.
   - **`active_peer_window_seconds`** (int) — default: `120`  
     Only advertise recently active peers.
 
+  - **`p2p_mode`** (string) — default: `""` (passive)  
+    How this node declares its own P2P capability to the hub. Sent via
+    `POST /v1/p2p` on each polling cycle and stored hub-side so other peers
+    can see the correct type in `/v1/peers`.  
+    Accepted values:  
+    - `""` or `passive` — can receive direct connections but does not
+      aggressively maintain them; hub reflects type `p2p-maybe`  
+    - `active` — maintains keepalive probes to direct peers; hub reflects
+      type `p2p`; hub applies a tighter 3s dead-path timeout instead of 15s  
+    - `remote` (or `server`) — has a stable public endpoint; hub marks type
+      `remote`; hub treats this peer as always active (no dead-path check)  
+    - `disable` — does not participate in P2P at all; hub only returns
+      `remote`-type peers in the peer list response for this requester  
+
+  - **`keepalive_subnet`** (string) — default: `"250.0.0.0/8"`  
+    CIDR subnet used for keepalive probe addresses. Each active direct peer
+    gets a deterministic address in this range derived from its WireGuard
+    public key. A 1-byte UDP packet is sent to that address every 10 s when
+    the peer has sent us data more recently than we sent it, keeping the
+    WireGuard session alive without relying on WireGuard's own
+    `PersistentKeepalive`. The first host address in the subnet is the
+    probe source; remaining hosts are allocated to peers. Addresses outside
+    this subnet never appear as probe targets. Must be a byte-aligned IPv4
+    prefix (/8, /16, /24) for the deterministic key-derived path; other
+    prefix lengths fall back to a linear scan. No-op if the subnet is
+    exhausted (logs a warning, does not crash).  
+    Set to `""` to disable keepalive probing entirely.
+
   - **`notify_window_seconds`** (int) — default: `120`  
     NotifyWindowSeconds is how far in the future a mesh
     notification's deadline can extend. Caps long-poll

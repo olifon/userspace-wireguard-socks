@@ -149,3 +149,62 @@ wireguard:
 ```
 
 For a runnable walkthrough, see [../howto/05-mesh-coordination.md](../howto/05-mesh-coordination.md).
+
+## Peer Type System (P2P Mode)
+
+Each node in the mesh can declare its own P2P capability to the hub via
+`mesh_control.p2p_mode` in its config. The hub stores the declaration and
+reflects it in the `type` field of `/v1/peers` responses. Other clients use
+this to decide how aggressively to maintain direct paths.
+
+### Modes
+
+| Config value | `/v1/peers` type | Meaning |
+|---|---|---|
+| `""` or `passive` | `p2p-maybe` | Can receive connections but does not aggressively maintain them |
+| `active` | `p2p` | Actively maintains keepalive probes; hub uses 3s dead-path timeout |
+| `remote` or `server` | `remote` | Stable public endpoint; hub treats as always active |
+| `disable` | _(requester only)_ | Does not want P2P; hub returns only `remote` peers |
+
+### Client config
+
+```yaml
+mesh_control:
+  p2p_mode: "active"   # or: passive, remote, disable
+```
+
+### Hub-side filtering
+
+When a client declared `disable` polls `/v1/peers`, the hub filters the
+response to only include peers with `type: remote`. This prevents a peer
+that explicitly opted out of P2P from receiving peer addresses it cannot
+use.
+
+## Keepalive Probe Mechanism
+
+When a peer has type `p2p` or `p2p-maybe` and an active direct WireGuard
+session, the hub-side keepalive goroutine monitors TX/RX byte counters
+per peer.
+
+Probe logic (mirrors WireGuard KEEPALIVE_TIMEOUT semantics):
+- A probe fires when: `last_rx > last_tx AND now - last_tx >= 10s`
+- Probes send a single UDP byte to the peer's allocated keepalive IP
+  (a /32 in `mesh_control.keepalive_subnet`, default `250.0.0.0/8`)
+- That IP routes through the WireGuard tunnel; the remote peer's IP
+  layer discards the packet (no route for 250.x.x.x) but the WireGuard
+  session remains alive
+- Setting `last_tx = now` before sending prevents back-to-back probes
+- Dead-path detection (`refreshDynamicPeerActivity`) runs independently
+  in the 15s poll loop; the probe goroutine never deactivates peers
+
+### Keepalive subnet allocation
+
+Each active peer gets a deterministic IP derived from its WireGuard public
+key bytes. The first host address in `keepalive_subnet` is the probe source.
+On collision, a linear scan finds the next available address. If the subnet
+is exhausted, allocation returns zero (logged as a warning, no crash).
+
+```yaml
+mesh_control:
+  keepalive_subnet: "250.0.0.0/8"  # default; set to "" to disable probing
+```

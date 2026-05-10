@@ -105,7 +105,10 @@ func (r *Rule) Normalize() error {
 		srcEntries = append(srcEntries, r.Source)
 	}
 	srcEntries = append(srcEntries, r.Sources...)
-	r.sourcePrefixes = r.sourcePrefixes[:0]
+	// Always allocate fresh slices so that Normalize on a value copy of a
+	// Rule does not race with concurrent Normalize calls on other copies
+	// that share the same backing array.
+	r.sourcePrefixes = nil
 	for _, s := range srcEntries {
 		if s == "" {
 			continue
@@ -123,7 +126,7 @@ func (r *Rule) Normalize() error {
 		dstEntries = append(dstEntries, r.Destination)
 	}
 	dstEntries = append(dstEntries, r.Destinations...)
-	r.destPrefixes = r.destPrefixes[:0]
+	r.destPrefixes = nil
 	for _, s := range dstEntries {
 		if s == "" {
 			continue
