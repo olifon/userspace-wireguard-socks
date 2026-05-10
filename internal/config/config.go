@@ -931,6 +931,12 @@ func (c *Config) Normalize() error {
 	if c.MeshControl.ActivePeerWindowSeconds < 0 {
 		return fmt.Errorf("mesh_control.active_peer_window_seconds must be >= 0")
 	}
+	if c.MeshControl.ActivePeerWindowSeconds > 0 && c.MeshControl.ActivePeerWindowSeconds < 120 {
+		// WireGuard renegotiates session keys every 120 s. Values below 120 cause
+		// LastHandshakeTime to drift above the window between rekeys, making the
+		// hub intermittently drop peers from its advertisement table mid-session.
+		fmt.Fprintf(os.Stderr, "warning: mesh_control.active_peer_window_seconds=%d is below 120; peers may be dropped mid-session during WireGuard rekeys (minimum stable value is 120)\n", c.MeshControl.ActivePeerWindowSeconds)
+	}
 	if c.MeshControl.NotifyWindowSeconds == 0 {
 		c.MeshControl.NotifyWindowSeconds = 120
 	}

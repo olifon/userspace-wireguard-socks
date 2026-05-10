@@ -109,6 +109,12 @@ func (e *Engine) allowRelayTracked(meta relayPacketMeta, now time.Time) bool {
 	return e.allowRelayStatelessFallback(meta)
 }
 
+// allowRelayStatelessFallback is the conntrack bypass path: it evaluates the mesh
+// relay ACL without requiring an active flow entry. It is reached when conntrack
+// cannot service the packet — non-trackable protocol, full flow table, or a race
+// where a flow expired between two lock acquisitions. The ACL enforcement is
+// identical to the tracked path; "stateless" refers only to the absence of a
+// conntrack entry, not to any relaxation of policy.
 func (e *Engine) allowRelayStatelessFallback(meta relayPacketMeta) bool {
 	if !e.meshRelayACLFallbackAllowed(meta.src.Addr(), meta.dst.Addr()) {
 		return false

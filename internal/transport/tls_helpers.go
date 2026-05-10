@@ -99,13 +99,17 @@ func buildTLSClientConfig(tlsCfg TLSConfig, certMgr *CertManager, defaultServerN
 		cfg.ServerName = serverName
 	}
 	if !verifyPeer {
+		// TLS cert verification is opt-in (verify_peer: true). WireGuard provides
+		// mutual authentication via static public keys; TLS here is a transport
+		// carrier, not the trust boundary. Skipping cert verification is
+		// intentional and documented — set verify_peer: true for defence-in-depth.
 		cfg.InsecureSkipVerify = true //nolint:gosec
 		return cfg, nil
 	}
 	if sendSNI {
 		return cfg, nil
 	}
-	cfg.InsecureSkipVerify = true //nolint:gosec
+	cfg.InsecureSkipVerify = true //nolint:gosec // cert verified below via VerifyConnection
 	cfg.VerifyConnection = func(cs tls.ConnectionState) error {
 		return verifyX509PeerCertificates(cs.PeerCertificates, roots, defaultServerName, x509.ExtKeyUsageServerAuth)
 	}

@@ -30,6 +30,11 @@ func (s *Server) peerAllowed(c *net.UnixConn) bool {
 		s.logger.Printf("peer cred: SO_PEERCRED failed: ctrl=%v sock=%v", ctrlErr, sockErr)
 		return false
 	}
+	// Root (uid 0) is unconditionally permitted: it already has kernel-level
+	// access to every process's file descriptors and can read the socket path
+	// from the filesystem, so excluding it provides no isolation benefit.
+	// In practice this covers containerised deployments where uwgsocks itself
+	// runs as root and spawns the wrapper as the same uid.
 	if ucred.Uid == 0 || ucred.Uid == s.ownUID {
 		return true
 	}
