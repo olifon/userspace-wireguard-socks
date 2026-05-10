@@ -6,6 +6,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdh"
 	"crypto/hmac"
@@ -831,6 +832,7 @@ func (e *Engine) startMeshPolling() {
 		return
 	}
 	go e.meshPollingLoop()
+	go e.keepaliveProbingLoop()
 }
 
 func (e *Engine) meshPollingLoop() {
@@ -858,6 +860,19 @@ func (e *Engine) runMeshPolling() {
 			local := e.meshSourceAddr()
 			if local.IsValid() {
 				remote := netip.AddrPortFrom(local, 0)
+				// Declare our P2P role before fetching peers so the hub
+				// can apply filtering for our declaration in the same poll
+				// cycle (e.g. a "disable" client gets only remote peers).
+				// Non-fatal: a failed declaration just means the hub keeps
+				// the previous value.
+				e.cfgMu.RLock()
+				p2pMode := e.cfg.MeshControl.P2PMode
+				e.cfgMu.RUnlock()
+				if p2pMode != "" {
+					if postErr := client.postP2PMode(ctx, remote, p2pMode); postErr != nil {
+						e.log.Printf("mesh control p2p declare for %s failed: %v", parent.PublicKey, postErr)
+					}
+				}
 				var peers []meshDiscoveredPeer
 				peers, err = client.fetchPeers(ctx, remote)
 				if err == nil {
@@ -1453,12 +1468,15 @@ func (e *Engine) refreshDynamicPeerActivity() {
 			dp.ActiveSince = time.Time{} // confirmed
 		}
 
-		// 2. Dead-path: we sent data but the handshake hasn't refreshed.
+		// 2. Dead-path: TX grew but no RX in this poll window AND handshake
+		// stale. The !rxGrew guard is load-bearing: without it, a healthy
+		// session naturally has handshakeAge > 15s between rekeys and would
+		// trigger this condition on every poll with traffic.
 		deadPathTimeout := wgDeadPathTimeout
 		if dp.PeerType == "p2p" {
 			deadPathTimeout = wgDeadPathTimeoutP2P
 		}
-		if txGrew && handshakeAge > deadPathTimeout {
+		if txGrew && !rxGrew && handshakeAge > deadPathTimeout {
 			dp.Active = false
 			dp.ActiveSince = time.Time{}
 			changed = true
@@ -1479,6 +1497,120 @@ func (e *Engine) refreshDynamicPeerActivity() {
 	if changed {
 		_ = e.reconcileDynamicPeerPriority()
 	}
+}
+
+// keepaliveEntry tracks per-peer timing state for the keepalive probe goroutine.
+type keepaliveEntry struct {
+	prevTx uint64
+	prevRx uint64
+	lastTx time.Time // when WG TX bytes last grew for this peer
+	lastRx time.Time // when WG RX bytes last grew for this peer
+}
+
+// keepaliveProbeInterval mirrors WireGuard's KEEPALIVE_TIMEOUT (10s): send a
+// probe if we received from the peer more recently than we sent, and haven't
+// sent anything in this window.
+const keepaliveProbeInterval = 10 * time.Second
+
+func (e *Engine) keepaliveProbingLoop() {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	snaps := make(map[string]*keepaliveEntry)
+	for {
+		select {
+		case <-e.closed:
+			return
+		case <-ticker.C:
+			e.runKeepaliveProbe(snaps)
+		}
+	}
+}
+
+func (e *Engine) runKeepaliveProbe(snaps map[string]*keepaliveEntry) {
+	if e.net == nil {
+		return
+	}
+	status, err := e.Status()
+	if err != nil {
+		return
+	}
+	now := time.Now()
+	byKey := make(map[string]PeerStatus, len(status.Peers))
+	for _, st := range status.Peers {
+		byKey[st.PublicKey] = st
+	}
+
+	var toProbe []netip.Addr
+
+	e.dynamicMu.RLock()
+	for key, dp := range e.dynamicPeers {
+		if !dp.Active || !dp.KeepaliveIP.IsValid() || dp.PeerType == "remote" {
+			delete(snaps, key)
+			continue
+		}
+		st, ok := byKey[key]
+		if !ok || !st.HasHandshake {
+			delete(snaps, key)
+			continue
+		}
+		snap, exists := snaps[key]
+		if !exists {
+			snap = &keepaliveEntry{prevTx: st.TransmitBytes, prevRx: st.ReceiveBytes}
+			snaps[key] = snap
+			continue // seed, no diff yet
+		}
+
+		if st.TransmitBytes > snap.prevTx {
+			snap.lastTx = now
+			snap.prevTx = st.TransmitBytes
+		}
+		if st.ReceiveBytes > snap.prevRx {
+			snap.lastRx = now
+			snap.prevRx = st.ReceiveBytes
+		}
+
+		// Probe condition (mirrors WireGuard KEEPALIVE_TIMEOUT semantics):
+		// we have received from the peer more recently than we sent, and
+		// the keepalive interval has elapsed since our last TX. Probes
+		// count as TX (snap.lastTx is set optimistically before sending),
+		// so this naturally fires at most once per keepaliveProbeInterval
+		// without a separate cooldown mechanism.
+		if snap.lastRx.IsZero() {
+			continue
+		}
+		txStale := snap.lastTx.IsZero() || snap.lastRx.After(snap.lastTx)
+		if txStale {
+			sinceLastTx := now.Sub(snap.lastTx)
+			if snap.lastTx.IsZero() {
+				sinceLastTx = now.Sub(snap.lastRx)
+			}
+			if sinceLastTx >= keepaliveProbeInterval {
+				// Set optimistically so back-to-back ticks don't re-trigger.
+				snap.lastTx = now
+				toProbe = append(toProbe, dp.KeepaliveIP)
+			}
+		}
+	}
+	e.dynamicMu.RUnlock()
+
+	for _, ip := range toProbe {
+		e.sendKeepaliveProbe(ip)
+	}
+}
+
+// sendKeepaliveProbe sends a single 1-byte UDP packet to ip:1 through the
+// gVisor netstack → WireGuard tunnel. The remote peer has no route for
+// 250.x.x.x so the IP layer drops it, but the WireGuard session processes
+// the packet (bumping TX on our side, RX on theirs) keeping the session alive.
+func (e *Engine) sendKeepaliveProbe(ip netip.Addr) {
+	dst := netip.AddrPortFrom(ip, 1)
+	conn, err := e.net.DialUDPAddrPort(netip.AddrPort{}, dst)
+	if err != nil {
+		return
+	}
+	_ = conn.SetDeadline(time.Now().Add(500 * time.Millisecond))
+	_, _ = conn.Write([]byte{0})
+	_ = conn.Close()
 }
 
 func (e *Engine) reconcileDynamicPeersWithStatic() {
@@ -2252,6 +2384,39 @@ func (c *meshControlClient) fetchACLs(ctx context.Context, remote netip.AddrPort
 	out.Inbound = inList.Rules
 	out.Outbound = outList.Rules
 	return out, nil
+}
+
+func (c *meshControlClient) postP2PMode(ctx context.Context, remote netip.AddrPort, mode string) error {
+	challenge, err := c.fetchChallenge(ctx)
+	if err != nil {
+		return err
+	}
+	token, _, err := c.bearerToken(remote, challenge)
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(map[string]string{"p2p": mode})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.controlURL.ResolveReference(&url.URL{Path: "/v1/p2p"}).String(),
+		bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("mesh p2p declare status %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return nil
 }
 
 func (c *meshControlClient) fetchNets(ctx context.Context, remote netip.AddrPort) (meshNetsResponse, error) {

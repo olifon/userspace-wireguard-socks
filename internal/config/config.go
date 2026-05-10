@@ -556,6 +556,15 @@ type MeshControl struct {
 	// service. The first host address in the subnet is the probe source.
 	// Defaults to "250.0.0.0/8". Set to "" to disable.
 	KeepaliveSubnet string `yaml:"keepalive_subnet"`
+	// P2PMode declares this node's P2P role to every mesh control hub it
+	// connects to. Posted via POST /v1/p2p on each poll cycle.
+	// Valid values: "disable", "passive", "active", "remote".
+	// "disable": opt out of P2P; receive only remote-type peers from hub.
+	// "passive": accept P2P connections, no proactive keepalive.
+	// "active": full P2P with keepalive probes.
+	// "remote": stable public endpoint; advertised as type=remote to peers.
+	// Empty means no declaration is posted (hub defaults to p2p-maybe).
+	P2PMode string `yaml:"p2p_mode"`
 	// Only advertise recently active peers.
 	ActivePeerWindowSeconds int `yaml:"active_peer_window_seconds"`
 	// NotifyWindowSeconds is how far in the future a mesh
@@ -963,6 +972,13 @@ func (c *Config) Normalize() error {
 	}
 	if c.MeshControl.SubscribeMaxLifetimeSeconds < 0 {
 		return fmt.Errorf("mesh_control.subscribe_max_lifetime_seconds must be >= 0")
+	}
+	switch c.MeshControl.P2PMode {
+	case "", "disable", "passive", "active", "remote":
+	case "server":
+		c.MeshControl.P2PMode = "remote" // normalize alias
+	default:
+		return fmt.Errorf("mesh_control.p2p_mode must be one of: disable, passive, active, remote")
 	}
 	for i := range c.WireGuard.Peers {
 		switch c.WireGuard.Peers[i].MeshTrust {
