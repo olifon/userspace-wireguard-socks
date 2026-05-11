@@ -64,6 +64,30 @@ long uwg_connect(int fd, const struct sockaddr *addr, uint32_t alen) {
     uwg_tracef("connect fd=%d to=%s:%d active=%d type=%d proto=%d",
                fd, dest_dbg, (int)port_dbg, state.active, state.type, state.protocol);
 
+    /* AF_UNSPEC on a tracked UDP socket is the "disconnect" idiom —
+     * apps use it to clear an existing UDP association before connecting
+     * the same fd to a new destination. ntpdig (and any sntp client that
+     * iterates multiple time servers) issues this between attempts. The
+     * kernel happily clears its end, but we ALSO have to clear the
+     * preload's recorded remote / bind state — otherwise the next
+     * connect() reuses the previous engine-assigned source (engine
+     * replied with "OK <host_egress_ip> <kernel_ephemeral>" on the first
+     * attempt, we cached that in state.bind_ip:bind_port, and the
+     * follow-up CONNECT line carries it back, telling the engine to
+     * source-bind the next outbound dial to the same (already-in-use)
+     * (host_egress_ip, port) — kernel rejects with EADDRINUSE. */
+    if (state.active && addr->sa_family == AF_UNSPEC) {
+        state.bound = 0;
+        state.bind_port = 0;
+        state.bind_family = 0;
+        state.bind_ip[0] = 0;
+        state.remote_family = 0;
+        state.remote_port = 0;
+        state.remote_ip[0] = 0;
+        (void)uwg_state_store(fd, &state);
+        return uwg_passthrough_syscall3(SYS_connect, fd, (long)addr, alen);
+    }
+
     /* Not tracked, not interesting → passthrough. */
     if (!state.active ||
         (addr->sa_family != AF_INET && addr->sa_family != AF_INET6)) {

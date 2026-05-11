@@ -44,6 +44,63 @@ int uwg_addr_is_loopback(const struct sockaddr *addr) {
     return 0;
 }
 
+/* Best-effort "is this address plausibly a tunnel-side address?"
+ * The preload doesn't know the configured tunnel ranges (those live in
+ * the engine), but we can sieve based on canonical RFC private/ULA
+ * ranges plus the unspecified 0/:: form. If the caller binds to a
+ * specific PUBLIC address (e.g., the host's egress IP), this returns
+ * 0 — the bind belongs to the kernel network stack, not our tunnel,
+ * and uwg_bind should passthrough. NTP clients (ntpdig, sntp) do this:
+ * they pick a source IP from interface enumeration matching their
+ * destination route, then bind to that source. Without this check the
+ * preload would capture that bind as a tunnel-class bind and the
+ * engine would later try to dial outbound with source=host_public_ip,
+ * colliding with the kernel ephemeral the app already grabbed.
+ *
+ * IPv4 ranges considered tunnel-candidate:
+ *   0.0.0.0/8        (unspecified / source-only)
+ *   10.0.0.0/8       (RFC1918)
+ *   100.64.0.0/10    (RFC6598 CGN — Tailscale-style tunnel ranges)
+ *   169.254.0.0/16   (RFC3927 link-local — used by some hosttun setups)
+ *   172.16.0.0/12    (RFC1918)
+ *   192.168.0.0/16   (RFC1918)
+ *   240.0.0.0/4 - {255.255.255.255}  (RFC1112 class E / mesh dynamic)
+ * IPv6:
+ *   ::               (unspecified)
+ *   fc00::/7         (RFC4193 ULA)
+ *   fe80::/10        (RFC4291 link-local)
+ *
+ * Anything else is treated as a kernel/host address. */
+int uwg_addr_is_tunnel_candidate(const struct sockaddr *addr) {
+    if (!addr) return 0;
+    if (addr->sa_family == AF_INET) {
+        const struct sockaddr_in *sin = (const struct sockaddr_in *)addr;
+        uint32_t a = uwg_ntohl(sin->sin_addr.s_addr);
+        uint32_t hi = (a >> 24) & 0xFFu;
+        if (hi == 0) return 1;                  /* 0.0.0.0/8 */
+        if (hi == 10) return 1;                 /* 10/8 */
+        if (hi == 169 && ((a >> 16) & 0xFFu) == 254) return 1; /* 169.254/16 */
+        if (hi == 172 && (((a >> 16) & 0xFFu) >= 16) &&
+            (((a >> 16) & 0xFFu) <= 31)) return 1;             /* 172.16/12 */
+        if (hi == 192 && ((a >> 16) & 0xFFu) == 168) return 1; /* 192.168/16 */
+        if (hi == 100 && (((a >> 16) & 0xFFu) >= 64) &&
+            (((a >> 16) & 0xFFu) <= 127)) return 1;            /* 100.64/10 */
+        if (hi >= 240 && a != 0xFFFFFFFFu) return 1;           /* 240/4 (Class E / engine dyn) */
+        return 0;
+    }
+    if (addr->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)addr;
+        const uint8_t *b = sin6->sin6_addr.s6_addr;
+        int unspec = 1;
+        for (int i = 0; i < 16; i++) if (b[i] != 0) { unspec = 0; break; }
+        if (unspec) return 1;                          /* :: */
+        if ((b[0] & 0xFE) == 0xFC) return 1;           /* fc00::/7 */
+        if (b[0] == 0xFE && (b[1] & 0xC0) == 0x80) return 1; /* fe80::/10 */
+        return 0;
+    }
+    return 0;
+}
+
 /* Format an unsigned int into the given buffer in decimal, returns
  * number of bytes written (NOT including a NUL terminator). The
  * caller should ensure `buf` has at least 11 bytes (max u32 = 10

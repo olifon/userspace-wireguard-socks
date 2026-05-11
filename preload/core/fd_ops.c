@@ -171,8 +171,26 @@ long uwg_setsockopt(int fd, int level, int optname, const void *val,
 
 long uwg_getsockopt(int fd, int level, int optname, void *val,
                     uint32_t *vlen) {
-    /* Always passthrough — the kernel's view of the underlying
-     * socket's options is authoritative. */
+    struct tracked_fd state = uwg_state_lookup(fd);
+    if (state.proxied) {
+        /* Symmetric to uwg_setsockopt: for proxied fds the underlying
+         * kernel socket is AF_UNIX (the fdproxy stream end), so any
+         * protocol-level getsockopt (SOL_TCP, SOL_IP, SOL_IPV6,
+         * SOL_UDP) returns EOPNOTSUPP from the kernel. mongod 8.0's
+         * listener queries `TCP_INFO` / acceptor-queue-length and
+         * warns on EOPNOTSUPP; some apps treat the error as fatal.
+         * Return success with a zero-filled answer so the readback
+         * looks empty rather than "not supported". */
+        if (level == 6 /* SOL_TCP */ || level == 0 /* SOL_IP */ ||
+            level == 41 /* SOL_IPV6 */ || level == 17 /* SOL_UDP */) {
+            if (val && vlen) {
+                uint32_t want = *vlen;
+                uint8_t *p = (uint8_t *)val;
+                for (uint32_t i = 0; i < want; i++) p[i] = 0;
+            }
+            return 0;
+        }
+    }
     return uwg_passthrough_syscall5(SYS_getsockopt, fd, level, optname,
                                     (long)val, (long)vlen);
 }
@@ -189,33 +207,44 @@ long uwg_getsockopt(int fd, int level, int optname, void *val,
  */
 long uwg_getsockname(int fd, struct sockaddr *addr, uint32_t *alen) {
     struct tracked_fd state = uwg_state_lookup(fd);
-    if (!state.proxied) {
+    /* Synthesize whenever we have tunnel-side information that the kernel
+     * couldn't possibly know about:
+     *   - state.proxied: the fd is wired through fdproxy; the kernel-side
+     *     socket is the AF_UNIX manager-stream end and getsockname there
+     *     would return AF_UNIX, useless to the app.
+     *   - state.bound: bind() ran on a tunnel address but listen()/connect()
+     *     hasn't yet — kernel never saw the bind (we returned 0 without
+     *     calling SYS_bind), so getsockname on the kernel fd returns
+     *     0.0.0.0:0. mongod 8.0's listener-setup code parses that as
+     *     HostAndPort and rejects port=0 with "FailedToParse: Port number
+     *     0 out of range", killing the daemon before the listener spins up.
+     *     Synthesizing the recorded bind_ip:bind_port here matches what the
+     *     app expects (and what an unwrapped post-bind getsockname would
+     *     return). */
+    int has_tunnel_view = state.proxied ||
+        (state.bound && state.bind_ip[0]);
+    if (!has_tunnel_view) {
         return uwg_passthrough_syscall3(SYS_getsockname, fd, (long)addr,
                                         (long)alen);
     }
-    if (state.kind == KIND_TCP_STREAM || state.kind == KIND_TCP_LISTENER ||
-        state.kind == KIND_UDP_CONNECTED || state.kind == KIND_UDP_LISTENER) {
-        /* Family preference: explicit bind_family from a real bind(),
-         * else remote_family (set by connect for stream/connected),
-         * else fall back to socket domain. connect_ops.c doesn't set
-         * bind_family today — bind_port/bind_ip are populated from
-         * the fdproxy OK reply, but the family comes from the
-         * destination not the bind. So prefer remote_family when
-         * bind_family is 0. */
-        int family = state.bind_family
-                         ? state.bind_family
-                         : (state.remote_family
-                                ? state.remote_family
-                                : (state.domain == 10 /* AF_INET6 */ ? 10 : 2));
-        const char *ip = (state.bound && state.bind_ip[0])
-                             ? state.bind_ip
-                             : (family == 10 ? "::" : "0.0.0.0");
-        uint16_t port = state.bound ? state.bind_port : 0;
-        if (!addr || !alen) return -22; /* -EINVAL */
-        return uwg_addr_from_text(family, ip, port, addr, alen);
-    }
-    return uwg_passthrough_syscall3(SYS_getsockname, fd, (long)addr,
-                                    (long)alen);
+    /* Family preference: explicit bind_family from a real bind(),
+     * else remote_family (set by connect for stream/connected),
+     * else fall back to socket domain. connect_ops.c doesn't set
+     * bind_family today — bind_port/bind_ip are populated from
+     * the fdproxy OK reply, but the family comes from the
+     * destination not the bind. So prefer remote_family when
+     * bind_family is 0. */
+    int family = state.bind_family
+                     ? state.bind_family
+                     : (state.remote_family
+                            ? state.remote_family
+                            : (state.domain == 10 /* AF_INET6 */ ? 10 : 2));
+    const char *ip = (state.bound && state.bind_ip[0])
+                         ? state.bind_ip
+                         : (family == 10 ? "::" : "0.0.0.0");
+    uint16_t port = state.bound ? state.bind_port : 0;
+    if (!addr || !alen) return -22; /* -EINVAL */
+    return uwg_addr_from_text(family, ip, port, addr, alen);
 }
 
 long uwg_getpeername(int fd, struct sockaddr *addr, uint32_t *alen) {

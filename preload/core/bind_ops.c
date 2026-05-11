@@ -36,6 +36,7 @@
 #include "dispatch.h"
 
 int uwg_addr_is_loopback(const struct sockaddr *addr);
+int uwg_addr_is_tunnel_candidate(const struct sockaddr *addr);
 int uwg_addr_format(const struct sockaddr *addr, char *ip_buf, size_t ip_len,
                     uint16_t *port, int *family);
 
@@ -55,6 +56,25 @@ long uwg_bind(int fd, const struct sockaddr *addr, uint32_t alen) {
 
     /* Loopback bind → mark inactive, passthrough. */
     if (uwg_addr_is_loopback(addr)) {
+        state.active = 0;
+        (void)uwg_state_store(fd, &state);
+        return uwg_passthrough_syscall3(SYS_bind, fd, (long)addr, alen);
+    }
+
+    /* Public/host-side bind → passthrough to the kernel.
+     *
+     * Without this, NTP clients (ntpdig/sntp) that pick a source IP via
+     * route enumeration and bind to a specific host egress address (e.g.
+     * 51.159.237.61) end up with that captured into state.bind_ip, and
+     * the subsequent connect() forwards CONNECT bind_ip=host_egress_ip to
+     * the engine; the engine then dials outbound from (host_egress_ip,
+     * app_ephemeral) and the kernel rejects with EADDRINUSE because the
+     * app already grabbed app_ephemeral.
+     *
+     * Only addresses in plausibly-tunnel ranges (RFC1918, RFC6598 CGN,
+     * RFC4193 ULA, 0/:: unspecified, 169.254/16 link-local, 240/4 class E)
+     * proceed to the tunnel-class branch below. */
+    if (!uwg_addr_is_tunnel_candidate(addr)) {
         state.active = 0;
         (void)uwg_state_store(fd, &state);
         return uwg_passthrough_syscall3(SYS_bind, fd, (long)addr, alen);
