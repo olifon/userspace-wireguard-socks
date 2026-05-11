@@ -1,0 +1,9 @@
+{
+  "host": "hub",
+  "app": "mongo-server",
+  "transport": "",
+  "wrapped_ok": true,
+  "unwrapped_blocked": true,
+  "duration_seconds": 16.94,
+  "notes": "wg_ip=10.200.0.1 port=50119 ready=true | out: {\"ok\":1} | log-tail: :false,\"uuid\":{\"uuid\":{\"$uuid\":\"0cfedfa8-6ebc-448a-9bc5-366db4e9bb95\"}},\"connectionId\":2,\"connectionCount\":1}}|{\"t\":{\"$date\":\"2026-05-11T17:56:44.329+02:00\"},\"s\":\"I\",  \"c\":\"NETWORK\",  \"id\":22944,   \"ctx\":\"conn6\",\"msg\":\"Connection ended\",\"attr\":{\"remote\":\"10.200.0.3:40249\",\"isLoadBalanced\":false,\"uuid\":{\"uuid\":{\"$uuid\":\"25cd59c6-1a20-4a72-9f90-95f0a6ea58ba\"}},\"connectionId\":6,\"connectionCount\":0}}| | err-tail: "
+}

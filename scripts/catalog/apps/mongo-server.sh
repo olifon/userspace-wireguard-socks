@@ -40,25 +40,40 @@ mkdir -p "$work/data"
 err="$work/wrapper.err"
 log_out="$work/server.log"
 start=$(date +%s.%N)
-nohup "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v --allow-bind -- \
+# Note: do NOT pass `-v` to the wrapper — it produces a stream of fdproxy
+# diagnostics that can stall mongod's stderr drain under nohup, making
+# the listener loop never wake. The catalog harness reads the wrapper's
+# auto-cascade decision via the env-gated UWGS_PRELOAD_TRACE instead.
+nohup "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto --allow-bind -- \
     "$MONGOD" --bind_ip "$wg_ip" --port "$MONGO_PORT" --dbpath "$work/data" \
               --noauth --nounixsocket --logpath "$log_out" \
-    >"$work/srv.stdout" 2>"$err" &
+    </dev/null >/dev/null 2>/dev/null &
 SRVPID=$!
 
 ready=false
 # mongod 8.0 cold-start under wrapper takes longer than its baseline
-# (WiredTiger init + FTDC init each adds latency). Probe two ways: the
-# canonical "Waiting for connections" log line, AND a real connect to
-# the configured port. The log may not be flushed when the netstack
-# listener accepts its first connection — happens in practice on busy
-# hosts where mongod is delayed in flushing stdio.
-for i in $(seq 1 360); do
+# (WiredTiger init + FTDC init each adds latency). Probe TWO ways:
+#   - the canonical "Waiting for connections" log line (the mongod log
+#     is sometimes flushed late, so we can't rely on it alone);
+#   - a real wrapped dial to the tunnel-bound listener (mongod is bound
+#     to $wg_ip:$MONGO_PORT inside netstack, NOT to 127.0.0.1 — a bare
+#     `/dev/tcp/127.0.0.1/PORT` probe always fails for the wrapped case).
+for i in $(seq 1 240); do
   if grep -q 'Waiting for connections' "$log_out" 2>/dev/null; then
     ready=true; break
   fi
-  if (echo > /dev/tcp/127.0.0.1/$MONGO_PORT) 2>/dev/null; then
-    ready=true; break
+  # mongod's listener typically comes up BEFORE the "Waiting for
+  # connections" log line is flushed to disk. From the hub itself,
+  # a wrapped dial to the tunnel addr short-circuits through
+  # host_forward → 127.0.0.1, where mongod ISN'T bound, so we can't
+  # probe locally. Probe via the arm64 peer instead — that's the same
+  # path the final mongosh test takes anyway. Every 15s.
+  if [[ "$CATALOG_HOST" =~ ^(hub|.*amd64-host.*) ]] && (( i % 30 == 0 )); then
+    PEER="${MONGO_PEER:-root@51.15.66.128}"
+    PEER_API="${MONGO_PEER_API:-http://127.0.0.1:9092}"
+    if ssh -o BatchMode=yes "$PEER" "timeout 3 /usr/local/bin/uwgwrapper --api=$PEER_API --transport=auto -- bash -c 'exec 9<>/dev/tcp/$wg_ip/$MONGO_PORT'" >/dev/null 2>&1; then
+      ready=true; break
+    fi
   fi
   if ! kill -0 $SRVPID 2>/dev/null; then break; fi
   sleep 0.5

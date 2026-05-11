@@ -4,6 +4,6 @@
   "transport": "systrap-docker",
   "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 0.21,
-  "notes": "out: uwgwrapper: mode=launch target=/usr/local/bin/cloudflared transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-c71746bb80a215ac.so listen=/tmp/uwgfdproxy-776841.sock api=http://127.0.0.1:9091 socketPath=/uwg/socket spawnFDProxy=true\nuwgwrapp"
+  "duration_seconds": 0.14,
+  "notes": "out: uwgwrapper: mode=launch target=/usr/local/bin/cloudflared transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-fd59cd3116d9ea5d.so listen=/tmp/uwgfdproxy-864366.sock api=http://127.0.0.1:55289 socketPath=/uwg/socket spawnFDProxy=true\nuwgwrap"
 }

@@ -1,0 +1,9 @@
+{
+  "host": "hub",
+  "app": "postgres-server",
+  "transport": "systrap-supervised",
+  "wrapped_ok": true,
+  "unwrapped_blocked": true,
+  "duration_seconds": 1.05,
+  "notes": "wg_ip=10.200.0.1 port=55433 ready=true | sql: pgsrv-tunnel-ok | log-tail:  | err-tail: cket \"/tmp/tmp.cEBNmzKjIa/data/.s.PGSQL.55433\"|2026-05-11 17:12:15.440 CEST [861068] LOG:  database system was shut down at 2026-05-11 17:12:15 CEST|2026-05-11 17:12:15.442 CEST [861062] LOG:  database system is ready to accept connections|"
+}

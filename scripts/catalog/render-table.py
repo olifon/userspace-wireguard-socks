@@ -36,7 +36,15 @@ CATALOG_APPS = [
     ("nginx", "C server", "nginx in foreground, worker fork model, accept loop."),
     ("electron", "Chromium", "Headless chromium binary boot under wrapper. Snap-confined chromium-browser shells skipped — install non-snap chrome on arm64."),
     ("postgres", "DB client", "Docker-hosted Postgres + `psql` SELECT through wrapper."),
+    ("postgres-server", "DB server", "Wrapped `postgres` daemon bound to a tunnel WG address; peer's psql reads back through WG."),
     ("mongo", "DB client", "Docker-hosted Mongo + `mongosh` ping through wrapper."),
+    ("mongo-server", "DB server", "Wrapped `mongod` bound to a tunnel WG address; peer's mongosh runs `ping` end-to-end."),
+    ("mariadb-server", "DB server", "Wrapped `mariadbd` bound to a tunnel WG address; auto `aa-complain`s its AppArmor profile."),
+    ("dig", "DNS / UDP", "BIND9 `dig @1.1.1.1` (UDP 53) through wrapper."),
+    ("ntp", "NTP / UDP", "ntpdig / sntp / python NTP — exercises unconnected-UDP path to non-tunnel destinations."),
+    ("iperf3-udp", "UDP", "UDP throughput against an ephemeral local iperf3 server."),
+    ("udp-echo-bind", "UDP server", "Wrapped Python UDP echo server bound to a tunnel WG address; same-host loopback edge case."),
+    ("curl-http3", "QUIC", "curl --http3-only — gated on a libcurl build with ngtcp2/nghttp3."),
     ("odoo", "Python ERP", "Odoo --version (boot smoke; full ERP install is a separate soak)."),
     ("pytorch-mnist", "ML", "PyTorch + torchvision MNIST training (vast.ai GPU host)."),
 ]
@@ -62,12 +70,21 @@ def cell(host, app):
     d = load(host, app)
     if d is None:
         return "—"
-    if d.get("transport") in ("missing-bin", "no-cuda", "unsupported-java", "no-javac"):
-        if d["transport"] == "missing-bin":
-            return "—"
+    # Transport markers that mean "environment couldn't run this" — render
+    # as `—` (binary missing) or 🚧 (specific subsystem missing); NOT ❌
+    # which is reserved for a wrapper-side failure.
+    missing_bin_markers = {"missing-bin"}
+    env_blocked_markers = {
+        "no-cuda", "unsupported-java", "no-javac", "no-http3",
+        "no-docker", "no-pg-user", "no-mysql-user", "no-build-info",
+        "docker-failed", "download-failed", "initdb-failed", "install-db-failed",
+    }
+    t = d.get("transport") or "?"
+    if t in missing_bin_markers:
+        return "—"
+    if t in env_blocked_markers:
         return "🚧"
     if d.get("wrapped_ok"):
-        t = d.get("transport") or "?"
         return f"✅ `{t}`"
     return "❌"
 

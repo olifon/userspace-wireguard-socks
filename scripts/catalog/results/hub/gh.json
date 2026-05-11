@@ -4,6 +4,6 @@
   "transport": "systrap-docker",
   "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 0.20,
+  "duration_seconds": 0.19,
   "notes": "ver-out: gh version 2.91.0 (2026-04-22)\nhttps://github.com/cli/cli/releases/tag/v2.91.0 | static-Go boot smoke only \u2014 see docs/catalog/production-applications.md for the api-call DNS limitation."
 }

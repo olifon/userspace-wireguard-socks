@@ -1,0 +1,9 @@
+{
+  "host": "arm64",
+  "app": "dig",
+  "transport": "systrap-supervised",
+  "wrapped_ok": true,
+  "unwrapped_blocked": true,
+  "duration_seconds": 0.15,
+  "notes": "out: 172.66.147.243\n104.20.23.154 | err-tail: ue|uwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)|ERROR: ld.so: object '/tmp/uwgwrapper-0/uwgpreload-75417f384ef7f9a7.so' from LD_PRELOAD cannot be preloaded (cannot open shared object file): ignored.|"
+}

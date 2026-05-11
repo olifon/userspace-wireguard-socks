@@ -1,0 +1,9 @@
+{
+  "host": "hub",
+  "app": "udp-echo-bind",
+  "transport": "systrap-supervised",
+  "wrapped_ok": false,
+  "unwrapped_blocked": true,
+  "duration_seconds": 4.19,
+  "notes": "self_ip=10.200.0.1 port=46932 | out:  | srv-log: listening_udp 10.200.0.1:46932 | err-tail: systrap-supervised (dynamic target, seccomp=true ptrace=true)|Traceback (most recent call last):|  File \"/tmp/tmp.6GEFsAHGTd/cli.py\", line 6, in <module>|    data, _ = s.recvfrom(1500)|              ~~~~~~~~~~^^^^^^|TimeoutError: timed out|"
+}

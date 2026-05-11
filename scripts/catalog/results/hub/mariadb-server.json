@@ -1,0 +1,9 @@
+{
+  "host": "hub",
+  "app": "mariadb-server",
+  "transport": "systrap-supervised",
+  "wrapped_ok": true,
+  "unwrapped_blocked": true,
+  "duration_seconds": 2.72,
+  "notes": "wg_ip=10.200.0.1 port=58893 ready=true | out: WARNING: option --ssl-verify-server-cert is disabled, because of an insecure passwordless login.\nmaria-tunnel-ok | log-tail:  17:15:22|2026-05-11 17:15:24 0 [Note] Server socket created on IP: '10.200.0.1', port: '58893'.|2026-05-11 17:15:24 0 [Note] /usr/sbin/mariadbd: ready for connections.|Version: '11.8.6-MariaDB-5 from Ubuntu'  socket: '/tmp/tmp.dR7g8OeCKS/maria.sock'  port: 58893  -- Please help get to 10k stars at https://github.com/MariaDB/Server|2026-05-11 17:15:25 0 [ERROR] Error in accept: Connection refused| | err-tail: =/tmp/uwgwrapper-977/uwgpreload-fd59cd3116d9ea5d.so listen=/tmp/uwgfdproxy-862549.sock api=http://127.0.0.1:9091 socketPath=/uwg/socket spawnFDProxy=true|uwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)|"
+}

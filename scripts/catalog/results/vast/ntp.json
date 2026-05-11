@@ -1,0 +1,9 @@
+{
+  "host": "vast",
+  "app": "ntp",
+  "transport": "systrap-supervised",
+  "wrapped_ok": true,
+  "unwrapped_blocked": true,
+  "duration_seconds": 0.12,
+  "notes": "tool=python-ntp | out: ntp_epoch=1778512633 delta=0.1s | err-tail: oad=/tmp/uwgwrapper-0/uwgpreload-f49ea877bc01b8b2.so listen=/tmp/uwgfdproxy-24315.sock api=http://127.0.0.1:9094 socketPath=/uwg/socket spawnFDProxy=true|uwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)|"
+}
