@@ -257,10 +257,10 @@ jobs:
       # — never on test.yml; the runsc install + container churn
       # would slow PR feedback for ~3 minutes per push.
       #
-      # amd64 only for now: gVisor on arm64 is younger and more
-      # likely to flake. If the smoke is green for a few releases,
-      # expand to a small wrapper-test subset under runsc, then
-      # consider arm64.
+      # amd64 + arm64. gVisor's runsc has shipped arm64 builds since
+      # release 20231030; we now exercise both. arm64 stays
+      # continue-on-error until we've seen a few consecutive greens —
+      # the runsc apt repo's arm64 channel can lag amd64.
       #
       # Smoke shape:
       #   1. Generate a throwaway WG private key (uwgsocks needs one
@@ -279,10 +279,18 @@ jobs:
       # seccomp incompatibility, etc.) we'd rather find out at
       # release time than on a customer support ticket.
       - name: gVisor smoke (uwgwrapper preload + systrap)
-        if: runner.os == 'Linux' && runner.arch == 'X64'
+        if: runner.os == 'Linux'
+        # arm64 left continue-on-error until we've seen a few consecutive
+        # greens. amd64 is the production gate.
+        continue-on-error: ${{ runner.arch != 'X64' }}
         shell: bash
         run: |
           set -euo pipefail
+
+          # Detect runner arch — runsc apt repo serves both amd64 and
+          # arm64 under release/main, but the deb line needs the right
+          # arch= suffix or apt will silently skip indexes.
+          DPKG_ARCH=$(dpkg --print-architecture)
 
           # Build the binaries we need for the smoke. CGO is on so
           # the wrapper picks up its preload dependency surface.
@@ -322,7 +330,7 @@ jobs:
           # Install runsc (gVisor). Using the upstream apt repo, not
           # the snap — snap confinement breaks LD_PRELOAD pathing.
           curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
-          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" | \
+          echo "deb [arch=${DPKG_ARCH} signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" | \
             sudo tee /etc/apt/sources.list.d/gvisor.list >/dev/null
           sudo apt-get update -qq
           sudo apt-get install -y runsc
@@ -367,16 +375,24 @@ jobs:
       # model deadlocks after the first few seconds (workers hit 0
       # execs/sec and never recover, eventually hitting context
       # deadline). Reproduced on both runner OSes in v0.1.0-beta.{25,26}.
-      # Also skipped on linux-arm64 — same Go-fuzz worker IPC stall
-      # reproduces on the GH arm64 runner (v0.1.0-beta.40, FuzzACLParseRule
-      # froze at 0 execs/sec for 22s and exited with context deadline).
-      # The fuzz corpus already runs as a regular non-fuzz test on every
-      # PR push across all platforms — what's lost here is the ~30s of
-      # extra random exploration on arm64, not the corpus coverage
-      # itself. The Go fuzz IPC implementation is effectively linux/amd64
-      # only at GH-runner load levels.
-      - name: Fuzz untrusted-input parsers
+      # arm64 historically stalled the Go-fuzz worker IPC on GH runners
+      # (v0.1.0-beta.40, FuzzACLParseRule froze at 0 execs/sec). Go's
+      # fuzz machinery has churned since; re-enabling on arm64 with
+      # continue-on-error so we get signal without blocking releases.
+      # The fuzz corpus runs as a regular (non-fuzz) test on every PR
+      # push across all platforms — this step just stretches it.
+      - name: Fuzz untrusted-input parsers (linux-amd64)
         if: runner.os == 'Linux' && runner.arch == 'X64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test ./tests/malicious -run '^$' -fuzz '^FuzzMergeWGQuickStrict$' -fuzztime 30s
+          go test ./tests/malicious -run '^$' -fuzz '^FuzzACLParseRule$' -fuzztime 30s
+          go test ./tests/malicious -run '^$' -fuzz '^FuzzConfigParsers$' -fuzztime 30s
+
+      - name: Fuzz untrusted-input parsers (linux-arm64)
+        if: runner.os == 'Linux' && runner.arch == 'ARM64'
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -394,8 +410,25 @@ jobs:
       # Plus an adversarial-flood test that doesn't fuzz randomly
       # but pounds the guard with many concurrent attackers from
       # distinct source IPs. Verifies the session table cap holds.
-      - name: TURN hardening — guard fuzz + adversarial flood
+      - name: TURN hardening — guard fuzz + adversarial flood (linux-amd64)
         if: runner.os == 'Linux' && runner.arch == 'X64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd turn
+          go test -count=1 -timeout 60s -run TestWireguardGuardAdversarialFlood ./...
+          go test -run '^$' -fuzz '^FuzzWireguardGuardProcessInbound$' -fuzztime 30s ./...
+          go test -run '^$' -fuzz '^FuzzWireguardGuardProcessOutbound$' -fuzztime 30s ./...
+
+      # ARM64 parity for the TURN guard fuzz. The adversarial-flood
+      # test is deterministic and should pass; the two fuzz steps
+      # are continue-on-error in line with the parser-fuzz arm64
+      # variant above (Go fuzz IPC historically stalled on arm64
+      # runners — leaving the door open to surface that or any
+      # arm64-only guard regression).
+      - name: TURN hardening — guard fuzz + adversarial flood (linux-arm64)
+        if: runner.os == 'Linux' && runner.arch == 'ARM64'
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail

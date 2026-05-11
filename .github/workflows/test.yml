@@ -174,12 +174,28 @@ jobs:
           Write-Host "installed chrome-headless-shell at $bin"
 
       # ── Chromium smoke tests ────────────────────────────────────────────────
-      # Preload wrapper smoke (linux-amd64 only): Chrome under
+      # Preload wrapper smoke (linux-amd64): Chrome under
       # uwgwrapper --transport=preload. The proxy connect goes over
       # loopback (bypassed by the preload shim) — zero wrapper latency,
       # reliably passes on GH-hosted runners. No continue-on-error.
-      - name: Run chromium preload wrapper smoke
+      - name: Run chromium preload wrapper smoke (linux-amd64)
         if: runner.os == 'Linux' && matrix.name == 'linux-amd64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${UWGS_CHROME_BIN:-}" ]; then
+            echo "no chrome binary detected; skipping preload wrapper smoke"
+            exit 0
+          fi
+          go test -count=1 -timeout 120s -run TestChromiumPreloadWrapperSmoke -v ./tests/preload/
+
+      # ARM64 parity: same preload wrapper smoke against google-chrome-stable
+      # arm64. continue-on-error until we've seen a few consecutive greens —
+      # arm64 chrome behaviour on GH-hosted runners differs from
+      # chrome-headless-shell on amd64.
+      - name: Run chromium preload wrapper smoke (linux-arm64)
+        if: runner.os == 'Linux' && matrix.name == 'linux-arm64'
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -220,7 +236,7 @@ jobs:
           fi
           go test -count=1 -timeout 90s -run TestChromiumProxySmoke -v ./tests/preload/
 
-      - name: Run chromium real-internet smoke
+      - name: Run chromium real-internet smoke (linux-amd64)
         if: runner.os == 'Linux' && matrix.name == 'linux-amd64'
         # GH-runner network quirks can produce flakes; continue-on-error so
         # CI signal stays useful. Self-hosted runs surface real regressions.
@@ -236,10 +252,27 @@ jobs:
           fi
           go test -count=1 -timeout 240s -run TestChromiumRealInternetSmoke -v ./tests/preload/
 
+      # ARM64 parity for the real-internet smoke. Same continue-on-error
+      # rationale as amd64; we want to see whether the underlying wrapper
+      # paths work against real-network targets on arm64 too.
+      - name: Run chromium real-internet smoke (linux-arm64)
+        if: runner.os == 'Linux' && matrix.name == 'linux-arm64'
+        continue-on-error: true
+        env:
+          UWGS_RUN_CHROMIUM_REAL_INTERNET: "1"
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${UWGS_CHROME_BIN:-}" ]; then
+            echo "no chrome binary detected; skipping smoke"
+            exit 0
+          fi
+          go test -count=1 -timeout 240s -run TestChromiumRealInternetSmoke -v ./tests/preload/
+
       # The "Final Boss" smoke: chromium under systrap-supervised
       # against real-internet (example.com → wikipedia → youtube)
       # with the zygote ACTIVE and no UWGS_DISABLE_SECCOMP.
-      - name: Run chromium-supervised real-internet smoke (final boss)
+      - name: Run chromium-supervised real-internet smoke (linux-amd64)
         if: runner.os == 'Linux' && matrix.name == 'linux-amd64'
         # Chrome-for-testing download flakes + GH-runner network
         # to youtube can be intermittent; continue-on-error so
@@ -254,6 +287,31 @@ jobs:
           if [ -z "${UWGS_CHROME_BIN_SUPERVISED:-}" ]; then
             echo "chrome-headless-shell not installed; skipping supervised smoke"
             exit 0
+          fi
+          go test -count=1 -timeout 360s -run TestChromiumSystrapSupervisedRealInternet -v ./tests/preload/
+
+      # ARM64 parity for the supervised real-internet smoke. Uses
+      # google-chrome-stable arm64 — the binary chrome-for-testing
+      # doesn't publish reliably yet. continue-on-error: this is the
+      # hardest wrapper path even on amd64; arm64 surfaces are
+      # genuinely valuable data.
+      - name: Run chromium-supervised real-internet smoke (linux-arm64)
+        if: runner.os == 'Linux' && matrix.name == 'linux-arm64'
+        continue-on-error: true
+        env:
+          UWGS_RUN_CHROMIUM_SUPERVISED: "1"
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${UWGS_CHROME_BIN_SUPERVISED:-}" ]; then
+            # On arm64 we don't auto-install chrome-headless-shell —
+            # fall back to UWGS_CHROME_BIN (google-chrome-stable) if set.
+            if [ -n "${UWGS_CHROME_BIN:-}" ]; then
+              export UWGS_CHROME_BIN_SUPERVISED="${UWGS_CHROME_BIN}"
+            else
+              echo "no chrome binary; skipping arm64 supervised smoke"
+              exit 0
+            fi
           fi
           go test -count=1 -timeout 360s -run TestChromiumSystrapSupervisedRealInternet -v ./tests/preload/
 
