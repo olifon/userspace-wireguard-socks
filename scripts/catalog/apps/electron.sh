@@ -19,18 +19,21 @@ cd "$(dirname "$0")/.."
 
 app="electron"
 chrome=""
+# Detect a real chromium-class binary that doesn't go via snap.  Some distros
+# ship a thin shell-script /usr/bin/chromium-browser that re-execs into the
+# snap binary — those don't survive wrapper interception either because the
+# snap-confined renderer can't see /tmp/uwgfdproxy-*.sock.
 for cand in google-chrome chrome-headless-shell chromium-browser chromium electron; do
-  case "$(command -v "$cand" 2>/dev/null)" in
-    /snap/*) continue ;;       # snap confinement hides /tmp/uwgfdproxy-*.sock
-    "")      continue ;;
-  esac
-  chrome="$cand"; break
+  resolved=$(command -v "$cand" 2>/dev/null)
+  [[ -z "$resolved" ]] && continue
+  [[ "$resolved" == /snap/* ]] && continue
+  # Reject /usr/bin/chromium-browser if it's a tiny shell script that
+  # forwards to snap (Ubuntu 24.04+).
+  if file "$resolved" 2>/dev/null | grep -q 'shell script'; then
+    continue
+  fi
+  chrome="$resolved"; break
 done
-if [[ -z "$chrome" ]]; then
-  for cand in chromium chromium-browser; do
-    if bin_exists "$cand"; then chrome="$cand"; break; fi
-  done
-fi
 
 if [[ -z "$chrome" ]]; then
   record_result "$app" false "${UNWRAPPED_BLOCKED:-true}" missing-bin 0 \
