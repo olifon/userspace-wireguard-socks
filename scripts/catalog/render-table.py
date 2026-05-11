@@ -54,6 +54,8 @@ CATALOG_APPS = [
     ("odoo", "Python ERP", "Full server smoke: wrapped odoo-bin inits a fresh DB against local postgres, starts the HTTP server, wrapped curl runs the CSRF login + JSON-RPC, asserts an authenticated admin session."),
     ("kubectl", "K8s control plane", "Full lifecycle through wrapper: run pod → wait → exec (websocket upgrade) → logs → watch → delete. Tests HTTP/2 long-poll + WebSocket upgrade — the new signal vs every other HTTPS client."),
     ("helm-odoo", "K8s deployed app", "End-to-end: wrapped helm deploys Odoo+Postgres to microk8s, wrapped kubectl pulls the admin password from the cluster secret, wrapped curl completes Odoo's CSRF login + JSON-RPC, gets back an authenticated admin session through the WG tunnel."),
+    ("qemu-alpine", "VM under wrapper", "qemu-system-x86_64 boots an Alpine VM under uwgwrapper. KVM-accelerated where /dev/kvm + vmx is available, TCG fallback otherwise. The hardest moat row in the catalog: massive ioctl traffic, per-vCPU thread fanout, signal-heavy."),
+    ("test-python-httplib", "wrapped test suite", "437 of CPython's upstream stdlib network tests (test_httplib + test_httpservers + test_http_cookies/cookiejar + test_xmlrpc) run wrapped. Proves the wrapper carries an entire HTTP-client API surface through, not just smoke."),
     ("pytorch-mnist", "ML", "PyTorch + torchvision MNIST training (vast.ai GPU host)."),
 ]
 
