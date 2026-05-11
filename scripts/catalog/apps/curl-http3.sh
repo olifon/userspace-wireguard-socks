@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Reindert Pelsma
+# SPDX-License-Identifier: ISC
+#
+# Real QUIC (UDP) test: curl --http3 against a known-HTTP/3 endpoint.
+# Cloudflare's edge serves HTTP/3 on cloudflare-quic.com. Requires a curl
+# build that links libcurl-http3 (e.g., apt's curl on Ubuntu 26+ has it).
+# A failed --http3 negotiation falls back silently to TCP/HTTPS; we
+# disable that with --http3-only so a wrapper-side UDP rejection is
+# observable.
+set -u
+cd "$(dirname "$0")/.."
+. ./lib.sh
+
+app="curl-http3"
+if ! bin_exists curl; then
+  record_result "$app" false "${UNWRAPPED_BLOCKED:-true}" missing-bin 0 "install: apt-get install -y curl"
+  exit 0
+fi
+
+# Probe whether this curl was built against an HTTP/3-capable libcurl.
+# `curl -V` lists HTTP3 in the "Features:" line when the underlying TLS
+# stack supports it (e.g., ngtcp2 + nghttp3, or quiche). Many distro
+# curls expose --http3-only but reject it at runtime.
+if ! curl -V 2>&1 | grep -qi 'HTTP3'; then
+  record_result "$app" false "${UNWRAPPED_BLOCKED:-true}" no-http3 0 \
+    "curl on this host has no HTTP/3 protocol support (Features: line lacks 'HTTP3'). Install curl with ngtcp2/nghttp3 or quiche."
+  exit 0
+fi
+
+err=$(mktemp)
+start=$(date +%s.%N)
+out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
+    curl --http3-only -sS --max-time 10 -o /dev/null -w '%{http_version}|%{http_code}\n' \
+    https://cloudflare-quic.com/ 2>"$err") || true
+end=$(date +%s.%N)
+dur=$(awk -v s="$start" -v e="$end" 'BEGIN{printf "%.2f", e-s}')
+
+transport=""
+if grep -q 'auto: chose ' "$err"; then
+  transport=$(grep 'auto: chose ' "$err" | head -1 | sed -E 's/.*auto: chose ([a-z-]+).*/\1/')
+fi
+
+wrapped_ok=false
+# curl prints "3|200" if HTTP/3 negotiated to a 200 response.
+if [[ "$out" == 3* && "$out" == *200* ]]; then
+  wrapped_ok=true
+fi
+
+notes="out: $(printf '%s' "$out" | head -c 200) | err-tail: $(tail -c 240 "$err" | tr '\n' '|')"
+rm -f "$err"
+record_result "$app" "$wrapped_ok" "${UNWRAPPED_BLOCKED:-true}" "$transport" "$dur" "$notes"
+[[ "$wrapped_ok" == "true" ]]
