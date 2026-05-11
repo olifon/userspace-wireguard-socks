@@ -1,0 +1,9 @@
+{
+  "host": "hub",
+  "app": "test-odoo-suite",
+  "transport": "systrap-supervised",
+  "wrapped_ok": true,
+  "unwrapped_blocked": true,
+  "duration_seconds": 275.72,
+  "notes": "baseline={1329 2 12} wrapped={1329 2 12} | wrapped-tail: (read/write;used=0/count=0/max=64): Closed 4 connections  |2026-05-11 22:50:41,041 1021394 INFO uwgodootest1021046 odoo.sql_db: ConnectionPool(read-only;used=0/count=0/max=64): Closed 1 connections  |"
+}

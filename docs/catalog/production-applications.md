@@ -83,6 +83,8 @@ non-discriminating.
 | `helm-odoo` | K8s deployed app | ✅ `?` | — | — | — | End-to-end: wrapped helm deploys Odoo+Postgres to microk8s, wrapped kubectl pulls the admin password from the cluster secret, wrapped curl completes Odoo's CSRF login + JSON-RPC, gets back an authenticated admin session through the WG tunnel. |
 | `qemu-alpine` | VM under wrapper | ✅ `systrap-supervised` | — | — | — | qemu-system-x86_64 boots an Alpine VM under uwgwrapper. KVM-accelerated where /dev/kvm + vmx is available, TCG fallback otherwise. The hardest moat row in the catalog: massive ioctl traffic, per-vCPU thread fanout, signal-heavy. |
 | `test-python-httplib` | wrapped test suite | ✅ `systrap-supervised` | — | — | — | 437 of CPython's upstream stdlib network tests (test_httplib + test_httpservers + test_http_cookies/cookiejar + test_xmlrpc) run wrapped. Proves the wrapper carries an entire HTTP-client API surface through, not just smoke. |
+| `test-odoo-suite` | wrapped test suite | ✅ `systrap-supervised` | — | — | — | Odoo 18's upstream `-i base --test-enable` suite — 1329 real tests across ~12 modules. Pass = wrapped pass/fail/error counts match the unwrapped baseline exactly. Catches any wrapper regression that changes even one test outcome. |
+| `wordpress` | PHP CMS lifecycle | ✅ `systrap-supervised` | — | — | — | Full WordPress lifecycle through wrapper: wp-cli downloads core, configs against MariaDB, installs, activates a plugin; peer's wrapped curl hits wp-json/wp/v2/types and asserts the REST API returns the canonical post + page types. |
 | `pytorch-mnist` | ML | 🚧 | 🚧 | ✅ `systrap-supervised` | — | PyTorch + torchvision MNIST training (vast.ai GPU host). |
 
 <!-- END: rendered table -->
