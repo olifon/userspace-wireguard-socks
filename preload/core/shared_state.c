@@ -415,12 +415,40 @@ struct tracked_fd uwg_state_lookup(int fd) {
         if (uwg_state_find_slot_locked(pid, fd, 0, &idx) == 0) {
             out = uwg_state->tracked[idx].state;
             found = 1;
+        } else {
+            /* Fork-inherit fallback — see comment on the ppid branch
+             * below. Same path under the held-as-writer case. */
+            int32_t ppid = (int32_t)uwg_syscall0(SYS_getppid);
+            if (ppid > 0 && ppid != pid &&
+                uwg_state_find_slot_locked(ppid, fd, 0, &idx) == 0) {
+                out = uwg_state->tracked[idx].state;
+                found = 1;
+            }
         }
     } else {
         size_t idx;
         if (uwg_state_find_slot_locked(pid, fd, 0, &idx) == 0) {
             out = uwg_state->tracked[idx].state;
             found = 1;
+        } else {
+            /* Fork-inherit: a child process inherits the parent's open-
+             * fd table verbatim at the kernel level (post-fork, both
+             * processes' fd N point at the same kernel struct file),
+             * but our per-process tracking is keyed by (pid, fd) and
+             * the parent's entry isn't visible to the child. For the
+             * common server fork-worker model (nginx workers, postgres
+             * backends, mongod children, etc.), the worker calls
+             * accept() on the inherited listener fd — without this
+             * fallback the lookup misses, the wrapper passes through
+             * to the kernel AF_UNIX socketpair end, and accept4 fails
+             * with EINVAL. Falling back to the parent's slot for one
+             * level fixes the common case. */
+            int32_t ppid = (int32_t)uwg_syscall0(SYS_getppid);
+            if (ppid > 0 && ppid != pid &&
+                uwg_state_find_slot_locked(ppid, fd, 0, &idx) == 0) {
+                out = uwg_state->tracked[idx].state;
+                found = 1;
+            }
         }
         uwg_rwlock_rdunlock(&uwg_state->lock);
     }
