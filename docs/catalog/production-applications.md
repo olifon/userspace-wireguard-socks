@@ -53,6 +53,7 @@ non-discriminating.
 | `python` | HTTPS client | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | Python 3 urllib — CPython + libc + the TCP_NODELAY fix this commit landed. |
 | `node` | HTTPS client | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | V8 JIT survives seccomp+systrap; libc-routed connect. |
 | `ssh` | TCP client | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | Dials a tunnel-internal TCP port; banner read proves interception. |
+| `rsync-ssh` | exec+ssh+stream | ✅ `systrap-supervised` | — | — | — | Wrapped rsync forks ssh as its transport; both inherit the wrapper. Fixture transferred to a WG peer; SHA verified through the wrapper (peer's WG addr isn't on a host route). |
 | `git` | HTTPS client | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | Clones a tiny public repo; exec tree (git → git-remote-https → curl). |
 | `pip` | HTTPS client | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | PyPI fetch via CPython requests stack. |
 | `xh` | HTTPS client | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | Rust HTTP client (curl alternative). |

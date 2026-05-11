@@ -26,6 +26,7 @@ CATALOG_APPS = [
     ("python", "HTTPS client", "Python 3 urllib — CPython + libc + the TCP_NODELAY fix this commit landed."),
     ("node", "HTTPS client", "V8 JIT survives seccomp+systrap; libc-routed connect."),
     ("ssh", "TCP client", "Dials a tunnel-internal TCP port; banner read proves interception."),
+    ("rsync-ssh", "exec+ssh+stream", "Wrapped rsync forks ssh as its transport; both inherit the wrapper. Fixture transferred to a WG peer; SHA verified through the wrapper (peer's WG addr isn't on a host route)."),
     ("git", "HTTPS client", "Clones a tiny public repo; exec tree (git → git-remote-https → curl)."),
     ("pip", "HTTPS client", "PyPI fetch via CPython requests stack."),
     ("xh", "HTTPS client", "Rust HTTP client (curl alternative)."),
