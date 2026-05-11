@@ -34,7 +34,9 @@ CATALOG_APPS = [
     ("java-http", "JVM", "OpenJDK HttpURLConnection — JIT, GC, NIO. Verifies the IPv4-mapped IPv6 fix."),
     ("java-minecraft", "JVM server", "Real Paper Minecraft server, TCP listener on 25565."),
     ("nginx", "C server", "nginx in foreground, worker fork model, accept loop."),
-    ("electron", "Chromium", "Headless chromium with --no-sandbox."),
+    ("electron", "Chromium", "Headless chromium binary boot under wrapper. Snap-confined chromium-browser shells skipped — install non-snap chrome on arm64."),
+    ("postgres", "DB client", "Docker-hosted Postgres + `psql` SELECT through wrapper."),
+    ("mongo", "DB client", "Docker-hosted Mongo + `mongosh` ping through wrapper."),
     ("odoo", "Python ERP", "Odoo --version (boot smoke; full ERP install is a separate soak)."),
     ("pytorch-mnist", "ML", "PyTorch + torchvision MNIST training (vast.ai GPU host)."),
 ]
