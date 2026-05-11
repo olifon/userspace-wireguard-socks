@@ -171,17 +171,28 @@ func (s *socketServer) handleConnect(id uint64, req socketproto.Connect) error {
 }
 
 func (s *socketServer) socketAddrs(req socketproto.Connect) (bind, dest netip.AddrPort, destSet bool, err error) {
-	if req.DestIP.IsValid() {
+	// Normalize IPv4-mapped IPv6 destinations (`::ffff:10.200.0.1`) into
+	// their plain IPv4 form before routing. Dual-stack clients (notably
+	// the OpenJDK NIO socket impl on Linux) issue all connects through an
+	// AF_INET6 socket, encoding IPv4 targets via the v4-mapped form. The
+	// rest of the engine compares addresses against `localAddrs`,
+	// `tunnelAddrBlocked`, peer `AllowedIPs`, etc. — all of which store
+	// the unmapped form — so leaving the v4-mapped form intact silently
+	// routes "10.200.0.1" through the IPv6 fallback path and breaks the
+	// dialing app with SIGPIPE / ConnectException.
+	destIP := req.DestIP.Unmap()
+	bindIP := req.BindIP.Unmap()
+	if destIP.IsValid() {
 		destSet = true
-		dest = netip.AddrPortFrom(req.DestIP, req.DestPort)
+		dest = netip.AddrPortFrom(destIP, req.DestPort)
 	} else if req.DestPort != 0 {
 		return netip.AddrPort{}, netip.AddrPort{}, false, errors.New("destination port without destination IP")
 	}
-	if req.BindIP.IsValid() {
-		if !s.e.localAddrContains(req.BindIP) && !s.e.cfg.SocketAPI.TransparentBind {
+	if bindIP.IsValid() {
+		if !s.e.localAddrContains(bindIP) && !s.e.cfg.SocketAPI.TransparentBind {
 			return netip.AddrPort{}, netip.AddrPort{}, false, errors.New("transparent bind is disabled")
 		}
-		bind = netip.AddrPortFrom(req.BindIP, req.BindPort)
+		bind = netip.AddrPortFrom(bindIP, req.BindPort)
 	} else if req.BindPort != 0 {
 		ip, ok := s.e.firstLocalAddr(req.IPVersion)
 		if !ok {

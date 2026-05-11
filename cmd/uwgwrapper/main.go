@@ -494,9 +494,15 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 				// PT_INTERP injection does not require ptrace-based memory
 				// injection, which container profiles often block independently
 				// of basic ptrace(TRACEME) availability.
+				if debug {
+					log.Printf("auto: chose systrap-docker (static target, seccomp=%v ptrace=%v)", seccompOK, ptraceOK)
+				}
 				systrapDockerRun(target, progArgs, env, preloadPath, shared)
 				return
 			case ptraceOK:
+				if debug {
+					log.Printf("auto: chose ptrace-only (static target, seccomp=false ptrace=true)")
+				}
 				if err := traceNoSeccomp(); err != nil {
 					log.Fatalf("auto: ptrace-only failed for static target %q: %v", target, err)
 				}
@@ -511,26 +517,41 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 			// Best correctness + performance: real systrap-
 			// supervised (LD_PRELOAD + seccomp + SIGSYS in-
 			// process + execve-only ptrace supervisor).
+			if debug {
+				log.Printf("auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)")
+			}
 			systrapSupervisedRun()
 		case seccompOK:
 			// systrap-docker is preferred over plain systrap when ptrace
 			// is blocked: PT_INTERP injection survives execve into static
 			// children, whereas plain systrap loses interception at any
 			// statically-linked exec boundary.
+			if debug {
+				log.Printf("auto: chose systrap-docker (dynamic target, seccomp=true ptrace=false)")
+			}
 			systrapDockerRun(target, progArgs, env, preloadPath, shared)
 			return
 		case ptraceOK:
 			// Try ptrace-seccomp first (it tries with-seccomp,
 			// which fails-fast if seccomp is blocked, then
 			// falls back to ptrace-only). Then plain ptrace-only.
+			if debug {
+				log.Printf("auto: chose ptrace cascade (dynamic target, seccomp=false ptrace=true)")
+			}
 			if err := traceSimple(); err == nil {
 				return
 			}
 			if err := traceNoSeccomp(); err == nil {
 				return
 			}
+			if debug {
+				log.Printf("auto: ptrace cascade failed, falling back to preload")
+			}
 			libcOnlyRun()
 		default:
+			if debug {
+				log.Printf("auto: chose preload (dynamic target, seccomp=false ptrace=false)")
+			}
 			libcOnlyRun()
 		}
 	default:

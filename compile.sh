@@ -27,6 +27,11 @@ build_uwgwrapper_linux() {
   mkdir -p ./cmd/uwgwrapper/assets
   bash ./preload/build_phase1.sh ./cmd/uwgwrapper/assets/uwgpreload.so
   bash ./preload/build_ptloader.sh ./cmd/uwgwrapper/assets
+  # Static blob for systrap-supervised dynamic→static execve re-arm and
+  # systrap-static initial inject.  Embedded into the wrapper binary via
+  # cmd/uwgwrapper/embed_static_${arch}.go (//go:embed). MUST be built
+  # before the Go compile or stale bytes get embedded.
+  bash ./preload/build_static.sh >/dev/null
   CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o uwgwrapper ./cmd/uwgwrapper
 }
 

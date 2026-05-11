@@ -1,0 +1,9 @@
+{
+  "host": "hub",
+  "app": "cloudflared",
+  "transport": "systrap-docker",
+  "wrapped_ok": true,
+  "unwrapped_blocked": true,
+  "duration_seconds": 0.20,
+  "notes": "out: uwgwrapper: mode=launch target=/usr/local/bin/cloudflared transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-c71746bb80a215ac.so listen=/tmp/uwgfdproxy-773670.sock api=http://127.0.0.1:9091 socketPath=/uwg/socket spawnFDProxy=true\nuwgwrapp"
+}

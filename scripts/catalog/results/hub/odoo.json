@@ -1,0 +1,9 @@
+{
+  "host": "hub",
+  "app": "odoo",
+  "transport": "missing-bin",
+  "wrapped_ok": false,
+  "unwrapped_blocked": true,
+  "duration_seconds": 0,
+  "notes": "install: apt-get install -y odoo (Debian/Ubuntu) \u2014 or pip install odoo. Odoo additionally requires Postgres; we only smoke --version under wrapper to verify wrapper survives the Python+C extension import graph."
+}

@@ -1,0 +1,9 @@
+{
+  "host": "hub",
+  "app": "electron",
+  "transport": "systrap-supervised",
+  "wrapped_ok": false,
+  "unwrapped_blocked": true,
+  "duration_seconds": 0.90,
+  "notes": "chrome-bin=chromium | out-slice: uwgwrapper: mode=launch target=/snap/bin/chromium transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-c71746bb80a215ac.so listen=/tmp/uwgfdproxy-773739.sock api=http://127.0.0.1:9091 socketPath=/uwg/socket spawnFDProxy=true|uwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)"
+}

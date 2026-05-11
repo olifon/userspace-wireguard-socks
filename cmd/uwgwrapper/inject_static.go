@@ -112,13 +112,56 @@ func staticBlobPath() string {
 	for _, candidate := range []string{
 		exeDir + name,
 		exeDir + "assets/" + name,
+		exeDir + "cmd/uwgwrapper/assets/" + name,
 		"cmd/uwgwrapper/assets/" + name,
 	} {
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate
 		}
 	}
+	// Fall back to the embedded bytes — extracted once to /tmp so
+	// the rest of the supervisor pipeline (which expects a real file
+	// to ELF-parse) works unchanged. Same arch only.
+	if embeddedStaticBlobArch != "" && embeddedStaticBlobArch == runtime.GOARCH && len(embeddedStaticBlob) > 0 {
+		if p, err := materializeEmbeddedStaticBlob(); err == nil {
+			return p
+		}
+	}
 	return ""
+}
+
+// materializeEmbeddedStaticBlob writes the per-arch embedded blob to a
+// stable per-uid /tmp path so multiple wrapper runs reuse the same file
+// (cheap to skip the rewrite when the bytes match). Returns the path.
+func materializeEmbeddedStaticBlob() (string, error) {
+	dir := fmt.Sprintf("/tmp/uwgwrapper-%d", os.Geteuid())
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	path := dir + "/uwgpreload-static-" + embeddedStaticBlobArch + ".so"
+	if existing, err := os.ReadFile(path); err == nil && len(existing) == len(embeddedStaticBlob) {
+		return path, nil
+	}
+	tmp, err := os.CreateTemp(dir, "uwgpreload-static-*.so.tmp")
+	if err != nil {
+		return "", err
+	}
+	if _, err := tmp.Write(embeddedStaticBlob); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return "", err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return "", err
+	}
+	tmp.Close()
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		os.Remove(tmp.Name())
+		return "", err
+	}
+	return path, nil
 }
 
 // parseStaticBlob loads the blob from disk and extracts everything

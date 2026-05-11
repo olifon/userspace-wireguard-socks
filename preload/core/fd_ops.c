@@ -125,16 +125,38 @@ long uwg_fcntl(int fd, int cmd, long arg) {
 
 /*
  * setsockopt: track SO_REUSEADDR / SO_REUSEPORT so a subsequent
- * tunnel listen() can pass them to fdproxy. Other options pass
- * through.
+ * tunnel listen() can pass them to fdproxy.
+ *
+ * For proxied fds the underlying kernel socket is an AF_UNIX pair
+ * (the fdproxy stream end), so any protocol-level setsockopt
+ * (SOL_TCP, SOL_IP, SOL_IPV6) returns EOPNOTSUPP from the kernel.
+ * Many apps treat that as a fatal error and surface it to callers
+ * (Python 3.14's urllib raises OSError on the TCP_NODELAY it sets
+ * inside HTTPConnection, breaking every wrapped HTTP fetch). The
+ * actual upstream TCP socket lives inside fdproxy and inherits its
+ * own sane defaults, so we silently lie: report success and skip
+ * the kernel call for protocol-level options on a proxied fd.
+ *
+ * SOL_SOCKET options (SO_REUSEADDR, SO_REUSEPORT, SO_KEEPALIVE,
+ * SO_RCVTIMEO, SO_SNDTIMEO, etc.) DO work on AF_UNIX sockets, so
+ * those continue to be passed through unchanged.
  */
 long uwg_setsockopt(int fd, int level, int optname, const void *val,
                     uint32_t vlen) {
+    struct tracked_fd state = uwg_state_lookup(fd);
+    if (state.proxied) {
+        /* Levels that the underlying AF_UNIX socket can't satisfy.
+         * SOL_TCP=6, SOL_IP=0, SOL_IPV6=41, SOL_UDP=17. */
+        if (level == 6 /* SOL_TCP */ || level == 0 /* SOL_IP */ ||
+            level == 41 /* SOL_IPV6 */ || level == 17 /* SOL_UDP */) {
+            return 0;
+        }
+    }
+
     long rc = uwg_passthrough_syscall5(SYS_setsockopt, fd, level, optname,
                                        (long)val, (long)vlen);
     if (rc < 0) return rc;
 
-    struct tracked_fd state = uwg_state_lookup(fd);
     if ((state.active || state.proxied) && level == SOL_SOCKET) {
         if (optname == SO_REUSEADDR && vlen >= sizeof(int)) {
             state.reuse_addr = (*(const int *)val) ? 1 : 0;
