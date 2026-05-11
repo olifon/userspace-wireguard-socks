@@ -34,6 +34,10 @@ type socketSession struct {
 	fixedDst netip.AddrPort
 	udpMu    sync.Mutex
 	udpPeers map[string]*udpPeerState
+	// udpUpstream is lazily allocated on the first datagram bound for a
+	// non-tunnel destination. Single socket, used for every non-tunnel
+	// peer this session sends to. See type comment on udpUpstream.
+	udpUpstream *udpUpstream
 
 	acceptOnce sync.Once
 	accepted   chan struct{}
@@ -54,6 +58,26 @@ type socketServer struct {
 type udpPeerState struct {
 	timer   *time.Timer
 	expires time.Time
+}
+
+// udpUpstream wraps a per-(session, remote-prefix) kernel UDP socket that
+// the engine uses to relay unconnected-UDP datagrams whose destination is
+// NOT in the tunnel's AllowedIPs / local addresses. Without this, an app
+// doing socket()+sendto(public_addr, …)+recvfrom() through the wrapper
+// would have its sendto routed onto netstack's PacketConn, netstack drop
+// the packet (no route), and the recvfrom never see a reply. NTP clients
+// (ntpdig, sntp, python NTP), DNS clients that bypass libc, and any
+// service-discovery / mDNS / STUN tool falls into this bucket.
+//
+// One upstream socket per session covers fan-out to multiple public
+// destinations (the kernel socket is unconnected; ReadFrom returns
+// remote addr per datagram). The reader goroutine forwards replies
+// back to the wrapped app as ActionUDPDatagram frames identical to
+// what the netstack-side listener would produce.
+type udpUpstream struct {
+	pc        net.PacketConn
+	stopOnce  sync.Once
+	stopped   chan struct{}
 }
 
 func (e *Engine) handleAPISocket(w http.ResponseWriter, r *http.Request) {
@@ -482,8 +506,76 @@ func (s *socketServer) handleUDPDatagram(id uint64, d socketproto.UDPDatagram) e
 	if !ss.touchUDPPeer(remote, s.e.udpIdleTimeout()) {
 		return errors.New("too many UDP peers for this socket session")
 	}
-	_, err := ss.packet.WriteTo(d.Payload, net.UDPAddrFromAddrPort(remote))
+	// Tunnel destinations route through the netstack-side PacketConn that
+	// `openUDPListener` already opened. Public destinations have no
+	// netstack route, so we lazily allocate a kernel UDP socket per
+	// session and send through that — replies on the kernel socket are
+	// fed back into the wrapped app via ActionUDPDatagram by the reader
+	// goroutine. See udpUpstream type comment.
+	if s.e.allowedContains(remote.Addr()) || s.e.localAddrContains(remote.Addr()) {
+		_, err := ss.packet.WriteTo(d.Payload, net.UDPAddrFromAddrPort(remote))
+		return err
+	}
+	up, err := ss.ensureUDPUpstream(s)
+	if err != nil {
+		return err
+	}
+	_, err = up.pc.WriteTo(d.Payload, net.UDPAddrFromAddrPort(remote))
 	return err
+}
+
+// ensureUDPUpstream lazily allocates the per-session kernel UDP socket
+// used for non-tunnel destinations. Safe under concurrent
+// handleUDPDatagram callers (UDP datagrams are dispatched serially per
+// session today, but a future fanout doesn't need to change this).
+func (ss *socketSession) ensureUDPUpstream(s *socketServer) (*udpUpstream, error) {
+	ss.udpMu.Lock()
+	defer ss.udpMu.Unlock()
+	if ss.udpUpstream != nil {
+		return ss.udpUpstream, nil
+	}
+	pc, err := net.ListenUDP("udp", nil)
+	if err != nil {
+		return nil, fmt.Errorf("open udp upstream: %w", err)
+	}
+	up := &udpUpstream{pc: pc, stopped: make(chan struct{})}
+	ss.udpUpstream = up
+	go ss.runUDPUpstreamReader(s, up)
+	return up, nil
+}
+
+func (ss *socketSession) runUDPUpstreamReader(s *socketServer, up *udpUpstream) {
+	defer close(up.stopped)
+	buf := make([]byte, 64*1024)
+	for {
+		n, addr, err := up.pc.ReadFrom(buf)
+		if err != nil {
+			return
+		}
+		remote := addrPortFromNetAddr(addr)
+		if !remote.IsValid() {
+			continue
+		}
+		// Stateful-firewall: only deliver replies from remotes the client
+		// recently sent to. Mirrors the policy in readPacketLoop.
+		if !s.e.cfg.SocketAPI.UDPInbound {
+			if !ss.touchKnownUDPPeer(remote, s.e.udpIdleTimeout()) {
+				continue
+			}
+		}
+		payload, encErr := socketproto.EncodeUDPDatagram(socketproto.UDPDatagram{
+			IPVersion:  socketproto.AddrVersion(remote.Addr()),
+			RemoteIP:   remote.Addr(),
+			RemotePort: remote.Port(),
+			Payload:    append([]byte(nil), buf[:n]...),
+		})
+		if encErr != nil {
+			continue
+		}
+		if s.send(socketproto.Frame{ID: ss.id, Action: socketproto.ActionUDPDatagram, Payload: payload}) != nil {
+			return
+		}
+	}
 }
 
 func (s *socketServer) handleDNS(id uint64, payload []byte) error {
@@ -579,6 +671,11 @@ func (s *socketServer) closeSession(id uint64, notify bool) {
 		for key, timer := range ss.udpPeers {
 			timer.timer.Stop()
 			delete(ss.udpPeers, key)
+		}
+		if ss.udpUpstream != nil {
+			ss.udpUpstream.stopOnce.Do(func() {
+				_ = ss.udpUpstream.pc.Close()
+			})
 		}
 		ss.udpMu.Unlock()
 	})
