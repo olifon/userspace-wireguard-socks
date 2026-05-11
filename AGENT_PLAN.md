@@ -14,6 +14,14 @@ Complete autonomously without asking user for "continue" or "milestone reached":
 
 ## Status
 
+### Catalog session (2026-05-11)
+- [x] Production application catalog built — `docs/catalog/production-applications.md`
+- [x] 18-app test harness — `scripts/catalog/`
+- [x] 4 wrapper interop fixes (TCP_NODELAY EOPNOTSUPP, IPv4-mapped IPv6
+      unmap, static-blob embed, auto-cascade verbose log)
+- [x] CI workflow updated to build static blob before go test/build
+- [x] Recommended hub config — `examples/server-hub-mesh.yaml`
+
 ### Completed
 - [x] `postP2PMode` client, declare-before-fetch ordering fix (commit 02d74d4)
 - [x] Tests: mesh_p2p_test.go (5 tests, all passing)
@@ -29,11 +37,12 @@ Complete autonomously without asking user for "continue" or "milestone reached":
 - [x] mac M1 (10.200.0.4): binary deployed, running (pid 41945)
 - [x] vast.ai (10.200.0.5): PENDING - cp to /usr/local/bin fails, try /tmp/uwgsocks-new directly
 
-### In Progress
-- [ ] Push v0.1.5 tag, monitor release CI until green
+### All Objectives Complete
 
-### TODO
-- [ ] Check CI for unwanted test skips or silent failures (post-release)
+- [x] v0.1.5 release CI: 63/63 jobs green (completed/success)
+- [x] v0.1.5 publish release assets: 42 assets published on GitHub
+- [x] Push CI e4fadbc (systrap-docker fix): 13/13 green
+- [x] All CI skips reviewed — only expected platform-specific skips (no silent failures)
 
 ### Completed (this session)
 - [x] vast.ai: uwgsocks running pid=6572
@@ -50,8 +59,15 @@ Complete autonomously without asking user for "continue" or "milestone reached":
 - [x] Release tag v0.1.4 created and pushed (CI failed: macOS race flakes)
 - [x] Race flake root cause: waitPeerHandshakeTest/waitDynamicPeerStatus/exchangeTestDNSUDP
       use hardcoded 5s deadlines; fixed with testDeadlineScale (10× under -race)
-- [ ] v0.1.5: commit race-deadline fixes, push tag, monitor CI
-- [x] uwgwrapper vast.ai test:
+- [x] v0.1.5: race-deadline fixes committed (bb7c912), tag pushed, CI green (all test jobs)
+- [x] uwgwrapper static binary on vast.ai:
+  - Root cause: auto cascade picked systrap-supervised (probePtraceAvailable=true)
+    but container blocks PTRACE_POKETEXT/mmap injection despite allowing ptrace(TRACEME)
+  - Fix: static target auto cascade now prefers systrap-docker unconditionally when
+    seccomp available (PT_INTERP injection, no ptrace memory injection needed)
+  - Committed e4fadbc, pushed to main
+  - Validated: auto mode connects static binary through WG tunnel on vast.ai
+- [x] uwgwrapper vast.ai test (original):
   - Old binary: musl-linked preload (compiled with musl CC), systrap fails with musl error
   - New binary (/tmp/uwgwrapper-new): glibc-linked preload, auto+systrap work for static binaries
   - Preload mode (for dynamic glibc binaries): PASSES — connected to 10.200.0.1:8787 (hub mesh_control) through WG tunnel, got HTTP 200
