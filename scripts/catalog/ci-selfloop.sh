@@ -79,8 +79,80 @@ for i in $(seq 1 20); do
 done
 
 # Run only the apps known to be runner-friendly + peer-independent.
+# Anything that needs a peer (MOSH_PEER, REDIS_PEER, etc) lives in
+# the full run-suite.sh path that operators kick off across a real
+# mesh — we deliberately don't fake those here.
+#
+# Auto-install on demand: catalog rows are responsible for printing
+# "missing-bin" and exiting 0 when their target binary isn't present,
+# but for the CI matrix we want best-effort coverage. The block below
+# pre-installs the small/fast targets so they actually run.
 export UWGSOCKS_API="${UWGSOCKS_API:-http://127.0.0.1:9091}"
-APPS=(curl wget python node ssh git pip xh gh cloudflared java-http nginx dig iperf3-udp udp-echo-bind)
+install_one() {
+  local pkg=$1
+  if ! command -v apt-get >/dev/null; then return 0; fi
+  if dpkg -s "$pkg" >/dev/null 2>&1; then return 0; fi
+  sudo apt-get install -y --no-install-recommends "$pkg" >/dev/null 2>&1 || true
+}
+# Best-effort install for everything we know how to fetch quickly.
+# Each row tolerates an absent binary via its own missing-bin path.
+install_one curl
+install_one wget
+install_one python3
+install_one nodejs
+install_one openssh-client
+install_one git
+install_one python3-pip
+install_one ca-certificates
+install_one xh                  # apt may not have this; row will skip if missing
+install_one cloudflared         # apt may not have this; row will skip if missing
+install_one default-jdk-headless
+install_one nginx-light
+install_one dnsutils
+install_one iperf3
+install_one expect              # for mosh.sh, even though we don't add mosh here
+install_one redis-server        # adds redis-server row below
+install_one redis-tools
+install_one mariadb-client
+install_one php-cli
+install_one apache2
+install_one libapache2-mod-php
+install_one qemu-system-x86
+install_one qemu-utils
+install_one python3-full        # for test-python-httplib
+
+# Alpine kernel+initramfs for qemu-alpine.sh — small (~20MB combined)
+# and easy to fetch. Skip if not on x86_64 (no arm64 virt kernel
+# fetched here yet) or if /opt/alpine-vm/* already exists.
+if [[ "$(uname -m)" == "x86_64" && ! -f /opt/alpine-vm/vmlinuz ]]; then
+  sudo mkdir -p /opt/alpine-vm 2>/dev/null || mkdir -p /opt/alpine-vm
+  ALPINE_BASE="https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/netboot"
+  sudo curl -fsSL "$ALPINE_BASE/vmlinuz-virt"    -o /opt/alpine-vm/vmlinuz   2>/dev/null \
+    || curl -fsSL "$ALPINE_BASE/vmlinuz-virt"    -o /opt/alpine-vm/vmlinuz   2>/dev/null || true
+  sudo curl -fsSL "$ALPINE_BASE/initramfs-virt"  -o /opt/alpine-vm/initramfs 2>/dev/null \
+    || curl -fsSL "$ALPINE_BASE/initramfs-virt"  -o /opt/alpine-vm/initramfs 2>/dev/null || true
+fi
+
+# Catalog rows that work without a real WG peer. Three groups:
+#  1. existing peer-free client tests (proven green)
+#  2. new fast server tests added by the catalog batches — udp-echo-
+#     bind is already validated by the same-host UDP loopback engine
+#     code path
+#  3. wrapped upstream test suites — fully self-contained, no peer
+APPS=(
+  # Group 1: HTTPS / TCP clients
+  curl wget python node ssh git pip xh gh cloudflared java-http nginx dig
+  # Group 2: peer-free UDP / loopback
+  iperf3-udp udp-echo-bind
+  # Group 3: wrapped upstream test suites (self-contained, no peer)
+  test-python-httplib
+  # Group 4: VM-under-wrapper — qemu boots Alpine kernel inside the
+  # wrapper. KVM-accelerated where /dev/kvm + vmx is available
+  # (GH-hosted x64 runners *do* expose /dev/kvm since 2023), TCG
+  # fallback otherwise. x86_64 only — netboot/arm64 path not wired
+  # yet, qemu-alpine.sh records no-alpine-image and exits 0.
+  qemu-alpine
+)
 pass=0; fail=0; skip=0
 for a in "${APPS[@]}"; do
   s="scripts/catalog/apps/${a}.sh"
