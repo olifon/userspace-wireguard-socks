@@ -118,27 +118,40 @@ and picks the strongest available mode, or fails fast.
 
 ## Performance — relative cost per intercepted syscall
 
-`preload` is the floor. Every other mode adds overhead that
-falls into two buckets: kernel trap (cheap, in-process SIGSYS
-delivery) vs ptrace round-trip (expensive, context-switch to a
-tracer process and back).
+There are two kinds of network calls in a Linux process:
 
-| Mode | Per-libc-call cost | Per-raw-asm-call cost | Notes |
+- **Libc-routed calls** — the app calls `connect()`, `send()`, `recv()` etc.
+  via libc. Under any `systrap*` or `preload` mode, our LD_PRELOAD shim
+  intercepts these *before* the syscall instruction executes. The seccomp
+  filter never fires. Cost: one indirect function call into the shim (~10 ns).
+- **Raw-asm calls** — the app issues a `syscall` instruction directly,
+  bypassing libc (parts of the Go runtime, some C++/Rust network code, Go
+  binaries with `CGO_ENABLED=0`). The seccomp filter fires on every such
+  call; in `systrap*` modes this delivers a SIGSYS to an in-process handler.
+
+This split is the performance bypass: **libc calls never touch the seccomp
+filter at all under systrap modes**. For most apps (Chromium, JVM, anything
+linking glibc or musl) the vast majority of network syscalls are libc-routed,
+so the effective overhead of `systrap*` vs `preload` is negligible in practice.
+
+| Mode | Libc-routed call | Raw-asm call | Notes |
 |---|---|---|---|
-| `preload` | **blazing fast** — one indirect call into our libc shim, then a normal kernel syscall (~10 ns of overhead vs. an unwrapped syscall) | full kernel cost; **no interception** — raw asm goes direct to the kernel | The fastest mode, but raw-asm callers (parts of the Go runtime, some C++/Rust net code) bypass interception silently. |
-| `systrap` | ~same as `preload` (libc shim is identical) | a few hundred ns — one SIGSYS delivery + in-process handler dispatch + the kernel syscall the handler issues | The libc hot path is identical to `preload`; raw-asm pays a SIGSYS round-trip *within the same process*. **No context switch to a tracer**, so even the "slow" path here is much faster than ptrace. |
-| `systrap-supervised` | ~same as `systrap` | ~same as `systrap` | Hot-path cost is identical to `systrap`. The ptrace supervisor is dormant except at execve boundaries — there's no per-syscall ptrace cost. |
-| `systrap-static` | n/a (no libc hooks) | ~same as `systrap` | Static targets can't use libc hooks, so every intercepted syscall pays the SIGSYS cost. Still fast in absolute terms; the SIGSYS handler runs in-process with no tracer involved. |
-| `ptrace-seccomp` | **~10–100× the cost of `systrap`** for any traced syscall | same as libc-call cost | Each traced syscall is a full ptrace round-trip: tracee stops, kernel context-switches to the tracer process, the tracer runs Go code, kernel context-switches back, syscall continues. The seccomp pre-filter limits the cost to traced syscalls only. |
-| `ptrace-only` | **~100–1000× the cost of `preload`** for *every* syscall | same | Universal slow path. Every `read`/`write`/etc. wakes the tracer; double context-switch per syscall. Use only when seccomp is unavailable. |
+| `preload` | **~10 ns** — shim redirects to tunnel socket, then one kernel syscall | unmodified kernel cost; **not intercepted** — goes direct, bypasses the tunnel | Leaks raw-asm syscalls silently. Only safe for apps that exclusively use libc for networking. |
+| `systrap` | **~10 ns** — same libc shim as `preload`; seccomp filter does not fire | **~200–500 ns** — SIGSYS delivered in-process, handler dispatches, tunnel syscall issued; no context switch to a tracer | Libc hot path is identical to `preload`. Raw-asm pays a SIGSYS round-trip *within the same process* — far cheaper than ptrace. |
+| `systrap-docker` (dynamic target) | **~10 ns** — same LD_PRELOAD shim; ptloader installed seccomp, libc calls bypass it identically | **~200–500 ns** — same in-process SIGSYS path as `systrap` | Same hot-path cost as `systrap`. The ptloader is only involved at startup and exec boundaries; it does not add per-syscall overhead. |
+| `systrap-docker` (static target) | n/a — no libc | **~200–500 ns** — ptloader installed SIGSYS handler before `_start`; same in-process cost as `systrap` raw-asm path | No libc hooks, so every network syscall pays the SIGSYS cost. Still in-process with no tracer; fast in absolute terms. |
+| `systrap-supervised` | **~10 ns** — identical to `systrap` | **~200–500 ns** — identical to `systrap` | The ptrace supervisor is **dormant** between execve events; zero per-syscall ptrace cost during normal operation. |
+| `systrap-static` | n/a — no libc | **~200–500 ns** — same in-process SIGSYS path | Like `systrap-docker` for static targets but requires ptrace for initial injection. Same runtime cost once running. |
+| `ptrace-seccomp` | **~10–100× `systrap`** per traced call | same | Full ptrace round-trip per traced syscall: tracee stops, kernel switches to tracer, tracer runs, kernel switches back. Seccomp pre-filter limits which syscalls are traced. |
+| `ptrace-only` | **~100–1000× `preload`** for every syscall | same | Double context-switch on every syscall. Use only when seccomp is unavailable. |
 
-Practical implication: dynamic apps that go through libc (Go,
-Rust, chromium, JVM, anything linking libc) see effectively
-**`preload` performance** under any of `preload` /
-`systrap` / `systrap-supervised`. The kernel-trap modes
-(`systrap*`) only add the SIGSYS overhead for syscalls that
-bypass libc; that overhead is **at least an order of magnitude
-cheaper** than the ptrace round-trip the `ptrace*` modes pay.
+**Practical takeaway:** for any dynamically-linked app (Go with cgo, Rust,
+Chromium, JVM, Python), all modes up to and including `systrap-supervised`
+deliver effectively **`preload` performance** — the libc bypass means the seccomp
+filter never fires on the hot path. `systrap*` modes only add overhead for
+raw-asm syscallers, and even then the SIGSYS in-process cost is at least an
+order of magnitude cheaper than the ptrace round-trip `ptrace*` modes pay for
+every call.
 
 ## Environment variables
 
