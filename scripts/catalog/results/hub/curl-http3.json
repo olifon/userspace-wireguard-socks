@@ -1,9 +1,9 @@
 {
   "host": "hub",
   "app": "curl-http3",
-  "transport": "systrap-supervised",
+  "transport": "no-http3",
   "wrapped_ok": false,
   "unwrapped_blocked": true,
-  "duration_seconds": 0.12,
-  "notes": "out:  | err-tail: Proxy=true|uwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)|curl: option --http3-only: the installed libcurl version does not support this|curl: try 'curl --help' or 'curl --manual' for more information|"
+  "duration_seconds": 0,
+  "notes": "curl on this host has no HTTP/3 protocol support (Features: line lacks 'HTTP3'). Install curl with ngtcp2/nghttp3 or quiche."
 }
