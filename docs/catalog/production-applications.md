@@ -106,28 +106,35 @@ are fixed in the same commit as this catalog:
    — invaluable for diagnosing which mode was actually selected when
    debugging a wrapped app.
 
+## Recommended hub config
+
+[`examples/server-hub-mesh.yaml`](../../examples/server-hub-mesh.yaml)
+captures the daemon-side flags that make every test in this catalog
+green. The key knobs (off by default):
+
+- `inbound.transparent: true` — deliver from-peer WG packets to host
+  services without rewriting L4 ports.
+- `host_forward.inbound.enabled: true` (+ `redirect_ip: "127.0.0.1"`) —
+  bridge from-peer traffic for `10.200.0.1:<port>` to the corresponding
+  loopback service. Without this, peers cannot reach the hub's host
+  sshd / Postgres / nginx / etc. (verified: with the bridge enabled,
+  `uwgwrapper ssh -p 22 user@10.200.0.1` succeeds from arm64).
+- `socket_api.bind: true` — wrapper apps can `bind()` tunnel addresses
+  to expose listeners to other peers.
+- `socket_api.transparent_bind: true` — apps that source-bind a
+  non-tunnel IP before `connect()` (Chromium's QUIC startup, Java NIO
+  dual-stack, PyTorch URL fetch) no longer trip
+  `"transparent bind is disabled"`.
+
 ## Remaining engine limitations exposed by the catalog
 
-The following are documented gaps the catalog tests exercise (and that
-the suite degrades gracefully around):
-
-- **Hub `inbound.transparent` host-forward only bridges destinations that
-  are explicitly host-bound via the engine.** From a non-hub peer,
-  dialing `10.200.0.1:22` (host sshd on `0.0.0.0:22`) is refused — the
-  engine sees no netstack listener and rejects rather than forwarding to
-  host loopback. `10.200.0.1:9091` works because the runtime API is
-  explicitly registered. Per-port host_forward configuration would
-  generalize this, but for the catalog we route SSH at `mesh_control`'s
-  TCP port (8787) instead — a non-SSH banner is sufficient proof of TCP
-  interception.
-
-- **`socket_api.transparent_bind` defaults to false.** Apps that bind
-  outbound sockets to a non-tunnel address before connecting (Chromium's
-  QUIC startup, PyTorch's IPv6 prefetch, occasionally pip on QUIC HTTPS)
-  get `"transparent bind is disabled"` rejections. The connection then
-  retries via plain TCP and usually succeeds. Setting
-  `socket_api.transparent_bind: true` in the daemon YAML eliminates the
-  warnings.
+- **Without `host_forward.inbound.enabled`, only netstack-resident
+  listeners are reachable from peers.** That's why the catalog's SSH
+  test on arm64/vast.ai dials the hub's mesh_control TCP port (8787)
+  rather than sshd at 22 — a non-SSH banner is sufficient proof of TCP
+  interception even when the recommended hub config isn't deployed.
+  Enable `host_forward.inbound.enabled: true` and the same test against
+  port 22 succeeds end-to-end.
 
 - **Paper Minecraft's netty listener has an `epoll_ctl` interaction with
   wrapped fds.** The server boots successfully, JIT warms up, world

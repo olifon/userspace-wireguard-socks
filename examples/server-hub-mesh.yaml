@@ -1,0 +1,75 @@
+# Copyright (c) 2026 Reindert Pelsma
+# SPDX-License-Identifier: ISC
+#
+# Recommended hub config for a small WireGuard mesh: every peer wrapped
+# with uwgwrapper can reach the hub's host-loopback services (sshd,
+# postgres, anything bound to 127.0.0.1) via 10.200.0.1:<port>.
+#
+# Combined options below:
+#   inbound.transparent:           transparent inbound delivery
+#   host_forward.inbound.enabled:  bridge WG→loopback for unmatched ports
+#   socket_api.bind:               allow wrapper apps to bind() tunnel addresses
+#   socket_api.transparent_bind:   allow source-IP binds (Chromium QUIC startup)
+#
+# This is the configuration the production-applications catalog targets
+# on the hub. See docs/catalog/production-applications.md for the
+# wrapper interop expectations these flags satisfy.
+
+wireguard:
+  # Replace with `wg genkey`.
+  private_key: "REPLACE_WITH_HUB_PRIVATE_KEY"
+  addresses: ["10.200.0.1/24"]
+  listen_port: 51820
+  peers:
+    - public_key: "REPLACE_WITH_PEER1_PUBLIC_KEY"
+      preshared_key: "REPLACE_WITH_PEER1_PRESHARED_KEY"
+      allowed_ips: ["10.200.0.2/32"]
+      mesh_enabled: true
+      mesh_accept_acls: true
+    - public_key: "REPLACE_WITH_PEER2_PUBLIC_KEY"
+      preshared_key: "REPLACE_WITH_PEER2_PRESHARED_KEY"
+      allowed_ips: ["10.200.0.3/32"]
+      mesh_enabled: true
+      mesh_accept_acls: true
+
+mesh_control:
+  listen: "10.200.0.1:8787"
+  active_peer_window_seconds: 120
+
+inbound:
+  # Deliver inbound WG packets to host-local services without rewriting
+  # the L4 port. Required for the host_forward.inbound bridge below.
+  transparent: true
+
+host_forward:
+  inbound:
+    # Bridge from-peer traffic for the hub's own WG IP (10.200.0.1:X)
+    # to a host loopback service on the same port. Without this, peers
+    # cannot reach the hub's sshd / Postgres / nginx / etc. through the
+    # tunnel — only services explicitly bound inside netstack (mesh_control,
+    # any uwgsocks-managed listeners) are reachable.
+    enabled: true
+    redirect_ip: "127.0.0.1"
+
+socket_api:
+  # Allow wrapper-launched apps to bind() listeners on tunnel addresses
+  # (10.200.0.0/24) — exposes their service to other mesh peers via WG.
+  bind: true
+  # Allow source-IP bind on outgoing connections (Chromium's QUIC + mDNS
+  # startup, Java NIO's IPv4-mapped IPv6 dual-stack, PyTorch's URL fetch
+  # all do this). Without it, those calls get rejected at the engine
+  # with "transparent bind is disabled" and apps fall back to slower
+  # TCP-only paths.
+  transparent_bind: true
+
+relay:
+  enabled: true
+  conntrack: false
+
+acl:
+  relay_default: allow
+
+api:
+  # uwgsocks-ui / curl / runtime-API clients dial this. Keep on loopback
+  # unless you set api.token.
+  listen: "127.0.0.1:9091"
