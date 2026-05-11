@@ -70,8 +70,8 @@ non-discriminating.
 | `dig` | DNS / UDP | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | BIND9 `dig @1.1.1.1` (UDP 53) through wrapper. |
 | `ntp` | NTP / UDP | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | ntpdig / sntp / python NTP — exercises unconnected-UDP path to non-tunnel destinations. |
 | `iperf3-udp` | UDP | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | UDP throughput against an ephemeral local iperf3 server. |
-| `udp-echo-bind` | UDP server | ❌ | — | — | — | Wrapped Python UDP echo server bound to a tunnel WG address; same-host loopback edge case. |
-| `curl-http3` | QUIC | 🚧 | — | — | — | curl --http3-only — gated on a libcurl build with ngtcp2/nghttp3. |
+| `udp-echo-bind` | UDP server | ✅ `systrap-supervised` | — | — | — | Wrapped Python UDP echo server bound to a tunnel WG address; same-host loopback edge case. |
+| `curl-http3` | QUIC | ✅ `systrap-supervised` | — | — | — | curl --http3-only — gated on a libcurl build with ngtcp2/nghttp3. |
 | `odoo` | Python ERP | — | — | — | — | Odoo --version (boot smoke; full ERP install is a separate soak). |
 | `pytorch-mnist` | ML | 🚧 | 🚧 | ✅ `systrap-supervised` | — | PyTorch + torchvision MNIST training (vast.ai GPU host). |
 

@@ -152,7 +152,8 @@ self-contained variant that release.yml runs on every tag push:
   `odoo` (apt package on noble has a werkzeug regression),
   `{postgres,mongo,mariadb}-server` (heavy daemon install + sudo + apparmor),
   `ntp` (real internet pool, runner sandbox blocks),
-  `curl-http3` (libcurl on Ubuntu doesn't ship with ngtcp2).
+  `curl-http3` (Ubuntu's stock curl doesn't ship HTTP/3 — see
+  "Building HTTP/3-capable curl" below for the side-install recipe).
 
 ## Daemon tests — environment requirements
 
@@ -218,3 +219,48 @@ the test is small/fast/peer-independent enough for CI.
   log "ready" before they accept TCP; the daemon tests poll for both
   the canonical log line AND a successful `/dev/tcp/127.0.0.1/<port>`
   probe.
+
+## Building HTTP/3-capable curl
+
+Ubuntu's stock `curl` (through 26.04 LTS) does not ship with HTTP/3
+support — the `Features:` line of `curl -V` lacks `HTTP3` and
+`--http3-only` fails at runtime. `curl-http3.sh` looks for a
+side-installed HTTP/3-capable curl at `/usr/local/bin/curl-http3` or
+`/opt/http3/bin/curl` before falling back to system curl.
+
+Recipe (uses stock OpenSSL 3.5's native QUIC API + nghttp3; nothing
+needs to come from quictls/BoringSSL since OpenSSL 3.5+ exposes the
+necessary `OSSL_QUIC*` callbacks directly):
+
+```bash
+sudo apt-get install -y build-essential autoconf libtool-bin pkg-config \
+    libssl-dev libpsl-dev libnghttp2-dev cmake git
+
+mkdir -p /opt/http3-build && cd /opt/http3-build
+
+# nghttp3 (HTTP/3 framing)
+git clone --depth 1 --recursive --branch v1.5.0 \
+    https://github.com/ngtcp2/nghttp3
+( cd nghttp3 && autoreconf -i && \
+  ./configure --prefix=/opt/http3 --enable-lib-only \
+              --disable-shared --enable-static --with-pic && \
+  make -j$(nproc) && make install )
+
+# curl with OpenSSL-QUIC + nghttp3
+git clone --depth 1 --branch curl-8_11_0 https://github.com/curl/curl
+( cd curl && autoreconf -fi && \
+  PKG_CONFIG_PATH=/opt/http3/lib/pkgconfig ./configure \
+      --prefix=/opt/http3 \
+      --with-openssl --with-openssl-quic \
+      --with-nghttp3=/opt/http3 \
+      --disable-shared --enable-static \
+      --with-ca-bundle=/etc/ssl/certs/ca-certificates.crt && \
+  make -j$(nproc) && make install )
+
+sudo ln -sf /opt/http3/bin/curl /usr/local/bin/curl-http3
+/usr/local/bin/curl-http3 -V | grep -i HTTP3   # confirm Features: ... HTTP3
+```
+
+The script forces `--ipv4` because cloudflare-quic.com resolves to
+both v4 and v6; the default uwgsocks engine config doesn't enable
+IPv6 outbound through the tunnel (`engine.IPv6 disabled` error).

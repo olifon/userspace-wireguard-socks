@@ -1,9 +1,9 @@
 {
   "host": "hub",
   "app": "curl-http3",
-  "transport": "no-http3",
-  "wrapped_ok": false,
+  "transport": "systrap-supervised",
+  "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 0,
-  "notes": "curl on this host has no HTTP/3 protocol support (Features: line lacks 'HTTP3'). Install curl with ngtcp2/nghttp3 or quiche."
+  "duration_seconds": 0.16,
+  "notes": "out: 3|200 | err-tail: /tmp/uwgfdproxy-950144.sock api=http://127.0.0.1:9091 socketPath=/uwg/socket spawnFDProxy=true|uwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)|curl: (56) error:8000005A:system library::Message too long|"
 }

@@ -13,25 +13,31 @@ cd "$(dirname "$0")/.."
 . ./lib.sh
 
 app="curl-http3"
-if ! bin_exists curl; then
-  record_result "$app" false "${UNWRAPPED_BLOCKED:-true}" missing-bin 0 "install: apt-get install -y curl"
-  exit 0
-fi
-
-# Probe whether this curl was built against an HTTP/3-capable libcurl.
-# `curl -V` lists HTTP3 in the "Features:" line when the underlying TLS
-# stack supports it (e.g., ngtcp2 + nghttp3, or quiche). Many distro
-# curls expose --http3-only but reject it at runtime.
-if ! curl -V 2>&1 | grep -qi 'HTTP3'; then
+# Prefer a side-installed HTTP/3-capable curl over the distro one — Ubuntu's
+# stock curl up through 26.04 LTS doesn't ship HTTP/3 (no nghttp3 link).
+# /opt/http3/bin/curl is the build artifact from the recipe documented in
+# the README ("Building HTTP/3-capable curl").
+CURL_BIN=""
+for cand in /usr/local/bin/curl-http3 /opt/http3/bin/curl /usr/bin/curl; do
+  if [[ -x "$cand" ]] && "$cand" -V 2>&1 | grep -qi 'HTTP3'; then
+    CURL_BIN="$cand"
+    break
+  fi
+done
+if [[ -z "$CURL_BIN" ]]; then
+  if ! bin_exists curl; then
+    record_result "$app" false "${UNWRAPPED_BLOCKED:-true}" missing-bin 0 "install: apt-get install -y curl"
+    exit 0
+  fi
   record_result "$app" false "${UNWRAPPED_BLOCKED:-true}" no-http3 0 \
-    "curl on this host has no HTTP/3 protocol support (Features: line lacks 'HTTP3'). Install curl with ngtcp2/nghttp3 or quiche."
+    "curl on this host has no HTTP/3 protocol support. Build curl with OpenSSL 3.5+ QUIC API + nghttp3 (see scripts/catalog/README.md)."
   exit 0
 fi
 
 err=$(mktemp)
 start=$(date +%s.%N)
 out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
-    curl --http3-only -sS --max-time 10 -o /dev/null -w '%{http_version}|%{http_code}\n' \
+    "$CURL_BIN" --http3-only --ipv4 -sS --max-time 10 -o /dev/null -w '%{http_version}|%{http_code}\n' \
     https://cloudflare-quic.com/ 2>"$err") || true
 end=$(date +%s.%N)
 dur=$(awk -v s="$start" -v e="$end" 'BEGIN{printf "%.2f", e-s}')
