@@ -1,0 +1,9 @@
+{
+  "host": "hub",
+  "app": "apache2",
+  "transport": "",
+  "wrapped_ok": true,
+  "unwrapped_blocked": true,
+  "duration_seconds": 2.14,
+  "notes": "wg_ip=10.200.0.1 port=52233 ready=true | out-head: HTTP/1.1 200 OK\r|Date: Mon, 11 May 2026 21:11:23 GMT\r|Server: Apache/2.4.66 (Ubuntu)\r|Last-Modified: Mon, 11 May 2026 21:11:21 GMT\r|ETag: \"37-651913038a0b3\"\r|Accept-Ranges: bytes\r|Content-Length: 55\r|Content-Type: text/html\r|\r|<html><body>u | err-tail: rget=/usr/sbin/apache2 transport=preload preload=/tmp/uwgwrapper-0/uwgpreload-fd59cd3116d9ea5d.so listen=/tmp/uwgfdproxy-994560.sock api=http://127.0.0.1:9091 socketPath=/uwg/socket spawnFDProxy=true| | apache-err-tail: ection refused: AH02179: apr_socket_accept: (client socket)|[Mon May 11 23:11:22.647477 2026] [core:error] [pid 994580:tid 994658] (111)Connection refused: AH02179: apr_socket_accept: (client socket)|"
+}

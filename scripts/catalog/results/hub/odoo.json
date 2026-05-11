@@ -4,6 +4,6 @@
   "transport": "systrap-supervised",
   "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 0.73,
-  "notes": "bin=/usr/local/bin/odoo-bin | out: uwgwrapper: mode=launch target=/usr/local/bin/odoo-bin transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-fd59cd3116d9ea5d.so listen=/tmp/uwgfdproxy-959574.sock api=http://127.0.0.1:9091 socketPath=/uwg/socket spawnFDProxy=true\nuwgwrapper:"
+  "duration_seconds": 19.69,
+  "notes": "port=30158 ready=true init_exit=0 session-len=2009 | init-tail: t CTRL-C again or send a second signal to force the shutdown. |2026-05-11 21:00:33,300 981896 INFO uwgsmoke981857 odoo.sql_db: ConnectionPool(read/write;used=0/count=0/max=64): Closed 1 connections  | | session-head: {\"jsonrpc\": \"2.0\", \"id\": 1, \"result\": {\"uid\": 2, \"is_system\": true, \"is_admin\": true, \"is_public\": false, \"is_internal_user\": true, \"user_context\": {\"lang\": \"en_US\", \"tz\": false, \"uid\": 2}, \"db\": \"uwgsmoke981857\", \"user_settings\": {\"id\": 1,"
 }

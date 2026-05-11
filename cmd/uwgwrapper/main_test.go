@@ -20,7 +20,7 @@ import (
 )
 
 func TestFDProxySpawnArgsKeepTokenReachable(t *testing.T) {
-	args := fdproxySpawnArgs("/tmp/fd.sock", "http://127.0.0.1:9090", "/uwg/socket", true, false, "demo-token", true)
+	args := fdproxySpawnArgs("/tmp/fd.sock", "http://127.0.0.1:9090", "/uwg/socket", true, false, "demo-token", true, nil)
 	want := []string{
 		"--mode=fdproxy",
 		"--listen", "/tmp/fd.sock",
@@ -37,6 +37,58 @@ func TestFDProxySpawnArgsKeepTokenReachable(t *testing.T) {
 	for i := range want {
 		if args[i] != want[i] {
 			t.Fatalf("args[%d] = %q, want %q; args=%v", i, args[i], want[i], args)
+		}
+	}
+}
+
+// TestFDProxySpawnArgsAllowUID pins that --allow-uid plumbs through to
+// the spawned fdproxy. Apache (and any future setuid-worker server)
+// depends on this; the workers can't connect to the manager socket
+// otherwise. The same memory:project_apache_setuid_workers_wrapper.md
+// documents the broader limitation this addresses.
+func TestFDProxySpawnArgsAllowUID(t *testing.T) {
+	args := fdproxySpawnArgs("/tmp/fd.sock", "http://127.0.0.1:9090", "/uwg/socket", true, false, "", false, []uint32{33, 100})
+	wantUIDFlagSeen := false
+	wantUIDValueSeen := false
+	for i, a := range args {
+		if a == "--allow-uid" {
+			wantUIDFlagSeen = true
+			if i+1 >= len(args) {
+				t.Fatalf("--allow-uid has no value: %v", args)
+			}
+			if args[i+1] != "33,100" {
+				t.Fatalf("--allow-uid value = %q, want %q", args[i+1], "33,100")
+			}
+			wantUIDValueSeen = true
+		}
+	}
+	if !wantUIDFlagSeen || !wantUIDValueSeen {
+		t.Fatalf("--allow-uid not in spawn args: %v", args)
+	}
+}
+
+// TestParseUIDList exercises the small parser the CLI uses for the
+// --allow-uid value. The parser fatal-exits on a bad uid, so we only
+// cover the happy paths here.
+func TestParseUIDList(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []uint32
+	}{
+		{"", nil},
+		{"33", []uint32{33}},
+		{"33,100", []uint32{33, 100}},
+		{" 33 , 100 ", []uint32{33, 100}},
+	}
+	for _, tc := range cases {
+		got := parseUIDList(tc.in)
+		if len(got) != len(tc.want) {
+			t.Fatalf("parseUIDList(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+		for i := range tc.want {
+			if got[i] != tc.want[i] {
+				t.Fatalf("parseUIDList(%q)[%d] = %d, want %d", tc.in, i, got[i], tc.want[i])
+			}
 		}
 	}
 }

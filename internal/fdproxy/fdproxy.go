@@ -189,6 +189,17 @@ func ListenWithOptions(opts Options) (*Server, error) {
 	for _, u := range opts.AllowedUIDs {
 		allowed[u] = struct{}{}
 	}
+	// If the caller explicitly opened the manager socket to additional
+	// uids, broaden the filesystem perm to match. SO_PEERCRED is still
+	// enforced inside accept(), so a non-allowlisted uid that connects
+	// gets rejected — but it has to be ABLE to connect in the first
+	// place for the peercred check to fire.
+	if len(opts.AllowedUIDs) > 0 {
+		if err := os.Chmod(path, 0o666); err != nil {
+			_ = ln.Close()
+			return nil, fmt.Errorf("broaden manager-socket perms for allow-uid: %w", err)
+		}
+	}
 	return &Server{
 		ln:           ln,
 		api:          opts.API,

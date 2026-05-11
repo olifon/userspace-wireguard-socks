@@ -1,0 +1,9 @@
+{
+  "host": "hub",
+  "app": "php",
+  "transport": "systrap-supervised",
+  "wrapped_ok": true,
+  "unwrapped_blocked": true,
+  "duration_seconds": 0.76,
+  "notes": "wg_ip=10.200.0.1 port=51158 ready=true | out-head: HTTP/1.1 200 OK\r|Host: 10.200.0.1:51158\r|Date: Mon, 11 May 2026 21:02:30 GMT\r|Connection: close\r|X-Powered-By: PHP/8.5.4\r|Content-Type: application/json\r|\r|{\"phpver\":\"8.5.4\",\"sapi\":\"cli-server\",\"token\":\"uwg-catalog-php-ok\",\"now\":1778533350, | err-tail: ver (http://10.200.0.1:51158) started|[Mon May 11 23:02:30 2026] 10.200.0.3:64469 Accepted|[Mon May 11 23:02:30 2026] 10.200.0.3:64469 [200]: GET /|[Mon May 11 23:02:30 2026] 10.200.0.3:64469 Closing|"
+}

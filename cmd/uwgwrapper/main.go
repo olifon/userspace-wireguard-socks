@@ -24,6 +24,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -68,11 +69,15 @@ func main() {
 	flag.BoolVar(&noNewPrivileges, "no-new-privileges", getenv("UWGS_WRAPPER_NO_NEW_PRIVILEGES", "1") != "0", "set PR_SET_NO_NEW_PRIVS before launching the wrapped program (default true)")
 	flag.BoolVar(&allowBind, "allow-bind", getenv("UWGS_FDPROXY_ALLOW_BIND", "1") != "0", "allow fdproxy-managed tunnel bind/listen requests")
 	flag.BoolVar(&allowLowBind, "allow-lowbind", getenv("UWGS_FDPROXY_ALLOW_LOWBIND", "0") != "0", "allow fdproxy-managed ports below 1024")
+	var allowUIDs string
+	flag.StringVar(&allowUIDs, "allow-uid", getenv("UWGS_FDPROXY_ALLOW_UIDS", ""), "comma-separated list of additional uids permitted to connect to the manager socket (parent's euid + root are always allowed). Use this for servers that setuid-drop workers (apache2 → www-data, etc).")
 	flag.StringVar(&stdioConnect, "stdio-connect", getenv("UWGS_STDIO_CONNECT", ""), "connect a tunnel TCP target and bridge stdin/stdout; useful as SSH ProxyCommand")
 	flag.BoolVar(&verbose, "v", false, "enable wrapper diagnostics")
 	var forcePreload bool
 	flag.BoolVar(&forcePreload, "force-preload", false, "suppress error when --transport=preload is used against a static binary (interception will be absent)")
 	flag.Parse()
+
+	allowUIDList := parseUIDList(allowUIDs)
 
 	switch mode {
 	case "launch":
@@ -82,9 +87,9 @@ func main() {
 			}
 			return
 		}
-		runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, transport, forceLoopbackDNS, spawnFDProxy, noNewPrivileges, allowBind, allowLowBind, verbose, forcePreload)
+		runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, transport, forceLoopbackDNS, spawnFDProxy, noNewPrivileges, allowBind, allowLowBind, verbose, forcePreload, allowUIDList)
 	case "fdproxy":
-		runFDProxy(api, apiToken, socketPath, listenPath, allowBind, allowLowBind, verbose || os.Getenv("UWGS_WRAPPER_DEBUG") != "")
+		runFDProxy(api, apiToken, socketPath, listenPath, allowBind, allowLowBind, verbose || os.Getenv("UWGS_WRAPPER_DEBUG") != "", allowUIDList)
 	case "stdio":
 		target, err := stdioConnectTarget(stdioConnect, flag.Args())
 		if err != nil {
@@ -110,7 +115,26 @@ func main() {
 	}
 }
 
-func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, transport string, forceLoopbackDNS, spawnFDProxy, noNewPrivileges, allowBind, allowLowBind, verbose, forcePreload bool) {
+func parseUIDList(s string) []uint32 {
+	if s == "" {
+		return nil
+	}
+	var out []uint32
+	for _, tok := range strings.Split(s, ",") {
+		tok = strings.TrimSpace(tok)
+		if tok == "" {
+			continue
+		}
+		n, err := strconv.ParseUint(tok, 10, 32)
+		if err != nil {
+			log.Fatalf("invalid uid %q in --allow-uid list: %v", tok, err)
+		}
+		out = append(out, uint32(n))
+	}
+	return out
+}
+
+func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, transport string, forceLoopbackDNS, spawnFDProxy, noNewPrivileges, allowBind, allowLowBind, verbose, forcePreload bool, allowedUIDs []uint32) {
 	if flag.NArg() == 0 {
 		fmt.Fprintf(os.Stderr, "usage: uwgwrapper [flags] -- program [args...]\n")
 		flag.PrintDefaults()
@@ -150,7 +174,7 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 	var fdproxyCmd *exec.Cmd
 	if spawnFDProxy {
 		_ = os.Remove(listenPath)
-		fdproxyCmd = exec.Command(os.Args[0], fdproxySpawnArgs(listenPath, api, socketPath, allowBind, allowLowBind, apiToken, debug)...)
+		fdproxyCmd = exec.Command(os.Args[0], fdproxySpawnArgs(listenPath, api, socketPath, allowBind, allowLowBind, apiToken, debug, allowedUIDs)...)
 		fdproxyCmd.Stdout = os.Stderr
 		fdproxyCmd.Stderr = os.Stderr
 		fdproxyCmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGTERM}
@@ -193,6 +217,20 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 	shared, err := prepareSharedState()
 	if err != nil {
 		log.Fatalf("prepare shared state: %v", err)
+	}
+	// When the caller explicitly allowed additional uids (e.g. www-data
+	// for apache2 workers, postgres for ident-auth pg backends), the
+	// shared-state file has to be readable+writable by them too,
+	// otherwise the setuid'd worker can't access the proxied-fd state
+	// and every wrapped syscall fails with EACCES. The file is bounded
+	// to the current wrapper run (PID-suffixed under
+	// /tmp/uwgwrapper-$UID/) and only contains proxied-fd metadata
+	// the wrapper already trusts the worker with — same trust scope as
+	// the fdproxy AF_UNIX socket --allow-uid lets through.
+	if len(allowedUIDs) > 0 {
+		if err := os.Chmod(shared.Path(), 0o666); err != nil {
+			log.Fatalf("relax shared-state perms for allow-uid: %v", err)
+		}
 	}
 	env = setEnv(env, "UWGS_SHARED_STATE_PATH", shared.Path())
 	env = setEnv(env, "UWGS_TRACE_SECRET", fmt.Sprintf("%d", shared.Secret()))
@@ -610,7 +648,7 @@ func appendEnv(env []string, kv string) []string {
 	return append(env, kv)
 }
 
-func fdproxySpawnArgs(listenPath, api, socketPath string, allowBind, allowLowBind bool, apiToken string, debug bool) []string {
+func fdproxySpawnArgs(listenPath, api, socketPath string, allowBind, allowLowBind bool, apiToken string, debug bool, allowedUIDs []uint32) []string {
 	args := []string{
 		"--mode=fdproxy",
 		"--listen", listenPath,
@@ -618,6 +656,13 @@ func fdproxySpawnArgs(listenPath, api, socketPath string, allowBind, allowLowBin
 		"--socket-path", socketPath,
 		fmt.Sprintf("--allow-bind=%t", allowBind),
 		fmt.Sprintf("--allow-lowbind=%t", allowLowBind),
+	}
+	if len(allowedUIDs) > 0 {
+		parts := make([]string, 0, len(allowedUIDs))
+		for _, u := range allowedUIDs {
+			parts = append(parts, strconv.FormatUint(uint64(u), 10))
+		}
+		args = append(args, "--allow-uid", strings.Join(parts, ","))
 	}
 	if debug {
 		args = append(args, "-v")
@@ -644,7 +689,7 @@ func runExecHelper(args []string) error {
 	return syscall.Exec(target, args, os.Environ())
 }
 
-func runFDProxy(api, apiToken, socketPath, listenPath string, allowBind, allowLowBind, verbose bool) {
+func runFDProxy(api, apiToken, socketPath, listenPath string, allowBind, allowLowBind, verbose bool, allowedUIDs []uint32) {
 	if listenPath == "" {
 		listenPath = "/tmp/uwgfdproxy.sock"
 	}
@@ -657,6 +702,7 @@ func runFDProxy(api, apiToken, socketPath, listenPath string, allowBind, allowLo
 		AllowBind:    allowBind,
 		AllowLowBind: allowLowBind,
 		Verbose:      verbose,
+		AllowedUIDs:  allowedUIDs,
 	})
 	if err != nil {
 		log.Fatal(err)
