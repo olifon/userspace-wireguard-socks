@@ -47,7 +47,10 @@ nohup "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v --allow-bind -
 SRVPID=$!
 
 ready=false
-for i in $(seq 1 90); do
+# mongod 8.0 cold-start under wrapper takes longer than its baseline
+# (WiredTiger init + FTDC init each adds latency).  Pollers should
+# allow ~180s wall before declaring "not ready".
+for i in $(seq 1 360); do
   if grep -q 'Waiting for connections' "$log_out" 2>/dev/null; then
     ready=true; break
   fi

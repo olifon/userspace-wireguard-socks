@@ -209,6 +209,7 @@ long uwg_start_tcp_listener(int fd) {
     char bind_ip[46];
     resolve_bind_text(&state, bind_ip, sizeof(bind_ip));
     uint16_t bind_port = state.bound ? (uint16_t)state.bind_port : 0;
+    uwg_tracef("listen.tcp fd=%d bind=%s:%d", fd, bind_ip, (int)bind_port);
 
     char line[256];
     int line_len = build_listen_line(line, sizeof(line), "tcp",
@@ -217,14 +218,18 @@ long uwg_start_tcp_listener(int fd) {
     if (line_len < 0) return line_len;
 
     int mgr = uwg_fdproxy_connect();
+    uwg_tracef("listen.tcp fd=%d mgr=%d", fd, mgr);
     if (mgr < 0) return mgr;
 
     if (uwg_fdproxy_write_request(mgr, line) < 0) {
+        uwg_tracef("listen.tcp fd=%d write_request fail", fd);
         (void)uwg_passthrough_syscall1(SYS_close, mgr);
         return -111;
     }
+    uwg_tracef("listen.tcp fd=%d wrote %s", fd, line);
     char reply[160];
     long rd = uwg_fdproxy_read_reply(mgr, reply, sizeof(reply));
+    uwg_tracef("listen.tcp fd=%d read_reply rc=%ld reply=%s", fd, rd, reply);
     if (rd <= 0) {
         (void)uwg_passthrough_syscall1(SYS_close, mgr);
         return -111;
@@ -370,7 +375,15 @@ long uwg_managed_accept(int listener_fd, struct sockaddr *addr,
         return -103; /* -ECONNABORTED */
     }
 
-    /* Register the new fd in shared state. */
+    /* Register the new fd in shared state.  Copy bind_* from the
+     * listener so the new client fd's getsockname returns the
+     * server-side bind address (mongod 8.0's listener thread parses
+     * getsockname output as HostAndPort after accept; an empty
+     * bind_ip synthesizes to "0.0.0.0:0" and the parser rejects
+     * port=0 with FailedToParse, killing the accept loop). The
+     * remote_* fields come from the ACCEPT line and identify the
+     * connected peer for getpeername. */
+    struct tracked_fd listener_state = uwg_state_lookup(listener_fd);
     struct tracked_fd s;
     memset(&s, 0, sizeof(s));
     s.active = 1;
@@ -386,6 +399,16 @@ long uwg_managed_accept(int listener_fd, struct sockaddr *addr,
             s.remote_ip[i] = ip[i]; i++;
         }
         s.remote_ip[i] = 0;
+    }
+    if (listener_state.bound) {
+        s.bound = 1;
+        s.bind_family = listener_state.bind_family;
+        s.bind_port = listener_state.bind_port;
+        size_t i = 0;
+        while (i < sizeof(s.bind_ip) - 1 && listener_state.bind_ip[i]) {
+            s.bind_ip[i] = listener_state.bind_ip[i]; i++;
+        }
+        s.bind_ip[i] = 0;
     }
     (void)uwg_state_store(mgr, &s);
 

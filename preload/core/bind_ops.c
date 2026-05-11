@@ -48,6 +48,7 @@ long uwg_bind(int fd, const struct sockaddr *addr, uint32_t alen) {
     }
 
     struct tracked_fd state = uwg_state_lookup(fd);
+    uwg_tracef("bind fd=%d family=%d active=%d", fd, addr->sa_family, state.active);
 
     if (!state.active ||
         (addr->sa_family != AF_INET && addr->sa_family != AF_INET6)) {
