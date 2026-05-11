@@ -11,17 +11,26 @@ explicitly with `--transport=...`, or let `auto` pick.
 
 ## Mode summary
 
-| Mode | Libc hooks | Kernel trap (seccomp + SIGSYS) | Per-syscall ptrace | execve supervisor | Static target | Notes |
+| Mode | Libc hooks | Seccomp+SIGSYS | Ptrace | execve chain | Static target | Requires |
 |---|---|---|---|---|---|---|
-| `preload` | ✅ | — | — | — | ❌ | Libc-only fallback for hosts without seccomp or ptrace. Raw-asm syscalls leak past the hooks. |
-| `systrap` | ✅ | ✅ | — | — | ❌ (target itself); descendants of fork+exec into a static child also lose interception. | Recommended for **containers without ptrace** (Docker default seccomp, K8s pods without `SYS_PTRACE`) with **dynamic** targets. Fast: hot path stays in libc, raw-asm syscalls trap into our in-process SIGSYS handler. No tracer attached. |
-| `systrap-docker` | ✅ (dynamic), via ptloader (static) | ✅ | — | ✅ (via execve_docker_dispatch in ptloader) | ✅ | **Static + dynamic targets, no ptrace required.** For each exec, detects whether the binary has `PT_INTERP` (dynamic) or not (static). Static binaries are patched via ELF `PT_INTERP` injection into a memfd: `uwgptloader.so` is loaded by the kernel as the interpreter, installs SIGSYS+seccomp before `_start`, then jumps to the original entry. Dynamic binaries run via standard `LD_PRELOAD`. Entire exec chain (static→static, static→dynamic, dynamic→static) is handled without ptrace. **Requires seccomp.** Auto selects this for static targets on seccomp-yes/ptrace-no hosts. |
-| `systrap-supervised` | ✅ | ✅ | only at execve / execveat (`SECCOMP_RET_TRACE`, otherwise idle) | ✅ | ✅ | The strongest mode. Same in-process SIGSYS path as `systrap`, plus a long-running ptrace supervisor that wakes on every `execve` boundary and re-arms: dynamic→static execve injects the freestanding blob into the static child; dynamic→dynamic relies on `LD_PRELOAD` propagation. Multi-threaded execve is naturally handled (kernel guarantees only the calling thread survives execve). Requires ptrace. |
-| `systrap-static` | — | ✅ | ✅ at every execve | ✅ | ✅ | Like `systrap-supervised` but **assumes every binary is static** — no libc hooks at all. Useful when libc on the host is broken or our `.so` can't link. Requires ptrace. |
-| `ptrace-seccomp` | — | ✅ (filter only, no SIGSYS) | ✅ | ✅ | ✅ | Per-syscall ptrace; filter pre-selects the traced subset. Auto skips this when seccomp+ptrace are both available — `systrap-supervised` is faster. |
-| `ptrace-only` | — | — | ✅ (every syscall) | ✅ | ✅ | Universal fallback for hosts where seccomp is restricted but ptrace works. |
-| `ptrace` | — | tries seccomp; falls back if blocked | ✅ | ✅ | ✅ | Auto-pick between `ptrace-seccomp` and `ptrace-only`. |
-| `auto` | varies | varies | varies | varies | depends — see below | Probes the host for seccomp + ptrace availability AND inspects the target ELF; picks the strongest mode that can actually intercept this target. **Fails fast** if the target is static and no mode can intercept it. |
+| `preload` | ✅ | — | — | libc only | ❌ | nothing |
+| `systrap` | ✅ | ✅ | — | dynamic only | ❌ | seccomp |
+| `systrap-docker` | ✅ (dynamic) / ptloader (static) | ✅ | — | ✅ full chain via `execve_docker_dispatch` | ✅ | seccomp |
+| `systrap-supervised` | ✅ | ✅ | execve boundary only | ✅ full chain via ptrace supervisor | ✅ | seccomp + ptrace |
+| `systrap-static` | — | ✅ | ✅ every execve | ✅ | ✅ | ptrace |
+| `ptrace-seccomp` | — | filter only | ✅ every traced call | ✅ | ✅ | ptrace |
+| `ptrace-only` | — | — | ✅ every syscall | ✅ | ✅ | ptrace |
+| `ptrace` | — | tries, falls back | ✅ | ✅ | ✅ | ptrace |
+| `auto` | varies | varies | varies | varies | yes — see cascade | — |
+
+**Key differences between `systrap-docker` and `systrap-supervised`:**
+
+Both handle full exec chains and static targets. The difference is *how* they get interception into a static binary and *what they require from the host*:
+
+- `systrap-docker` — patches the target ELF's headers at launch time using a memfd. The kernel loads `uwgptloader.so` as the ELF interpreter (`PT_INTERP`) before `_start`, so the ptloader installs SIGSYS+seccomp without any ptrace involvement. `execve_docker_dispatch` inside the ptloader handles subsequent exec boundaries. **No ptrace required.** Works in Docker default seccomp profiles.
+- `systrap-supervised` — runs a persistent ptrace supervisor that wakes only at execve boundaries. On a dynamic→static exec it injects the freestanding blob into the static child via remote mmap. On dynamic→dynamic it relies on LD_PRELOAD propagation. **Requires ptrace.** Preferred when exec chains spawn a mix of dynamic and static descendants of a dynamic root (e.g. `bash -c 'some-static-bin'`), because the supervisor can re-arm interception across transitions that systrap-docker would have to handle via the ptloader.
+
+For a standalone static binary or a static binary that doesn't exec into dynamic children, `systrap-docker` is simpler, requires fewer kernel capabilities, and avoids the ptrace supervisor goroutine entirely.
 
 ## What needs ptrace, in detail
 
@@ -29,12 +38,14 @@ A clear mental model for when ptrace is mandatory vs. optional:
 
 | Scenario | ptrace needed? | Why |
 |---|---|---|
-| Static binary, very first injection (`systrap-static`) | **Mandatory** | Static binaries don't honour `LD_PRELOAD`, have no constructor mechanism, and the kernel doesn't load any external code for them. The only way to get our blob into the address space at startup is `PTRACE_TRACEME` + remote `mmap` + `POKEDATA` at the post-exec stop. Linux ABI; no exception. |
+| Static binary, `systrap-docker` initial exec | **Not needed** | `uwgptloader.so` is injected via ELF `PT_INTERP` into a memfd. The kernel loads it as the interpreter before `_start` — no ptrace involved. seccomp is required; ptrace is not. |
+| Static binary, `systrap-static` / `systrap-supervised` blob inject | **Mandatory for these modes** | These modes inject a freestanding blob via `PTRACE_TRACEME` + remote `mmap` + `POKEDATA` at the post-exec stop. `systrap-docker` exists precisely to avoid this requirement on hosts where ptrace is blocked. |
 | Dynamic binary, very first injection (`systrap`) | Not needed | `LD_PRELOAD` propagates through `execve(2)`, the dynamic linker loads our `.so`, the constructor installs SIGSYS+seccomp before user `main` runs. |
-| `execve` boundary, dynamic→dynamic | Not needed | `LD_PRELOAD` is in `envp`, kernel preserves it. New image's dynamic linker re-loads our `.so`, constructor re-installs the handler. The seccomp filter is also kernel-inherited; for our trim trap list (network syscalls only) libc-init doesn't trip it. |
-| `execve` boundary, dynamic→static | **Mandatory** to keep interception | `LD_PRELOAD` is meaningless on a static binary. Without ptrace, the inherited seccomp filter is still active in the static child but no SIGSYS handler is installed; the kernel's default disposition for SIGSYS terminates the child. With ptrace + the systrap supervisor, we re-inject the blob at the post-exec stop. |
-| `execve` boundary, static→anything | **Mandatory** | Same reasoning. |
-| Multi-threaded process exec'ing | Mandatory if the new image is static | `execve` kills all sibling threads atomically (kernel guarantee — only the calling thread survives, becoming the new image's thread 1). After exec the surviving thread is a fresh single-threaded image, and the same dynamic-vs-static analysis applies. The supervisor only needs to handle the surviving thread. |
+| `execve` boundary, dynamic→dynamic | Not needed | `LD_PRELOAD` is in `envp`, kernel preserves it. New image's dynamic linker re-loads our `.so`, constructor re-installs the handler. The seccomp filter is also kernel-inherited. |
+| `execve` boundary, dynamic→static (`systrap-docker`) | Not needed | `execve_docker_dispatch` in the ptloader detects the static child, patches it via memfd+PT_INTERP, and re-execs it. No ptrace involved. |
+| `execve` boundary, dynamic→static (`systrap-supervised`) | **Mandatory** | `LD_PRELOAD` is meaningless on a static binary. The ptrace supervisor re-injects the freestanding blob at the post-exec stop. |
+| `execve` boundary, static→anything (`systrap-docker`) | Not needed | Same `execve_docker_dispatch` path — the ptloader intercepts the exec syscall via SIGSYS and handles it. |
+| Multi-threaded process exec'ing | Mandatory only for ptrace-based modes | `execve` kills all sibling threads atomically (kernel guarantee — only the calling thread survives). `systrap-docker` is unaffected — the ptloader is loaded by the kernel before any thread runs. |
 
 ## `auto` cascade — what it picks per host shape
 
@@ -61,12 +72,11 @@ SIGSYS handler kills the child on the first trapped syscall).
 Auto uses an ELF pre-flight (`PT_INTERP` absent) to detect this
 and picks the strongest available mode, or fails fast.
 
-| Host shape | `auto` picks | What works |
+| Host shape | `auto` picks | Notes |
 |---|---|---|
-| seccomp ✅, ptrace ✅ | **`systrap-supervised`** | Everything (in-process SIGSYS for the static target, blob inject for any further static descendants) |
-| seccomp ✅ or ❌, ptrace ✅ | **`ptrace-only`** | Everything (slow) |
-| seccomp ✅, ptrace ❌ (typical Docker: default seccomp, no `SYS_PTRACE`) | **`systrap-docker`** | Static + dynamic targets and exec chains without ptrace. `uwgptloader.so` is injected via `PT_INTERP` into a memfd; the kernel loads it as the interpreter, installs SIGSYS+seccomp before `_start`. |
-| seccomp ❌, ptrace ❌ | **`auto` exits with an error** explaining that no mode can intercept a static binary on this host. The user must wrap a dynamic target, run on a host that allows ptrace or seccomp, or pick `--transport=preload` to accept no-interception. | n/a |
+| seccomp ✅ (ptrace optional) | **`systrap-docker`** | PT_INTERP injection via memfd — works with or without ptrace. `auto` prefers this for static targets unconditionally when seccomp is available: it does not depend on ptrace-based memory injection, which many container profiles block even when basic ptrace is allowed. Use `--transport=systrap-supervised` explicitly if you need the execve ptrace supervisor (e.g. a static binary that shells out to a mix of dynamic and static children). |
+| seccomp ❌, ptrace ✅ | **`ptrace-only`** | Universal slow path via per-syscall ptrace. |
+| seccomp ❌, ptrace ❌ | **error** | No mode can intercept a static binary. Options: (a) use a host that allows seccomp or ptrace, (b) wrap a dynamic target, (c) `--transport=preload --force-preload` to accept no-interception. |
 
 > **Kernel-availability fact.** `SECCOMP_RET_TRAP` and `SECCOMP_RET_TRACE` were added in the same kernel commit (Linux 3.5, `c2e1f2e30daa`, 2012). There is no host that ships one without the other — they're both return values of the same `seccomp(2)` syscall. So the "seccomp ✅" hosts above all support both `RET_TRAP` (powering systrap's SIGSYS path) and `RET_TRACE` (used for the execve hook in the supervisor). The independent variable is **ptrace**, which container runtimes commonly block separately from seccomp.
 
