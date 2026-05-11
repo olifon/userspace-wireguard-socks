@@ -84,6 +84,37 @@ jobs:
           set -euo pipefail
           go test ./tests/preload/... || go test ./tests/preload/...
 
+      - name: Run catalog ci-selfloop (lightweight production app smoke)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Install the apt-fetchable apps; tests for binaries that
+          # aren't installed simply skip via the script's missing-bin
+          # branch, so this is best-effort.
+          DEBIAN_FRONTEND=noninteractive sudo apt-get update -qq >/dev/null
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -yq \
+            curl wget python3 python3-pip nodejs ssh git nginx \
+            default-jdk-headless dnsutils iperf3 ca-certificates >/dev/null 2>&1 || true
+          # Optional downloads — failures here don't fail the job because
+          # the script's missing-bin branch handles them.
+          ARCH=$(dpkg --print-architecture 2>/dev/null || uname -m)
+          # cloudflared
+          if ! command -v cloudflared >/dev/null; then
+            sudo curl -sSLo /usr/local/bin/cloudflared "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}" || true
+            sudo chmod +x /usr/local/bin/cloudflared 2>/dev/null || true
+          fi
+          # gh (apt)
+          if ! command -v gh >/dev/null; then
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null || true
+            echo "deb [arch=${ARCH} signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+            sudo apt-get update -qq >/dev/null 2>&1 || true
+            sudo apt-get install -yq gh >/dev/null 2>&1 || true
+          fi
+          # Run the self-loop subset. Failure here is a real catalog
+          # regression and fails the release job.
+          bash scripts/catalog/ci-selfloop.sh
+
       - name: Run standalone TURN tests
         shell: bash
         run: |
