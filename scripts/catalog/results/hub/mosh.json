@@ -1,0 +1,9 @@
+{
+  "host": "hub",
+  "app": "mosh",
+  "transport": "",
+  "wrapped_ok": true,
+  "unwrapped_blocked": true,
+  "duration_seconds": 6.64,
+  "notes": "server=127.0.0.1:61512 via 10.200.0.1 | out: spawn /usr/local/bin/uwgwrapper --api=http://127.0.0.1:9092 --transport=auto -- mosh-client 10.200.0.1 61512\r\n\u001b[?1049h\u001b[22;0;0t\u001b[?1h\u001b[?5l\u001b[r\u001b[0m\u001b[H\u001b[2J\u001b[?25l\u001b[K\n\u001b[K\n\u001b[K\n\u001b[K\n\u001b[K\n\u001b[K\n\u001b[K\n\u001b[K\n\u001b[K\n\u001b[K\n\u001b[K | err-tail: "
+}

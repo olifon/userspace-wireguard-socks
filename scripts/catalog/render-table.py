@@ -44,6 +44,7 @@ CATALOG_APPS = [
     ("ntp", "NTP / UDP", "ntpdig / sntp / python NTP — exercises unconnected-UDP path to non-tunnel destinations."),
     ("iperf3-udp", "UDP", "UDP throughput against an ephemeral local iperf3 server."),
     ("udp-echo-bind", "UDP server", "Wrapped Python UDP echo server bound to a tunnel WG address; same-host loopback edge case."),
+    ("mosh", "UDP roaming", "Wrapped mosh-client → unwrapped mosh-server on hub; tests the real encrypted-UDP roaming protocol. Hub row drives from arm64 over ssh."),
     ("curl-http3", "QUIC", "curl --http3-only — gated on a libcurl build with ngtcp2/nghttp3."),
     ("odoo", "Python ERP", "Odoo --version (boot smoke; full ERP install is a separate soak)."),
     ("pytorch-mnist", "ML", "PyTorch + torchvision MNIST training (vast.ai GPU host)."),
