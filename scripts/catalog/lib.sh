@@ -22,10 +22,13 @@ if [[ -z "${MESH_PROBE_URL:-}" ]]; then
     *)                       MESH_PROBE_URL="http://10.200.0.1:8787/v1/challenge" ;;
   esac
 fi
-: "${RESULTS_DIR:=$(dirname "${BASH_SOURCE[0]}")/results/${CATALOG_HOST}}"
+: "${RESULTS_DIR:=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/results/${CATALOG_HOST}}"
 : "${UWGSOCKS_API:=http://127.0.0.1:9091}"
-: "${UWGWRAPPER_BIN:=$(dirname "${BASH_SOURCE[0]}")/../../uwgwrapper}"
-: "${UWGSOCKS_BIN:=$(dirname "${BASH_SOURCE[0]}")/../../uwgsocks}"
+# Resolve to absolute paths — many app tests `cd $work` before invoking the
+# wrapper, and relative paths like "../../uwgwrapper" then resolve from the
+# wrong directory and the wrapper exits immediately ("no such file").
+: "${UWGWRAPPER_BIN:=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/uwgwrapper}"
+: "${UWGSOCKS_BIN:=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/uwgsocks}"
 : "${PROBE_TIMEOUT:=8}"
 
 mkdir -p "$RESULTS_DIR"
