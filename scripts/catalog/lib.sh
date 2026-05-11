@@ -19,7 +19,7 @@ set -o pipefail
 if [[ -z "${MESH_PROBE_URL:-}" ]]; then
   case "$CATALOG_HOST" in
     hub|*amd64-host*|*hub*) MESH_PROBE_URL="http://10.200.0.1:9091/v1/status" ;;
-    *)                       MESH_PROBE_URL="http://10.200.0.1:8787/v1/peers" ;;
+    *)                       MESH_PROBE_URL="http://10.200.0.1:8787/v1/challenge" ;;
   esac
 fi
 : "${RESULTS_DIR:=$(dirname "${BASH_SOURCE[0]}")/results/${CATALOG_HOST}}"
