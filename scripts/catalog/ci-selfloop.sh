@@ -13,7 +13,7 @@
 #   - pytorch-mnist (no GPU on GH runners; the install alone takes ~1min)
 #   - odoo (apt package on noble is broken with newer werkzeug)
 #   - {postgres,mongo,mariadb}-server (heavy daemon install + per-uid sudo)
-#   - ntp, curl-http3, udp-echo-bind (rely on specific wrapper UDP shapes
+#   - ntp, curl-http3 (rely on specific wrapper UDP shapes
 #     that have known limitations; tracked in production-applications.md)
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -58,6 +58,7 @@ host_forward:
 socket_api:
   bind: true
   transparent_bind: true
+  udp_inbound: true
 api:
   listen: "127.0.0.1:$API_PORT"
 EOF
@@ -79,7 +80,7 @@ done
 
 # Run only the apps known to be runner-friendly + peer-independent.
 export UWGSOCKS_API="${UWGSOCKS_API:-http://127.0.0.1:9091}"
-APPS=(curl wget python node ssh git pip xh gh cloudflared java-http nginx dig iperf3-udp)
+APPS=(curl wget python node ssh git pip xh gh cloudflared java-http nginx dig iperf3-udp udp-echo-bind)
 pass=0; fail=0; skip=0
 for a in "${APPS[@]}"; do
   s="scripts/catalog/apps/${a}.sh"

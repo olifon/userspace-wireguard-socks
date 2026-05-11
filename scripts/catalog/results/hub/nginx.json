@@ -4,6 +4,6 @@
   "transport": "systrap-supervised",
   "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 0.54,
-  "notes": "port=38199 resp: uwgwrapper-nginx-ok | err-tail: er: mode=launch target=/usr/sbin/nginx transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-fd59cd3116d9ea5d.so listen=/tmp/uwgfdproxy-864520.sock api=http://127.0.0.1:55289 socketPath=/uwg/socket spawnFDProxy=true|uwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)|"
+  "duration_seconds": 0.53,
+  "notes": "port=32947 resp: uwgwrapper-nginx-ok | err-tail: er: mode=launch target=/usr/sbin/nginx transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-fd59cd3116d9ea5d.so listen=/tmp/uwgfdproxy-908591.sock api=http://127.0.0.1:57501 socketPath=/uwg/socket spawnFDProxy=true|uwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)|"
 }

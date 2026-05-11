@@ -2,8 +2,8 @@
   "host": "hub",
   "app": "udp-echo-bind",
   "transport": "systrap-supervised",
-  "wrapped_ok": false,
+  "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 4.19,
-  "notes": "self_ip=10.200.0.1 port=46932 | out:  | srv-log: listening_udp 10.200.0.1:46932 | err-tail: systrap-supervised (dynamic target, seccomp=true ptrace=true)|Traceback (most recent call last):|  File \"/tmp/tmp.6GEFsAHGTd/cli.py\", line 6, in <module>|    data, _ = s.recvfrom(1500)|              ~~~~~~~~~~^^^^^^|TimeoutError: timed out|"
+  "duration_seconds": 0.14,
+  "notes": "self_ip=10.200.0.1 port=59100 | out: echo:hello-udp | srv-log: listening_udp 10.200.0.1:59100 | err-tail: d=/tmp/uwgwrapper-0/uwgpreload-fd59cd3116d9ea5d.so listen=/tmp/uwgfdproxy-908818.sock api=http://127.0.0.1:57501 socketPath=/uwg/socket spawnFDProxy=true|uwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)|"
 }

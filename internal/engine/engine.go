@@ -118,6 +118,15 @@ type Engine struct {
 	socksUDPMu         sync.Mutex
 	socksUDPRelayPorts map[string]map[int]struct{}
 
+	// udpLoopbackMu guards udpLoopbackRegistry. Holds all live socket-API UDP
+	// listeners keyed by their netstack bind address so that two same-host
+	// wrapped processes (e.g. udp-echo-bind: client on 10.200.0.1:<eph> +
+	// server on 10.200.0.1:<port>) can talk to each other. gVisor's netstack
+	// does NOT loop UDP packets between two listeners on the same NIC IP,
+	// so engine-level short-circuit is the load-bearing fix.
+	udpLoopbackMu       sync.Mutex
+	udpLoopbackRegistry map[netip.AddrPort]*udpLoopbackEntry
+
 	// socksConnSem caps the number of concurrent SOCKS5 control connections
 	// the engine will service. nil means uncapped (used by tests that opt
 	// into a different limit). Initialised lazily by serveSOCKSConn.

@@ -38,6 +38,11 @@ type socketSession struct {
 	// non-tunnel destination. Single socket, used for every non-tunnel
 	// peer this session sends to. See type comment on udpUpstream.
 	udpUpstream *udpUpstream
+	// udpLoopback / udpLoopbackBind are set when this session is a UDP
+	// listener registered in the engine's same-host loopback registry.
+	// Cleared on session close to drop the registration.
+	udpLoopback     *udpLoopbackEntry
+	udpLoopbackBind netip.AddrPort
 
 	acceptOnce sync.Once
 	accepted   chan struct{}
@@ -78,6 +83,46 @@ type udpUpstream struct {
 	pc        net.PacketConn
 	stopOnce  sync.Once
 	stopped   chan struct{}
+}
+
+// udpLoopbackEntry references a live socket-API UDP listener registered in
+// the engine's udpLoopbackRegistry. The deliver callback short-circuits a
+// datagram into the receiving wrapper as an ActionUDPDatagram frame, the
+// same shape it would see if the packet had transited gVisor netstack to a
+// listener. gVisor netstack does not loop UDP between two listeners bound
+// to the same NIC IP, so this is the only path that makes same-host
+// wrapped client → wrapped server work for non-connected UDP.
+type udpLoopbackEntry struct {
+	deliver func(senderAP netip.AddrPort, payload []byte)
+}
+
+func (e *Engine) registerUDPLoopback(bind netip.AddrPort, entry *udpLoopbackEntry) {
+	if !bind.IsValid() || entry == nil {
+		return
+	}
+	e.udpLoopbackMu.Lock()
+	if e.udpLoopbackRegistry == nil {
+		e.udpLoopbackRegistry = make(map[netip.AddrPort]*udpLoopbackEntry)
+	}
+	e.udpLoopbackRegistry[bind] = entry
+	e.udpLoopbackMu.Unlock()
+}
+
+func (e *Engine) unregisterUDPLoopback(bind netip.AddrPort, entry *udpLoopbackEntry) {
+	if !bind.IsValid() {
+		return
+	}
+	e.udpLoopbackMu.Lock()
+	if cur, ok := e.udpLoopbackRegistry[bind]; ok && cur == entry {
+		delete(e.udpLoopbackRegistry, bind)
+	}
+	e.udpLoopbackMu.Unlock()
+}
+
+func (e *Engine) lookupUDPLoopback(bind netip.AddrPort) *udpLoopbackEntry {
+	e.udpLoopbackMu.Lock()
+	defer e.udpLoopbackMu.Unlock()
+	return e.udpLoopbackRegistry[bind]
 }
 
 func (e *Engine) handleAPISocket(w http.ResponseWriter, r *http.Request) {
@@ -386,12 +431,59 @@ func (s *socketServer) openUDPListener(id uint64, bind netip.AddrPort, version u
 	pc := s.e.wrapPeerPacketConn(basePC)
 	ss := &socketSession{id: id, proto: socketproto.ProtoUDP, packet: pc, udpPeers: make(map[string]*udpPeerState)}
 	s.storeSession(ss)
-	if err := s.sendAccept(id, version, socketproto.ProtoUDP, addrPortFromNetAddr(pc.LocalAddr())); err != nil {
+	// Register this listener for same-host UDP short-circuit. Use the
+	// engine-resolved bind addr (so 0.0.0.0/empty resolves to firstLocalAddr)
+	// because two listeners on the same NIC IP otherwise can't exchange
+	// datagrams via gVisor netstack — see TestSameNICLoopbackUDP.
+	localAP := addrPortFromNetAddr(pc.LocalAddr())
+	entry := &udpLoopbackEntry{
+		deliver: func(senderAP netip.AddrPort, payload []byte) {
+			s.deliverLoopbackUDP(ss, senderAP, payload)
+		},
+	}
+	ss.udpLoopback = entry
+	ss.udpLoopbackBind = localAP
+	s.e.registerUDPLoopback(localAP, entry)
+	if err := s.sendAccept(id, version, socketproto.ProtoUDP, localAP); err != nil {
 		s.closeSession(id, false)
 		return err
 	}
 	go ss.readPacketLoop(s)
 	return nil
+}
+
+// deliverLoopbackUDP feeds a same-host shortcut datagram back to the
+// receiving wrapper as an ActionUDPDatagram with the sender's listener
+// address as the remote — identical to what netstack delivery would
+// produce on a working same-NIC loop. Honours the same stateful UDP
+// firewall as readPacketLoop: with socket_api.udp_inbound=false the
+// receiver only sees datagrams from remotes it has previously sent to.
+func (s *socketServer) deliverLoopbackUDP(ss *socketSession, sender netip.AddrPort, payload []byte) {
+	if !sender.IsValid() {
+		return
+	}
+	if fixed := ss.udpFixedDst(); fixed.IsValid() {
+		if sender != fixed || !ss.touchKnownUDPPeer(sender, s.e.udpIdleTimeout()) {
+			return
+		}
+		_ = s.send(socketproto.Frame{ID: ss.id, Action: socketproto.ActionData, Payload: payload})
+		return
+	}
+	if !s.e.cfg.SocketAPI.UDPInbound {
+		if !ss.touchKnownUDPPeer(sender, s.e.udpIdleTimeout()) {
+			return
+		}
+	}
+	encPayload, encErr := socketproto.EncodeUDPDatagram(socketproto.UDPDatagram{
+		IPVersion:  socketproto.AddrVersion(sender.Addr()),
+		RemoteIP:   sender.Addr(),
+		RemotePort: sender.Port(),
+		Payload:    payload,
+	})
+	if encErr != nil {
+		return
+	}
+	_ = s.send(socketproto.Frame{ID: ss.id, Action: socketproto.ActionUDPDatagram, Payload: encPayload})
 }
 
 func (s *socketServer) reconnectUDP(id uint64, req socketproto.Connect) error {
@@ -462,6 +554,14 @@ func (s *socketServer) handleData(id uint64, payload []byte) error {
 		if !ss.touchUDPPeer(dst, s.e.udpIdleTimeout()) {
 			return errors.New("too many UDP peers for this socket session")
 		}
+		// Same-host shortcut for connected UDP — see handleUDPDatagram
+		// for why the netstack path is bypassed.
+		if entry := s.e.lookupUDPLoopback(dst); entry != nil {
+			senderAP := addrPortFromNetAddr(ss.packet.LocalAddr())
+			payloadCopy := append([]byte(nil), payload...)
+			entry.deliver(senderAP, payloadCopy)
+			return nil
+		}
 		_, err := ss.packet.WriteTo(payload, net.UDPAddrFromAddrPort(dst))
 		return err
 	}
@@ -494,6 +594,14 @@ func (s *socketServer) handleUDPDatagram(id uint64, d socketproto.UDPDatagram) e
 		if !ss.touchUDPPeer(remote, s.e.udpIdleTimeout()) {
 			return errors.New("too many UDP peers for this socket session")
 		}
+		// Same-host shortcut for connected UDP — see comment on
+		// handleUDPDatagram non-fixed branch.
+		if entry := s.e.lookupUDPLoopback(remote); entry != nil {
+			senderAP := addrPortFromNetAddr(ss.packet.LocalAddr())
+			payloadCopy := append([]byte(nil), d.Payload...)
+			entry.deliver(senderAP, payloadCopy)
+			return nil
+		}
 		_, err := ss.packet.WriteTo(d.Payload, net.UDPAddrFromAddrPort(remote))
 		return err
 	}
@@ -513,6 +621,19 @@ func (s *socketServer) handleUDPDatagram(id uint64, d socketproto.UDPDatagram) e
 	// fed back into the wrapped app via ActionUDPDatagram by the reader
 	// goroutine. See udpUpstream type comment.
 	if s.e.allowedContains(remote.Addr()) || s.e.localAddrContains(remote.Addr()) {
+		// Same-host shortcut: if the destination is another live
+		// socket-API UDP listener on this engine, deliver directly via
+		// the registry. gVisor netstack does not loop UDP between two
+		// listeners bound to the same NIC IP, so the netstack path
+		// silently drops the datagram. The shortcut presents the
+		// sender's listener addr as the remote so the receiver's
+		// recvfrom returns a routable reply addr.
+		if entry := s.e.lookupUDPLoopback(remote); entry != nil {
+			senderAP := addrPortFromNetAddr(ss.packet.LocalAddr())
+			payloadCopy := append([]byte(nil), d.Payload...)
+			entry.deliver(senderAP, payloadCopy)
+			return nil
+		}
 		_, err := ss.packet.WriteTo(d.Payload, net.UDPAddrFromAddrPort(remote))
 		return err
 	}
@@ -658,6 +779,9 @@ func (s *socketServer) closeSession(id uint64, notify bool) {
 		return
 	}
 	ss.closeOnce.Do(func() {
+		if ss.udpLoopback != nil {
+			s.e.unregisterUDPLoopback(ss.udpLoopbackBind, ss.udpLoopback)
+		}
 		if ss.conn != nil {
 			_ = ss.conn.Close()
 		}

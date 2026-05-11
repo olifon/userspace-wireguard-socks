@@ -5,5 +5,5 @@
   "wrapped_ok": true,
   "unwrapped_blocked": true,
   "duration_seconds": 0.14,
-  "notes": "out: uwgwrapper: mode=launch target=/usr/bin/java transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-fd59cd3116d9ea5d.so listen=/tmp/uwgfdproxy-864447.sock api=http://127.0.0.1:55289 socketPath=/uwg/socket spawnFDProxy=true\nuwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace="
+  "notes": "out: uwgwrapper: mode=launch target=/usr/bin/java transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-fd59cd3116d9ea5d.so listen=/tmp/uwgfdproxy-908518.sock api=http://127.0.0.1:57501 socketPath=/uwg/socket spawnFDProxy=true\nuwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace="
 }

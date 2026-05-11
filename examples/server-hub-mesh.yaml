@@ -61,6 +61,13 @@ socket_api:
   # with "transparent bind is disabled" and apps fall back to slower
   # TCP-only paths.
   transparent_bind: true
+  # Let wrapped UDP servers receive unsolicited first-contact datagrams.
+  # Default is false (safer for client-only apps); turn it on when the
+  # host hosts wrapped UDP listeners (mDNS responder, DNS server, game
+  # server, the udp-echo-bind catalog test). Without this, the engine's
+  # stateful UDP firewall drops first-contact and clients can never
+  # initiate.
+  udp_inbound: true
 
 relay:
   enabled: true

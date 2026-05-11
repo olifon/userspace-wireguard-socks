@@ -141,18 +141,18 @@ self-contained variant that release.yml runs on every tag push:
 
 - Spins up a fresh single-node uwgsocks with the recommended hub config
   (`inbound.transparent: true`, `host_forward.inbound.enabled: true`,
-  `socket_api.{bind,transparent_bind}: true`) on random ports so it
-  never clashes with an already-running instance.
+  `socket_api.{bind,transparent_bind,udp_inbound}: true`) on random ports
+  so it never clashes with an already-running instance.
 - Generates ephemeral WireGuard keys; no real peer is needed because
   every test dials a local netstack listener through the wrapper.
-- Runs 14 of the apps (curl, wget, python, node, ssh, git, pip, xh,
-  gh, cloudflared, java-http, nginx, dig, iperf3-udp).
+- Runs 15 of the apps (curl, wget, python, node, ssh, git, pip, xh,
+  gh, cloudflared, java-http, nginx, dig, iperf3-udp, udp-echo-bind).
 - Deliberately skips: `java-minecraft` (~200MB Paper jar download),
   `electron` (Chrome install), `pytorch-mnist` (no GPU on runners),
   `odoo` (apt package on noble has a werkzeug regression),
   `{postgres,mongo,mariadb}-server` (heavy daemon install + sudo + apparmor),
-  `udp-echo-bind` (depends on engine-side same-host loopback routing
-  that's not gated yet).
+  `ntp` (real internet pool, runner sandbox blocks),
+  `curl-http3` (libcurl on Ubuntu doesn't ship with ngtcp2).
 
 ## Daemon tests — environment requirements
 
@@ -198,6 +198,22 @@ the test is small/fast/peer-independent enough for CI.
   daemon launch on the hub and ssh to an arm64 peer to dial it back
   through WG. Configure the peer's API endpoint with
   `POSTGRES_PEER` / `POSTGRES_PEER_API` etc.
+  - **Exception:** `udp-echo-bind` (and any wrapped-client →
+    wrapped-server UDP pair on the same host) does work locally,
+    via an engine-level same-host UDP loopback registry that
+    short-circuits delivery between two `openUDPListener` sessions
+    bound on the same NIC IP. gVisor netstack doesn't loop UDP
+    between two listeners on the same NIC, so the engine maintains
+    a `(bind_ap → listener)` map and emits `ActionUDPDatagram` to
+    the matching session directly. Pinned by
+    `internal/engine/socket_api_test.go::TestSocketAPISameHostUDPLoopback`
+    and `internal/netstackex/sameniclo_test.go::TestSameNICLoopbackUDP`.
+- **`socket_api.udp_inbound: true` is required** for the catalog's
+  wrapped UDP server tests (udp-echo-bind, and any production
+  scenario where a wrapped UDP listener receives first-contact from
+  unfamiliar peers). The hub example config sets it; without it the
+  engine's stateful UDP firewall drops first-contact and the
+  wrapped server's `recvfrom` blocks forever.
 - **Don't trust `pg_isready`-style ready signals alone.** Real daemons
   log "ready" before they accept TCP; the daemon tests poll for both
   the canonical log line AND a successful `/dev/tcp/127.0.0.1/<port>`

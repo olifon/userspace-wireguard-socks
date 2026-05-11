@@ -733,6 +733,136 @@ func tryICMPEchoOnce(conn net.Conn, dst netip.Addr, msg []byte) ([]byte, bool) {
 	return echo.Data, true
 }
 
+// TestSocketAPISameHostUDPLoopback exercises the engine's same-host UDP
+// shortcut. gVisor netstack does not loop UDP between two listeners bound
+// to the same NIC IP (see TestSameNICLoopbackUDP in netstackex), which
+// would otherwise break the udp-echo-bind production catalog test:
+// wrapped server bound to 10.200.0.1:<port> + wrapped client auto-bound
+// at 10.200.0.1:<eph>. The engine maintains an addr→listener registry
+// and short-circuits these datagrams directly between the two
+// socket-API sessions.
+func TestSocketAPISameHostUDPLoopback(t *testing.T) {
+	key := mustKey(t)
+	cfg := config.Default()
+	cfg.WireGuard.PrivateKey = key.String()
+	cfg.WireGuard.Addresses = []string{"100.64.97.1/32"}
+	cfg.API.Listen = "127.0.0.1:0"
+	cfg.API.Token = "secret"
+	cfg.SocketAPI.Bind = true
+	cfg.SocketAPI.TransparentBind = true
+	cfg.SocketAPI.UDPInbound = true
+	eng := mustStart(t, cfg)
+
+	apiAddr := "http://" + eng.Addr("api")
+	srvConn := socketAPIConn(t, apiAddr, "secret")
+	defer srvConn.Close()
+	cliConn := socketAPIConn(t, apiAddr, "secret")
+	defer cliConn.Close()
+
+	srvBind := netip.MustParseAddr("100.64.97.1")
+	srvPort := uint16(19097)
+	srvID := socketproto.ClientIDBase + 800
+	srvPayload, err := socketproto.EncodeConnect(socketproto.Connect{
+		IPVersion: socketproto.AddrVersion(srvBind),
+		Protocol:  socketproto.ProtoUDP,
+		BindIP:    srvBind,
+		BindPort:  srvPort,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := socketproto.WriteFrame(srvConn, socketproto.Frame{ID: srvID, Action: socketproto.ActionConnect, Payload: srvPayload}); err != nil {
+		t.Fatal(err)
+	}
+	frame := readSocketFrame(t, srvConn)
+	if frame.Action != socketproto.ActionAccept {
+		t.Fatalf("server UDP bind not accepted: action %d payload %q", frame.Action, frame.Payload)
+	}
+
+	cliID := socketproto.ClientIDBase + 801
+	cliPayload, err := socketproto.EncodeConnect(socketproto.Connect{
+		IPVersion: socketproto.AddrVersion(srvBind),
+		Protocol:  socketproto.ProtoUDP,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := socketproto.WriteFrame(cliConn, socketproto.Frame{ID: cliID, Action: socketproto.ActionConnect, Payload: cliPayload}); err != nil {
+		t.Fatal(err)
+	}
+	cliAccept := readSocketFrame(t, cliConn)
+	if cliAccept.Action != socketproto.ActionAccept {
+		t.Fatalf("client UDP listener not accepted: action %d payload %q", cliAccept.Action, cliAccept.Payload)
+	}
+	cliAcceptDecoded, err := socketproto.DecodeAccept(cliAccept.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cliBindAddr := netip.AddrPortFrom(cliAcceptDecoded.BindIP, cliAcceptDecoded.BindPort)
+	if !cliBindAddr.IsValid() {
+		t.Fatalf("client listener did not return a valid bind addr: %+v", cliAcceptDecoded)
+	}
+
+	dgram, err := socketproto.EncodeUDPDatagram(socketproto.UDPDatagram{
+		IPVersion:  socketproto.AddrVersion(srvBind),
+		RemoteIP:   srvBind,
+		RemotePort: srvPort,
+		Payload:    []byte("samehost-hello"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := socketproto.WriteFrame(cliConn, socketproto.Frame{ID: cliID, Action: socketproto.ActionUDPDatagram, Payload: dgram}); err != nil {
+		t.Fatal(err)
+	}
+
+	srvFrame := readSocketFrame(t, srvConn)
+	if srvFrame.Action != socketproto.ActionUDPDatagram {
+		t.Fatalf("server did not receive same-host UDP datagram: action %d payload %q", srvFrame.Action, srvFrame.Payload)
+	}
+	gotDgram, err := socketproto.DecodeUDPDatagram(srvFrame.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotDgram.Payload) != "samehost-hello" {
+		t.Fatalf("server payload mismatch: %q", gotDgram.Payload)
+	}
+	gotSender := netip.AddrPortFrom(gotDgram.RemoteIP, gotDgram.RemotePort)
+	if gotSender != cliBindAddr {
+		t.Fatalf("server saw sender %v, want %v", gotSender, cliBindAddr)
+	}
+
+	echoDgram, err := socketproto.EncodeUDPDatagram(socketproto.UDPDatagram{
+		IPVersion:  gotDgram.IPVersion,
+		RemoteIP:   gotDgram.RemoteIP,
+		RemotePort: gotDgram.RemotePort,
+		Payload:    []byte("echo:" + string(gotDgram.Payload)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := socketproto.WriteFrame(srvConn, socketproto.Frame{ID: srvID, Action: socketproto.ActionUDPDatagram, Payload: echoDgram}); err != nil {
+		t.Fatal(err)
+	}
+
+	cliFrame := readSocketFrame(t, cliConn)
+	if cliFrame.Action != socketproto.ActionUDPDatagram {
+		t.Fatalf("client did not receive echo: action %d payload %q", cliFrame.Action, cliFrame.Payload)
+	}
+	cliDecoded, err := socketproto.DecodeUDPDatagram(cliFrame.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(cliDecoded.Payload) != "echo:samehost-hello" {
+		t.Fatalf("client echo payload mismatch: %q", cliDecoded.Payload)
+	}
+	gotEchoSender := netip.AddrPortFrom(cliDecoded.RemoteIP, cliDecoded.RemotePort)
+	wantEchoSender := netip.AddrPortFrom(srvBind, srvPort)
+	if gotEchoSender != wantEchoSender {
+		t.Fatalf("client echo sender = %v, want %v", gotEchoSender, wantEchoSender)
+	}
+}
+
 func socketAPIConn(t *testing.T, api, token string) net.Conn {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

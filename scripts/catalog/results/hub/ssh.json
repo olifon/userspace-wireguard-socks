@@ -4,6 +4,6 @@
   "transport": "systrap-supervised",
   "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 0.18,
-  "notes": "out: Connection closed by 10.200.0.1 port 9091\r | err-tail: r: mode=launch target=/usr/bin/timeout transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-fd59cd3116d9ea5d.so listen=/tmp/uwgfdproxy-864039.sock api=http://127.0.0.1:55289 socketPath=/uwg/socket spawnFDProxy=true|uwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)|"
+  "duration_seconds": 0.20,
+  "notes": "out: Connection closed by 10.200.0.1 port 9091\r | err-tail: r: mode=launch target=/usr/bin/timeout transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-fd59cd3116d9ea5d.so listen=/tmp/uwgfdproxy-908112.sock api=http://127.0.0.1:57501 socketPath=/uwg/socket spawnFDProxy=true|uwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)|"
 }

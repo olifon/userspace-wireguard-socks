@@ -1261,14 +1261,21 @@ func (g *udpListenerGroup) serveUpstream() {
 func (g *udpListenerGroup) dispatchDatagram(remote netip.AddrPort, payload []byte, fromLoopback bool) {
 	token := g.ownerFor(remote)
 	if token == "" {
-		if !fromLoopback {
-			return
-		}
+		// No registered owner for this remote. Fall back to a member of
+		// the group — for client-style flows this is the sole bound
+		// listener; for SO_REUSEPORT groups this mimics the kernel's
+		// random-balancing behaviour. The engine's inbound UDP firewall
+		// (socket_api.udp_inbound) is the authoritative gate for
+		// unsolicited traffic; the fdproxy used to drop here as a
+		// belt-and-braces stateful firewall, but that silently broke
+		// wrapped UDP servers (e.g. udp-echo-bind) receiving first
+		// contact even when the engine allowed it.
 		token = g.randomMemberToken()
 	}
 	if token == "" {
 		return
 	}
+	_ = fromLoopback // semantics no longer branch on this; kept for callers
 	g.mu.Lock()
 	local := g.members[token]
 	g.mu.Unlock()
