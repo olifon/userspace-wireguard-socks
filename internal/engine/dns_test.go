@@ -243,10 +243,10 @@ func exchangeTestDNSUDP(t *testing.T, conn net.Conn, name string, qtype uint16) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(5 * time.Second * testDeadlineScale)
 	var last error
 	for time.Now().Before(deadline) {
-		_ = conn.SetDeadline(time.Now().Add(500 * time.Millisecond))
+		_ = conn.SetDeadline(time.Now().Add(500 * time.Millisecond * testDeadlineScale))
 		if _, err := conn.Write(packed); err != nil {
 			last = err
 			continue
@@ -284,7 +284,7 @@ func assertDNSA(t *testing.T, msg *dns.Msg, name string, want net.IP) {
 func retryDNSTCPDial(t *testing.T, e *Engine, addr string) net.Conn {
 	t.Helper()
 	var last error
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(5 * time.Second * testDeadlineScale)
 	for time.Now().Before(deadline) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		conn, err := e.DialTunnelContext(ctx, "tcp", addr)

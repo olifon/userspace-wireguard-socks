@@ -198,7 +198,7 @@ func TestMeshP2PDeclareAndReflect(t *testing.T) {
 	// A posts its P2P mode; B fetches peers and should see A as type="p2p".
 	clientA.runMeshPolling()
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(5 * time.Second * testDeadlineScale)
 	var gotDecl string
 	for time.Now().Before(deadline) {
 		server.meshP2PMu.RLock()
@@ -216,7 +216,7 @@ func TestMeshP2PDeclareAndReflect(t *testing.T) {
 	// B polls and should get A with type="p2p".
 	clientB.runMeshPolling()
 
-	deadline = time.Now().Add(5 * time.Second)
+	deadline = time.Now().Add(5 * time.Second * testDeadlineScale)
 	var gotType string
 	for time.Now().Before(deadline) {
 		clientB.dynamicMu.RLock()
@@ -300,7 +300,7 @@ func TestMeshP2PDisableFilter(t *testing.T) {
 	clientB.runMeshPolling()
 
 	// Wait for hub to register A and B declarations.
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(5 * time.Second * testDeadlineScale)
 	for time.Now().Before(deadline) {
 		server.meshP2PMu.RLock()
 		aDecl := server.meshP2PDecls[aKey.PublicKey().String()]
@@ -322,7 +322,7 @@ func TestMeshP2PDisableFilter(t *testing.T) {
 	// C polls — as a "disable" peer it should only see B (remote), not A.
 	clientC.runMeshPolling()
 
-	deadline = time.Now().Add(5 * time.Second)
+	deadline = time.Now().Add(5 * time.Second * testDeadlineScale)
 	for time.Now().Before(deadline) {
 		clientC.dynamicMu.RLock()
 		n := len(clientC.dynamicPeers)

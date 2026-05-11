@@ -763,7 +763,7 @@ func mustMeshKey(t *testing.T) wgtypes.Key {
 
 func waitPeerHandshakeTest(t *testing.T, eng *Engine, publicKey string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(5 * time.Second * testDeadlineScale)
 	for time.Now().Before(deadline) {
 		st, err := eng.Status()
 		if err != nil {
@@ -781,7 +781,7 @@ func waitPeerHandshakeTest(t *testing.T, eng *Engine, publicKey string) {
 
 func waitDynamicPeerStatus(t *testing.T, eng *Engine, publicKey string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(5 * time.Second * testDeadlineScale)
 	for time.Now().Before(deadline) {
 		st, err := eng.Status()
 		if err != nil {
