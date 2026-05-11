@@ -1,0 +1,9 @@
+{
+  "host": "vast",
+  "app": "cloudflared",
+  "transport": "systrap-docker",
+  "wrapped_ok": true,
+  "unwrapped_blocked": true,
+  "duration_seconds": 0.13,
+  "notes": "out: uwgwrapper: mode=launch target=/opt/instance-tools/bin/cloudflared transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-7f8a8b7072af0cda.so listen=/tmp/uwgfdproxy-22435.sock api=http://127.0.0.1:9094 socketPath=/uwg/socket spawnFDProxy=true"
+}

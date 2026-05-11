@@ -1,0 +1,9 @@
+{
+  "host": "vast",
+  "app": "pip",
+  "transport": "systrap-supervised",
+  "wrapped_ok": true,
+  "unwrapped_blocked": true,
+  "duration_seconds": 1.23,
+  "notes": "out: uwgwrapper: mode=launch target=/usr/bin/bash transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-7f8a8b7072af0cda.so listen=/tmp/uwgfdproxy-20677.sock api=http://127.0.0.1:9094 socketPath=/uwg/socket spawnFDProxy=true\nuwgwrapper: auto: chos"
+}

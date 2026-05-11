@@ -1,0 +1,9 @@
+{
+  "host": "vast",
+  "app": "pytorch-mnist",
+  "transport": "systrap-supervised",
+  "wrapped_ok": true,
+  "unwrapped_blocked": true,
+  "duration_seconds": 13.53,
+  "notes": "out-tail:  \"CONNECT udp 16.15.188.163 443 172.17.0.3 56542\": connect rejected: action=3 payload=\"transparent bind is disabled\"|uwgwrapper: CONNECT upstream failed \"CONNECT udp 16.15.253.129 443 172.17.0.3 56542\": connect rejected: action=3 payload=\"transparent bind is disabled\"|\r  0%|          | 0.00/4.54k [00:00<?, ?B/s]\r100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588| 4.54k/4.54k [00:00<00:00, 17.2MB/s]|/tmp/tmp.f4F5lJNQ15/mnist_smoke.py:29: UserWarning: Converting a tensor with requires_grad=True to a scalar may lead to unexpected behavior.|Consider using tensor.detach() first. (Triggered internally at /pytorch/torch/csrc/autograd/generated/python_variable_methods.cpp:836.)|  print(f\"trained_steps={steps} elapsed={time.time()-t0:.1f}s loss={float(l):.3f}\", flush=True)|trained_steps=5 elapsed=12.8s loss=1.112"
+}

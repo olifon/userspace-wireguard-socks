@@ -1,0 +1,9 @@
+{
+  "host": "vast",
+  "app": "electron",
+  "transport": "missing-bin",
+  "wrapped_ok": false,
+  "unwrapped_blocked": true,
+  "duration_seconds": 0,
+  "notes": "no chromium / google-chrome / electron on PATH \u2014 install: apt-get install -y chromium-browser"
+}

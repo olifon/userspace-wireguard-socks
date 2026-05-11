@@ -1,0 +1,9 @@
+{
+  "host": "vast",
+  "app": "xh",
+  "transport": "systrap-supervised",
+  "wrapped_ok": true,
+  "unwrapped_blocked": true,
+  "duration_seconds": 0.17,
+  "notes": "cmd: xh --print=h --timeout=10 GET http://10.200.0.1:8787/v1/challenge 2>&1 | awk \"/^HTTP\\/1/ {print \\$2; exit}\" | rc=0 | out: 200 | stderr-tail: uwgwrapper: mode=launch target=/usr/bin/bash transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-7f8a8b7072af0cda.so listen=/tmp/uwgfdproxy-22308.sock api=http://127.0.0.1:9094 socketPath=/uwg/socket spawnFDProxy=true|uwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)|"
+}

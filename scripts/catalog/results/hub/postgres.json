@@ -1,0 +1,9 @@
+{
+  "host": "hub",
+  "app": "postgres",
+  "transport": "systrap-supervised",
+  "wrapped_ok": true,
+  "unwrapped_blocked": true,
+  "duration_seconds": 0.15,
+  "notes": "target=127.0.0.1:55432 (container=uwg-catalog-pg-811579) | out: wrapper-pg-ok | err-tail: ad=/tmp/uwgwrapper-0/uwgpreload-c71746bb80a215ac.so listen=/tmp/uwgfdproxy-811754.sock api=http://127.0.0.1:9091 socketPath=/uwg/socket spawnFDProxy=true|uwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)|"
+}

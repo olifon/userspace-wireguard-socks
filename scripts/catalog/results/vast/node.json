@@ -1,0 +1,9 @@
+{
+  "host": "vast",
+  "app": "node",
+  "transport": "systrap-supervised",
+  "wrapped_ok": true,
+  "unwrapped_blocked": true,
+  "duration_seconds": 0.26,
+  "notes": "out: 200 | err-tail: rapper: mode=launch target=/usr/bin/node transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-7f8a8b7072af0cda.so listen=/tmp/uwgfdproxy-20597.sock api=http://127.0.0.1:9094 socketPath=/uwg/socket spawnFDProxy=true|uwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)|"
+}

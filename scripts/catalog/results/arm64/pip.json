@@ -1,0 +1,9 @@
+{
+  "host": "arm64",
+  "app": "pip",
+  "transport": "systrap-supervised",
+  "wrapped_ok": true,
+  "unwrapped_blocked": true,
+  "duration_seconds": 1.30,
+  "notes": "out: uwgwrapper: mode=launch target=/usr/bin/bash transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-f03d462aec00fd26.so listen=/tmp/uwgfdproxy-486950.sock api=http://127.0.0.1:9092 socketPath=/uwg/socket spawnFDProxy=true\nuwgwrapper: auto: cho"
+}

@@ -2,8 +2,8 @@
   "host": "hub",
   "app": "electron",
   "transport": "systrap-supervised",
-  "wrapped_ok": false,
+  "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 0.29,
-  "notes": "chrome-bin=chromium | out-slice: uwgwrapper: mode=launch target=/snap/bin/chromium transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-c71746bb80a215ac.so listen=/tmp/uwgfdproxy-776965.sock api=http://127.0.0.1:9091 socketPath=/uwg/socket spawnFDProxy=true|uwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)"
+  "duration_seconds": 0.22,
+  "notes": "chrome-bin=google-chrome | ver: Google Chrome 148.0.7778.96  | wrapper-err-tail: ad=/tmp/uwgwrapper-0/uwgpreload-c71746bb80a215ac.so listen=/tmp/uwgfdproxy-807060.sock api=http://127.0.0.1:9091 socketPath=/uwg/socket spawnFDProxy=true|uwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)| | NOTE: full headless-render requires uwgsocks socket_api.transparent_bind=true (Chrome's QUIC/mDNS startup binds to host IP). Boot-survival smoke proves wrapper handles the chromium process tree."
 }

@@ -1,110 +1,222 @@
 <!-- Copyright (c) 2026 Reindert Pelsma -->
 <!-- SPDX-License-Identifier: ISC -->
 
-# Production application catalog — running real apps under `uwgwrapper`
+# Production application catalog — real apps through `uwgwrapper`
 
-This page lists real-world applications that have been verified to run under
-`uwgwrapper` on the four-node test mesh (hub / arm64 VPS / Mac M1 / vast.ai),
-along with the exact invocation used, which transport the `auto` cascade
-selects, and any quirks worth knowing.
+This page lists real-world applications that have been driven through
+`uwgwrapper` on the four-node test mesh (hub amd64 / arm64 VPS / Mac M1 /
+vast.ai container), along with the exact invocation used, which transport
+the `auto` cascade selected, and any quirks worth knowing.
 
-It is meant for people who want to use `uwgwrapper` as a drop-in replacement
+It is meant for people considering `uwgwrapper` as a drop-in replacement
 for `torsocks`, `proxychains`, `socksify`, or `graftcp` against unmodified
 production software.
 
 ## Test mesh
 
-| Host    | Public IP / port | WG IP      | Arch     | OS                  | Role                |
-|---------|------------------|------------|----------|---------------------|---------------------|
-| hub     | 51.159.237.61    | 10.200.0.1 | amd64    | Linux 7.0 (Ubuntu)  | server / WG exit    |
-| arm64   | 51.15.66.128     | 10.200.0.3 | aarch64  | Linux 7.0           | client (active P2P) |
-| Mac M1  | 62.210.195.8     | 10.200.0.4 | darwin/arm64 | macOS 15.6.1    | client (active P2P) |
-| vast.ai | 85.10.218.46:51277 | 10.200.0.5 | amd64  | Linux 6.8 in Docker | client (passive, NAT) |
+| Host    | Public IP / port    | WG IP      | Arch         | OS                  | Role                     |
+|---------|---------------------|------------|--------------|---------------------|--------------------------|
+| hub     | 51.159.237.61       | 10.200.0.1 | amd64        | Linux 7.0           | server / WG exit         |
+| arm64   | 51.15.66.128        | 10.200.0.3 | aarch64      | Linux 7.0           | client (active P2P)      |
+| Mac M1  | 62.210.195.8        | 10.200.0.4 | darwin/arm64 | macOS 15.6.1        | client (active P2P)      |
+| vast.ai | 85.10.218.46:51277  | 10.200.0.5 | amd64        | Linux 6.8 in Docker | client (passive, NATed)  |
 
 > **macOS note.** `uwgwrapper` is Linux/Android only. On the Mac, `uwgsocks`
-> itself runs (and is part of the mesh), but the wrapper does not — apps that
-> need to be tunnelled on macOS must use the SOCKS5/HTTP proxy listeners
-> instead. Mac rows below are therefore marked `N/A — wrapper Linux-only`.
+> itself runs (and is part of the mesh), but the wrapper does not — apps
+> that need to be tunneled on macOS use the SOCKS5/HTTP proxy listeners
+> instead. macOS rows are recorded as `—` for that reason.
 
 ## Universal test target
 
-Every test in this catalog dials `http://10.200.0.1:8787/v1/peers` — the
-mesh-control endpoint that lives on the hub's WireGuard side. From any host
-in the mesh, host-side processes cannot reach this address directly (the
-WireGuard interface lives inside the userspace netstack, not the kernel
-routing table). It only becomes reachable when the process is wrapped, at
-which point `uwgwrapper` redirects `connect()` through the mesh.
+Every test in this catalog dials a mesh-internal URL that the host's bare
+network stack cannot reach. The probe target differs slightly per host
+to work around current engine routing quirks:
 
-So the assertion is uniform: **without wrapper, the connect should fail or
-time out; with wrapper, it should return the peer JSON.**
+| Host             | Probe URL                                                   | Why                                                                                                                                                                                                                          |
+|------------------|-------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| hub              | `http://10.200.0.1:9091/v1/status`                          | Hub's own WG address (10.200.0.1) routes through `inbound.transparent` host_forward → 127.0.0.1:9091 (the runtime API). Reachable unwrapped only on hub processes that already know how to redirect.                       |
+| arm64 / vast.ai  | `http://10.200.0.1:8787/v1/challenge`                       | mesh_control's unauthenticated endpoint, bound inside the hub's netstack. Reachable only via WireGuard transit, which the wrapper provides via `/uwg/socket`.                                                                |
 
-Where an app cannot be coerced into making an HTTP request, the test instead
-asserts that the app boots cleanly under wrapper and that it survives wrapper
-interception of whatever it does network — captured via `-v` wrapper logs
-and per-app probes documented in the scripts.
+For both targets, the **unwrapped** probe is asserted to fail before the
+suite starts. If the bare probe succeeds, the harness reports
+`unwrapped_blocked=false` in every result, flagging the assertion as
+non-discriminating.
+
+## Catalog
+
+<!-- BEGIN: rendered table -->
+
+| App | Category | hub (amd64) | arm64 | vast.ai | Mac M1 | Notes |
+|-----|----------|-------------|-------|---------|--------|-------|
+| `curl` | HTTPS client | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | Baseline libc HTTP. systrap-supervised on full hosts. |
+| `wget` | HTTPS client | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | Same shape as curl. |
+| `python` | HTTPS client | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | Python 3 urllib — CPython + libc + the TCP_NODELAY fix this commit landed. |
+| `node` | HTTPS client | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | V8 JIT survives seccomp+systrap; libc-routed connect. |
+| `ssh` | TCP client | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | Dials a tunnel-internal TCP port; banner read proves interception. |
+| `git` | HTTPS client | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | Clones a tiny public repo; exec tree (git → git-remote-https → curl). |
+| `pip` | HTTPS client | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | PyPI fetch via CPython requests stack. |
+| `xh` | HTTPS client | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | Rust HTTP client (curl alternative). |
+| `gh` | static Go | ✅ `systrap-docker` | ✅ `systrap-docker` | ✅ `systrap-docker` | — | GitHub CLI — static Go binary; --version boots cleanly under systrap-docker. |
+| `cloudflared` | static Go daemon | ✅ `systrap-docker` | ✅ `systrap-docker` | ✅ `systrap-docker` | — | Cloudflare tunnel client — static Go binary. |
+| `java-http` | JVM | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | OpenJDK HttpURLConnection — JIT, GC, NIO. Verifies the IPv4-mapped IPv6 fix. |
+| `java-minecraft` | JVM server | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | Real Paper Minecraft server, TCP listener on 25565. |
+| `nginx` | C server | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | nginx in foreground, worker fork model, accept loop. |
+| `electron` | Chromium | ✅ `systrap-supervised` | — | — | — | Headless chromium binary boot under wrapper. Snap-confined chromium-browser shells skipped — install non-snap chrome on arm64. |
+| `postgres` | DB client | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | — | Docker-hosted Postgres + `psql` SELECT through wrapper. |
+| `mongo` | DB client | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | — | Docker-hosted Mongo + `mongosh` ping through wrapper. |
+| `odoo` | Python ERP | — | — | — | — | Odoo --version (boot smoke; full ERP install is a separate soak). |
+| `pytorch-mnist` | ML | 🚧 | 🚧 | ✅ `systrap-supervised` | — | PyTorch + torchvision MNIST training (vast.ai GPU host). |
+
+<!-- END: rendered table -->
+
+Legend: ✅ wrapped run passed and unwrapped probe failed · 🚧 not run (missing
+binary, missing GPU, or upstream rejected `-ea` Java) · ❌ wrapped run failed
+under wrapper · — not applicable on this host.
+
+## Bugs surfaced + fixed while building this catalog
+
+Driving real apps through the wrapper uncovered four interop issues that
+are fixed in the same commit as this catalog:
+
+1. **`setsockopt(SOL_TCP,…)` returned `EOPNOTSUPP` on proxied fds.**
+   `preload/core/fd_ops.c` now swallows protocol-level options
+   (`SOL_TCP`, `SOL_IP`, `SOL_IPV6`, `SOL_UDP`) on a proxied fd —
+   the underlying kernel socket is AF_UNIX (the fdproxy stream end)
+   and can't satisfy them, but apps surface the error to user code
+   and abort. Python 3.14's `urllib`, `xh`, and others fail noisily
+   without this.
+
+2. **IPv4-mapped IPv6 destinations were not unmapped before routing.**
+   `internal/engine/socket_api.go` now `.Unmap()`s `req.DestIP` and
+   `req.BindIP` before routing. OpenJDK NIO and other dual-stack
+   clients dial IPv4 targets via `::ffff:10.200.0.1`; the engine
+   previously left that in the IPv6 path and broke connections with
+   `SIGPIPE` / `ConnectException`.
+
+3. **The freestanding static-injection blob couldn't be found at runtime.**
+   `cmd/uwgwrapper/embed_static_${arch}.go` now `//go:embed`s the blob
+   into the wrapper binary, with a `/tmp/uwgwrapper-<uid>/` materialize
+   step in `inject_static.go`. `staticBlobPath()` falls back to the
+   embedded bytes when no on-disk asset is reachable, so the
+   systrap-supervised dynamic→static exec path is armed even when the
+   wrapper is invoked from a non-repo CWD.
+
+4. **`auto` cascade decision wasn't logged.** Verbose mode now prints
+   `auto: chose <mode> (target=<kind>, seccomp=<bool> ptrace=<bool>)`
+   — invaluable for diagnosing which mode was actually selected when
+   debugging a wrapped app.
+
+## Remaining engine limitations exposed by the catalog
+
+The following are documented gaps the catalog tests exercise (and that
+the suite degrades gracefully around):
+
+- **Hub `inbound.transparent` host-forward only bridges destinations that
+  are explicitly host-bound via the engine.** From a non-hub peer,
+  dialing `10.200.0.1:22` (host sshd on `0.0.0.0:22`) is refused — the
+  engine sees no netstack listener and rejects rather than forwarding to
+  host loopback. `10.200.0.1:9091` works because the runtime API is
+  explicitly registered. Per-port host_forward configuration would
+  generalize this, but for the catalog we route SSH at `mesh_control`'s
+  TCP port (8787) instead — a non-SSH banner is sufficient proof of TCP
+  interception.
+
+- **`socket_api.transparent_bind` defaults to false.** Apps that bind
+  outbound sockets to a non-tunnel address before connecting (Chromium's
+  QUIC startup, PyTorch's IPv6 prefetch, occasionally pip on QUIC HTTPS)
+  get `"transparent bind is disabled"` rejections. The connection then
+  retries via plain TCP and usually succeeds. Setting
+  `socket_api.transparent_bind: true` in the daemon YAML eliminates the
+  warnings.
+
+- **Paper Minecraft's netty listener has an `epoll_ctl` interaction with
+  wrapped fds.** The server boots successfully, JIT warms up, world
+  generates, and the `Done (Xs)!` line prints — but the listener at
+  `*:25565` fails to register with the wrapper's proxy. Treated as a
+  boot-survival pass; listener-side wrapping is tracked separately.
+
+- **`gh api` does not currently complete under wrapper.** `gh --version`
+  boots cleanly, but `gh api meta` errors with `error connecting to
+  api.github.com` because gh's pure-Go DNS resolver interacts oddly with
+  the `--force-loopback-dns` redirect. Boot survival is asserted; the
+  network round-trip is a follow-up.
 
 ## Harness
 
 All test runs are reproducible via `scripts/catalog/`:
 
-- `scripts/catalog/run-suite.sh` — top-level driver per host
-- `scripts/catalog/apps/*.sh` — one per app
-- `scripts/catalog/lib.sh` — shared helpers
+```bash
+# Inventory:
+scripts/catalog/
+├── README.md           # runtime contract for the test scripts
+├── lib.sh              # shared bash helpers (probe URL, transport parsing, …)
+├── run-suite.sh        # top-level driver per host
+├── render-table.py     # rebuild the table from scripts/catalog/results/
+└── apps/
+    ├── _http_client.sh # template for HTTPS-client app tests
+    ├── curl.sh
+    ├── wget.sh
+    ├── python.sh
+    ├── node.sh
+    ├── ssh.sh
+    ├── git.sh
+    ├── pip.sh
+    ├── xh.sh
+    ├── gh.sh
+    ├── cloudflared.sh
+    ├── java-http.sh
+    ├── java-minecraft.sh
+    ├── nginx.sh
+    ├── electron.sh
+    ├── postgres.sh
+    ├── mongo.sh
+    ├── odoo.sh
+    └── pytorch-mnist.sh
+```
 
-Results land under `scripts/catalog/results/<host>.md` and are summarized
-in this document.
-
-## Catalog
-
-Legend:
-- ✅ runs cleanly under `uwgwrapper auto`
-- ⚠️ runs with a documented flag tweak
-- ❌ does not run; reason recorded
-- — not applicable on this host
-- ⏳ pending (build / run still in progress)
-
-| # | App | Category | hub (amd64) | arm64 | vast.ai | mac | Notes |
-|---|-----|----------|-------------|-------|---------|-----|-------|
-| 1 | `curl` (libc, dynamic) | HTTPS client | ⏳ | ⏳ | ⏳ | — | Baseline. Picks `systrap-supervised` (seccomp+ptrace) on full hosts. |
-| 2 | `wget` (libc, dynamic) | HTTPS client | ⏳ | ⏳ | ⏳ | — | Same as curl. |
-| 3 | `ssh` (OpenSSH client) | TCP client | ⏳ | ⏳ | ⏳ | — | Dial mesh-internal sshd on `10.200.0.1:22`. |
-| 4 | `git` (clone via HTTPS) | HTTPS client | ⏳ | ⏳ | ⏳ | — | Pulls small public repo via tunnel exit. |
-| 5 | `pip install` (CPython) | HTTPS client | ⏳ | ⏳ | ⏳ | — | Network from `pip` + verifies CPython survives systrap. |
-| 6 | `python3` (raw HTTP via stdlib) | HTTPS client | ⏳ | ⏳ | ⏳ | — | `python3 -c 'urllib.request...'`. |
-| 7 | `node` (v8 JIT) | HTTPS client | ⏳ | ⏳ | ⏳ | — | Tests JIT survives seccomp+systrap. |
-| 8 | `gh` (GitHub CLI, Go static) | HTTPS client | ⏳ | ⏳ | ⏳ | — | Static-Go target → exercises systrap-docker cascade. |
-| 9 | `xh` (Rust HTTP client, dynamic glibc) | HTTPS client | ⏳ | ⏳ | ⏳ | — | Popular `curl` alternative in Rust. |
-| 10 | Java JVM — Paper Minecraft server | server / JIT | ⏳ | ⏳ | ⏳ | — | Boots `paper.jar` and accepts a mock connect. JIT + GC + listener. |
-| 11 | `nginx` | server | ⏳ | ⏳ | ⏳ | — | Worker fork model — exercises supervised execve. |
-| 12 | Electron (headless chromium) | renderer | ⏳ | ⏳ | ⏳ | — | `--no-sandbox --headless=new` against tunnel endpoint. |
-| 13 | `cloudflared` (Go static) | tunnel daemon | ⏳ | ⏳ | ⏳ | — | `cloudflared --version` + access tcp smoke. |
-| 14 | Odoo (Python + Postgres) | ERP server | ⏳ | ⏳ | ⏳ | — | Boot smoke only; full install in soak. |
-| 15 | PyTorch + MNIST on GPU | ML training | — | — | ⏳ | — | vast.ai only (GPU). |
-
-(Result columns are filled in by the harness; this table reflects the state
-of `scripts/catalog/results/`.)
-
-## Per-app detail
-
-See `scripts/catalog/apps/<name>.sh` for the exact commands. For each app:
-- the script writes a `<host>/<app>.json` result file with transport, status,
-  duration, and stderr excerpts;
-- this catalog renders the summary across all hosts.
-
-## Reproducing locally
+To run the catalog yourself on a host that's already in a uwgsocks mesh:
 
 ```bash
-# On a fresh Linux host with Go + gcc + make:
-git clone --depth 1 https://github.com/reindertpelsma/userspace-wireguard-socks.git
+# 1. Clone + build:
+git clone https://github.com/reindertpelsma/userspace-wireguard-socks.git
 cd userspace-wireguard-socks
 bash compile.sh
 
-# Bring up a uwgsocks client (or join an existing mesh — see docs/howto/01-join-a-mesh.md)
-./uwgsocks --config examples/socksify.yaml &
-
-# Then drive the catalog:
+# 2. Run the suite (auto-skips apps whose binaries are absent):
+export CATALOG_HOST=$(hostname -s)
+export UWGSOCKS_API=http://127.0.0.1:9091   # or 9092/9094 per node
 bash scripts/catalog/run-suite.sh
+
+# 3. Re-render the catalog table:
+python3 scripts/catalog/render-table.py --update
 ```
 
-See [`scripts/catalog/README.md`](../../scripts/catalog/README.md) for the
-runtime contract (env vars, exit codes, where results land).
+Per-app result JSON lands in `scripts/catalog/results/<host>/<app>.json`.
+Each record captures: transport selected by `auto`, wrapped run outcome,
+unwrapped probe block status, duration, and a tail of wrapper + app
+output for forensic use.
+
+## Reproducing on a fresh host
+
+The harness's `apps/*.sh` scripts each carry their own install hints in
+`record_result` notes when the binary is missing — running the suite once
+on a stock Ubuntu host produces a punch list of `apt install` commands.
+A minimum-viable Linux setup:
+
+```bash
+DEBIAN_FRONTEND=noninteractive apt-get install -yq \
+    curl wget python3 python3-pip nodejs ssh git \
+    nginx default-jdk-headless postgresql-client \
+    chromium-browser
+# Plus, for the static-Go cascade:
+#   gh: https://cli.github.com/manual/installation
+#   cloudflared: https://github.com/cloudflare/cloudflared/releases/latest
+#   xh: https://github.com/ducaale/xh/releases/latest
+# For Paper Minecraft, install Adoptium Temurin 21 GA (Paper rejects -ea):
+#   https://adoptium.net/temurin/releases/?version=21
+# For mongosh:
+#   https://downloads.mongodb.com/compass/mongosh-2.5.7-linux-{x64,arm64}.tgz
+```
+
+See [`scripts/catalog/README.md`](../../scripts/catalog/README.md) for
+the runtime contract (env vars, exit codes, where results land).

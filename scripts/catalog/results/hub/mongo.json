@@ -1,0 +1,9 @@
+{
+  "host": "hub",
+  "app": "mongo",
+  "transport": "systrap-supervised",
+  "wrapped_ok": true,
+  "unwrapped_blocked": true,
+  "duration_seconds": 0.49,
+  "notes": "target=127.0.0.1:57017 (container=uwg-catalog-mongo-810189) | out: {\"ok\":1} | err-tail: ad=/tmp/uwgwrapper-0/uwgpreload-c71746bb80a215ac.so listen=/tmp/uwgfdproxy-810471.sock api=http://127.0.0.1:9091 socketPath=/uwg/socket spawnFDProxy=true|uwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)|"
+}
