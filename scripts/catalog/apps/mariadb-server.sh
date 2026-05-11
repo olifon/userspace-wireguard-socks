@@ -24,7 +24,7 @@ if [[ -z "$client" ]]; then
   exit 0
 fi
 
-MARIA_PORT="${MARIA_PORT:-$(( ( RANDOM % 20000 ) + 53000 ))}"
+MARIA_PORT="${MARIA_PORT:-$(( ( RANDOM % 10000 ) + 50000 ))}"
 case "$CATALOG_HOST" in
   hub|*amd64-host*|*hub*) wg_ip="10.200.0.1" ;;
   arm64)                   wg_ip="10.200.0.3" ;;
@@ -37,6 +37,17 @@ DB_USER="${DB_USER:-mysql}"
 if ! id -u "$DB_USER" >/dev/null 2>&1; then
   record_result "$app" false "${UNWRAPPED_BLOCKED:-true}" "no-mysql-user" 0 "mysql unix user missing"
   exit 0
+fi
+
+# AppArmor: Ubuntu's mariadbd ships with an AppArmor profile that denies
+# read+mmap of /tmp/uwgwrapper-*/uwgpreload-*.so, so ld.so silently drops
+# our LD_PRELOAD and the daemon runs unwrapped (kernel bind to a tunnel
+# address quietly fails). Flip the profile to complain mode if it's in
+# enforce mode and we have aa-complain available; otherwise document.
+if command -v aa-status >/dev/null && command -v aa-complain >/dev/null; then
+  if aa-status 2>/dev/null | awk '/profiles are in enforce mode/{enforce=1;next}/profiles are in complain mode/{enforce=0;next}enforce && /mariadbd/{print "yes"; exit}' | grep -q yes; then
+    aa-complain /usr/sbin/mariadbd >/dev/null 2>&1 || true
+  fi
 fi
 
 work=$(mktemp -d)
