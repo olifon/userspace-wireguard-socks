@@ -63,6 +63,7 @@ non-discriminating.
 | `java-minecraft` | JVM server | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | Real Paper Minecraft server, TCP listener on 25565. |
 | `nginx` | C server | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | nginx in foreground, worker fork model, accept loop. |
 | `electron` | Chromium | ✅ `systrap-supervised` | — | — | — | Headless chromium binary boot under wrapper. Snap-confined chromium-browser shells skipped — install non-snap chrome on arm64. |
+| `caddy` | Go HTTP server | ✅ `?` | — | ✅ `?` | — | Wrapped Caddy bound on tunnel WG addr; peer's wrapped curl gets the response body. Forces preload transport — systrap-supervised SIGILLs on caddy's IPv6 socket probe (open issue, see project memory). |
 | `postgres` | DB client | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | — | Docker-hosted Postgres + `psql` SELECT through wrapper. |
 | `postgres-server` | DB server | ✅ `systrap-supervised` | — | — | — | Wrapped `postgres` daemon bound to a tunnel WG address; peer's psql reads back through WG. |
 | `mongo` | DB client | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | — | Docker-hosted Mongo + `mongosh` ping through wrapper. |

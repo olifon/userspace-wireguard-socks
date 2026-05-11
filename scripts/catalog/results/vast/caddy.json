@@ -1,0 +1,9 @@
+{
+  "host": "vast",
+  "app": "caddy",
+  "transport": "",
+  "wrapped_ok": true,
+  "unwrapped_blocked": true,
+  "duration_seconds": 0.59,
+  "notes": "wg_ip=10.200.0.5 port=55052 ready=true | out: uwg-catalog-caddy-55052-ok | err-tail: o\",\"ts\":1778532069.5256724,\"msg\":\"autosaved config (load with --resume flag)\",\"file\":\"/root/.config/caddy/autosave.json\"}|{\"level\":\"info\",\"ts\":1778532069.525683,\"msg\":\"serving initial configuration\"}|"
+}
