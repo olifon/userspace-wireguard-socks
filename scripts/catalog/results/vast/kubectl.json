@@ -1,0 +1,9 @@
+{
+  "host": "vast",
+  "app": "kubectl",
+  "transport": "",
+  "wrapped_ok": true,
+  "unwrapped_blocked": true,
+  "duration_seconds": 7.32,
+  "notes": "pod=uwg-catalog-25207-8009 nodes=node/arm64-test-box launch=pod/uwg-catalog-25207-8009 created exec=kubectl-wrapped-exec-ok|aarch64 wait=pod/uwg-catalog-25207-8009 condition met watch-lines=3 | err-tail: "
+}
