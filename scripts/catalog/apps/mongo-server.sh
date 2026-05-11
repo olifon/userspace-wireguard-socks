@@ -24,7 +24,7 @@ if [[ -z "$client" ]]; then
   exit 0
 fi
 
-MONGO_PORT="${MONGO_PORT:-57018}"
+MONGO_PORT="${MONGO_PORT:-$(( ( RANDOM % 10000 ) + 50000 ))}"
 case "$CATALOG_HOST" in
   hub|*amd64-host*|*hub*) wg_ip="10.200.0.1" ;;
   arm64)                   wg_ip="10.200.0.3" ;;
@@ -48,10 +48,16 @@ SRVPID=$!
 
 ready=false
 # mongod 8.0 cold-start under wrapper takes longer than its baseline
-# (WiredTiger init + FTDC init each adds latency).  Pollers should
-# allow ~180s wall before declaring "not ready".
+# (WiredTiger init + FTDC init each adds latency). Probe two ways: the
+# canonical "Waiting for connections" log line, AND a real connect to
+# the configured port. The log may not be flushed when the netstack
+# listener accepts its first connection — happens in practice on busy
+# hosts where mongod is delayed in flushing stdio.
 for i in $(seq 1 360); do
   if grep -q 'Waiting for connections' "$log_out" 2>/dev/null; then
+    ready=true; break
+  fi
+  if (echo > /dev/tcp/127.0.0.1/$MONGO_PORT) 2>/dev/null; then
     ready=true; break
   fi
   if ! kill -0 $SRVPID 2>/dev/null; then break; fi
