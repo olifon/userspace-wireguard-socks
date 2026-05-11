@@ -60,16 +60,16 @@ start=$(date +%s.%N)
 # Start server under wrapper, non-interactive (no stdin).
 ( cd "$work" && \
   "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
-    "$JAVA_BIN" -Xmx512M -Xms256M -jar paper.jar --nogui </dev/null >"$log_out" 2>"$err" ) &
+    "$JAVA_BIN" -Xmx1024M -Xms512M -jar paper.jar --nogui --port 25565 </dev/null >"$log_out" 2>"$err" ) &
 srvpid=$!
 
-# Wait up to 120s for "Done (" line or port to open.
+# Wait up to 180s for "Done (" line or port to open. Paper's first boot
+# on a fresh world generates terrain — that's the slow path.
 ok=false
-for i in $(seq 1 240); do
+for i in $(seq 1 360); do
   if grep -q 'Done (' "$log_out" 2>/dev/null; then
     ok=true; break
   fi
-  # Or accept early proof: port open
   if (echo > /dev/tcp/127.0.0.1/25565) 2>/dev/null; then
     ok=true; break
   fi

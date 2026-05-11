@@ -4,6 +4,6 @@
   "transport": "systrap-supervised",
   "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 0.18,
-  "notes": "out: Warning: Permanently added '10.200.0.1' (ED25519) to the list of known hosts.\r\nbanner-probe@10.200.0.1: Permission denied (publickey).\r | err-tail: er: mode=launch target=/usr/bin/timeout transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-c71746bb80a215ac.so listen=/tmp/uwgfdproxy-765272.sock api=http://127.0.0.1:9091 socketPath=/uwg/socket spawnFDProxy=true|uwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)|"
+  "duration_seconds": 0.23,
+  "notes": "out: Connection closed by 10.200.0.1 port 9091\r | err-tail: er: mode=launch target=/usr/bin/timeout transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-c71746bb80a215ac.so listen=/tmp/uwgfdproxy-779042.sock api=http://127.0.0.1:9091 socketPath=/uwg/socket spawnFDProxy=true|uwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)|"
 }

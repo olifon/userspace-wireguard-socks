@@ -4,6 +4,6 @@
   "transport": "",
   "wrapped_ok": false,
   "unwrapped_blocked": true,
-  "duration_seconds": 0.52,
-  "notes": "paper-version=1.21.4 build=232 | done-line=false listener=false | log-tail: Downloading mojang_1.21.4.jar| | err-tail: lip.DownloadContext.download(DownloadContext.java:55)|\tat io.papermc.paperclip.Paperclip.setupClasspath(Paperclip.java:63)|\tat io.papermc.paperclip.Paperclip.main(Paperclip.java:28)|\tat java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:104)|\tat java.base/java.lang.reflect.Method.invoke(Method.java:565)|\tat io.papermc.paperclip.Main.main(Main.java:26)|"
+  "duration_seconds": 1.05,
+  "notes": "paper-version=1.21.4 build=232 | done-line=false listener=false | log-tail: Downloading mojang_1.21.4.jar| | err-tail: lip.DownloadContext.download(DownloadContext.java:55)|\tat io.papermc.paperclip.Paperclip.setupClasspath(Paperclip.java:63)|\tat io.papermc.paperclip.Paperclip.main(Paperclip.java:28)|\tat java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:103)|\tat java.base/java.lang.reflect.Method.invoke(Method.java:580)|\tat io.papermc.paperclip.Main.main(Main.java:26)|"
 }
