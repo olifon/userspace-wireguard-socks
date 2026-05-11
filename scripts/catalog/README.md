@@ -6,47 +6,67 @@
 Reproduces the runs behind
 [`docs/catalog/production-applications.md`](../../docs/catalog/production-applications.md).
 
+## What it tests
+
+Real production applications driven through `uwgwrapper` against a real
+uwgsocks instance, with assertions that the wrapped call genuinely flows
+through the mesh-side socket API rather than the host network. Each
+script is self-contained (downloads its own test fixtures, picks an
+ephemeral port, cleans up). Tags every result with the transport the
+`auto` cascade selected so regressions in transport selection surface
+immediately.
+
 ## Layout
 
 ```
 scripts/catalog/
-├── README.md
-├── lib.sh                # shared bash helpers
-├── run-suite.sh          # top-level driver — runs every app on the current host
-├── apps/                 # one script per application
-│   ├── curl.sh
-│   ├── wget.sh
-│   ├── ssh.sh
-│   ├── git.sh
-│   ├── pip.sh
-│   ├── python.sh
-│   ├── node.sh
-│   ├── gh.sh
-│   ├── xh.sh
-│   ├── java-minecraft.sh
-│   ├── nginx.sh
-│   ├── electron.sh
-│   ├── cloudflared.sh
-│   ├── odoo.sh
-│   └── pytorch-mnist.sh
-└── results/<host>/<app>.json
+├── README.md                   # this file
+├── lib.sh                      # shared bash helpers (probe URL, transport parsing)
+├── run-suite.sh                # driver — runs every app on the current host
+├── ci-selfloop.sh              # release.yml's gate — runs the no-peer subset
+├── render-table.py             # rebuild docs/catalog/production-applications.md
+├── results/<host>/<app>.json   # per-app outcome
+└── apps/
+    ├── _http_client.sh         # shared body for HTTP-client style tests
+    ├── curl.sh wget.sh xh.sh   # HTTPS clients (libc)
+    ├── python.sh node.sh       # CPython + V8 HTTPS clients
+    ├── ssh.sh git.sh pip.sh    # tunnel-internal TCP / exec-tree / package fetch
+    ├── gh.sh cloudflared.sh    # static Go binaries (PT_INTERP path)
+    ├── java-http.sh            # OpenJDK HttpURLConnection
+    ├── java-minecraft.sh       # real Paper Minecraft 1.21 server boot
+    ├── nginx.sh                # foreground nginx, worker fork model
+    ├── electron.sh             # headless chromium / electron --version boot
+    ├── dig.sh                  # BIND9 DNS query (UDP @1.1.1.1)
+    ├── ntp.sh                  # ntpdig / sntp / python NTP (UDP 123)
+    ├── iperf3-udp.sh           # UDP throughput
+    ├── curl-http3.sh           # QUIC / HTTP/3 (libcurl with ngtcp2)
+    ├── udp-echo-bind.sh        # wrapped UDP server bound to a tunnel addr
+    ├── postgres.sh             # docker-hosted Postgres + psql client
+    ├── postgres-server.sh      # wrapped postgres daemon bound to a tunnel addr
+    ├── mongo.sh                # docker-hosted Mongo + mongosh client
+    ├── mongo-server.sh         # wrapped mongod bound to a tunnel addr
+    ├── mariadb-server.sh       # wrapped mariadbd bound to a tunnel addr
+    ├── odoo.sh                 # Odoo --version boot smoke
+    └── pytorch-mnist.sh        # PyTorch CIFAR / MNIST training (vast.ai GPU)
 ```
 
 ## Runtime contract
 
-Each `apps/<name>.sh` exports:
-- `app_name`, `app_category`
-- function `run_test` returning 0 on success, non-zero on failure
-- function `teardown` (optional) for cleanup
+Each `apps/<name>.sh` is independent. It:
 
-`run_test` is expected to:
-1. install/locate the binary (call `install_app` helper if needed),
-2. run it under `${UWGWRAPPER_BIN} --api=${UWGSOCKS_API} -- <app-cmd>`,
-3. assert that the **wrapped** invocation reaches the tunnel-internal
-   endpoint `http://10.200.0.1:8787/v1/peers`,
-4. compare against the **un-wrapped** baseline (must fail/timeout).
+1. Locates / installs its target binary (records `missing-bin` and exits 0
+   if absent, so a partial host gracefully skips rather than fails the
+   suite).
+2. Spawns it under `${UWGWRAPPER_BIN} --api=${UWGSOCKS_API} --transport=auto`.
+3. Drives a meaningful operation through the wrapped binary — an HTTPS
+   fetch, a SELECT, a `mongosh ping`, an `mc client → Done (Xs)!` boot,
+   etc. Asserts the operation goes via the tunnel and not the bare host
+   stack (the suite pre-flights an unwrapped probe and tags results with
+   `unwrapped_blocked=true|false`).
+4. Writes `results/<host>/<app>.json` with transport selected, wrapped
+   outcome, duration, and a forensic tail of wrapper + app output.
 
-Results are written to `results/<host>/<app>.json`:
+The result JSON shape:
 
 ```json
 {
@@ -55,44 +75,130 @@ Results are written to `results/<host>/<app>.json`:
   "transport": "systrap-supervised",
   "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 1.42,
+  "duration_seconds": 0.10,
   "notes": "..."
 }
 ```
 
+`render-table.py` aggregates every host's result files back into the
+catalog markdown.
+
 ## Environment
 
-The driver assumes these env vars, set automatically by `run-suite.sh`:
+`run-suite.sh` exports these defaults (override any in the shell):
 
-| Variable          | Meaning                                            | Default per host        |
-|-------------------|----------------------------------------------------|-------------------------|
-| `UWGSOCKS_BIN`    | Path to `uwgsocks` binary                          | repo `./uwgsocks` if built |
-| `UWGWRAPPER_BIN`  | Path to `uwgwrapper` binary                        | repo `./uwgwrapper`     |
-| `UWGSOCKS_API`    | Wrapper API endpoint                               | `http://127.0.0.1:909X` |
-| `MESH_PROBE_URL`  | Tunnel-only HTTP target used as connectivity probe | `http://10.200.0.1:8787/v1/peers` |
-| `RESULTS_DIR`     | Where to write per-app JSON                        | `scripts/catalog/results/<host>` |
-| `CATALOG_HOST`    | Logical host name                                  | `hub`, `arm64`, `vast`, `mac` |
+| Variable          | Default                                           | Meaning |
+|-------------------|---------------------------------------------------|---------|
+| `CATALOG_HOST`    | `$(hostname -s)`                                  | Logical host slug (`hub`, `arm64`, `vast`, `mac`). |
+| `UWGSOCKS_API`    | `http://127.0.0.1:9091`                           | Wrapper-side API endpoint of the local uwgsocks. |
+| `UWGWRAPPER_BIN`  | absolute path to `uwgwrapper` in the repo         | The wrapper binary the scripts spawn. Must be absolute — scripts `cd $work` before invocation. |
+| `UWGSOCKS_BIN`    | absolute path to `uwgsocks` in the repo           | Used by `ci-selfloop.sh` to spin up a temporary daemon. |
+| `MESH_PROBE_URL`  | per-host:<br>hub → `http://10.200.0.1:9091/v1/status`<br>else → `http://10.200.0.1:8787/v1/challenge` | The tunnel-only HTTP target used to assert the wrapper actually intercepts. |
+| `RESULTS_DIR`     | `scripts/catalog/results/<host>`                  | Where per-app JSON lands. |
+| `JAVA_GA`         | `/opt/jdk21/bin/java` if present                  | Override for Paper Minecraft (rejects `-ea` Java). |
+| `PG_USER` / `DB_USER` | `postgres` / `mysql`                          | Unix users daemons drop privileges to (postgres / mariadbd refuse root). |
+| `MONGO_PORT` etc. | random in `[50000, 60000)`                        | Ephemeral ports per daemon test to avoid sticky netstack state from a previous run. |
 
 ## Running
 
 ```bash
-# On a host already in the mesh:
+# Full suite on a host that's already in the mesh:
 export CATALOG_HOST=arm64
 export UWGSOCKS_API=http://127.0.0.1:9092
 bash scripts/catalog/run-suite.sh
 
-# Or one app at a time:
-bash scripts/catalog/apps/curl.sh
-```
+# Single app:
+bash scripts/catalog/apps/postgres-server.sh
 
-Per-app scripts pick the right binaries based on `$PATH` and the env
-variables above.
+# CI's no-peer subset (used by release.yml on tag pushes):
+bash scripts/catalog/ci-selfloop.sh
+
+# Re-render the catalog table after pulling fresh results from other hosts:
+rsync -aqz <other-host>:.../scripts/catalog/results/<their-host>/ \
+            scripts/catalog/results/<their-host>/
+python3 scripts/catalog/render-table.py --update
+```
 
 ## What "pass" means
 
 A row is green only when **both** of:
-- the wrapped invocation reached the mesh-internal endpoint
-- the un-wrapped invocation could **not** reach it
 
-The second half is important — without it, a green wrapped run could mean
-"the wrapper did nothing and the host network happened to route the address".
+- The wrapped invocation reached its target (HTTP-200, valid SQL row,
+  mongo `{"ok":1}`, "Done (Xs)!", etc).
+- The unwrapped baseline probe was blocked (so a green wrapped run
+  isn't an accident of host routing already covering the destination).
+
+The pre-flight unwrapped probe runs before any apps. If it succeeds —
+e.g., because the host's kernel already has a route to `10.200.0.1` —
+the harness tags `unwrapped_blocked=false` in every result and the
+table reader treats them with skepticism.
+
+## `ci-selfloop.sh` vs the full suite
+
+The full suite expects a real mesh (multi-peer; peers may need to ssh
+back through to validate server-bind tests). `ci-selfloop.sh` is the
+self-contained variant that release.yml runs on every tag push:
+
+- Spins up a fresh single-node uwgsocks with the recommended hub config
+  (`inbound.transparent: true`, `host_forward.inbound.enabled: true`,
+  `socket_api.{bind,transparent_bind}: true`) on random ports so it
+  never clashes with an already-running instance.
+- Generates ephemeral WireGuard keys; no real peer is needed because
+  every test dials a local netstack listener through the wrapper.
+- Runs 14 of the apps (curl, wget, python, node, ssh, git, pip, xh,
+  gh, cloudflared, java-http, nginx, dig, iperf3-udp).
+- Deliberately skips: `java-minecraft` (~200MB Paper jar download),
+  `electron` (Chrome install), `pytorch-mnist` (no GPU on runners),
+  `odoo` (apt package on noble has a werkzeug regression),
+  `{postgres,mongo,mariadb}-server` (heavy daemon install + sudo + apparmor),
+  `udp-echo-bind` (depends on engine-side same-host loopback routing
+  that's not gated yet).
+
+## Daemon tests — environment requirements
+
+| Test               | What you need                            |
+|--------------------|------------------------------------------|
+| `postgres-server`  | `postgres` + `psql` packages. The script `sudo`s to the unix `postgres` user (daemon refuses root). |
+| `mariadb-server`   | `mariadb-server` + `mariadb-install-db`. The script `aa-complain`s `/usr/sbin/mariadbd` if its AppArmor profile is in enforce mode (the default profile denies `/tmp/uwgwrapper-*/uwgpreload-*.so`, so LD_PRELOAD silently drops and the daemon runs unwrapped). |
+| `mongo-server`     | `mongodb-org-server` from MongoDB's apt repo (Ubuntu doesn't ship mongod). No special profile work needed — there's no AppArmor `mongod` profile shipped by upstream. |
+| `postgres` / `mongo` (client-side tests) | docker, plus `psql` / `mongosh`. Spawn ephemeral `postgres:16-alpine` / `mongo:7` containers. |
+
+## Adding a new app
+
+Drop `apps/<name>.sh`, follow the pattern of an existing test:
+
+1. Source `lib.sh`.
+2. Look up the binary; record `missing-bin` if absent.
+3. Build a wrapped command that exercises real network behavior. For
+   HTTPS clients, the `_http_client.sh` template handles the boilerplate.
+4. Call `record_result <app> <wrapped_ok> "${UNWRAPPED_BLOCKED:-true}"
+   <transport> <duration> <notes>` to write the result JSON.
+5. Exit 0 if wrapped_ok, non-zero otherwise (drives `run-suite.sh`'s
+   pass / fail counters).
+
+Then update `render-table.py`'s `CATALOG_APPS` list with a short
+display name + category, and `ci-selfloop.sh`'s `APPS=(...)` array if
+the test is small/fast/peer-independent enough for CI.
+
+## Past pitfalls baked into the harness
+
+- **Always use absolute paths**. Scripts `cd $work` before invoking
+  the wrapper, so a relative `../../uwgwrapper` resolves from `$work`
+  and the wrapper exits in 0.5s, looking like the app crashed.
+  `lib.sh` resolves `UWGWRAPPER_BIN` to an absolute path at source.
+- **Daemon ports must be randomized.** Sticky netstack listener state
+  in the engine across re-runs can hold a previous test's bind and
+  make the next run hang on `LISTEN`. Each daemon test picks a fresh
+  port in `[50000, 60000)` per run.
+- **Server `bind()` to tunnel addresses doesn't work from the local
+  hub.** A host process dialing `10.200.0.1:<port>` short-circuits
+  through `inbound.transparent` host_forward → 127.0.0.1:<port> —
+  which doesn't match where the wrapped daemon's listener actually
+  lives (in netstack). The server-bind tests therefore have the local
+  daemon launch on the hub and ssh to an arm64 peer to dial it back
+  through WG. Configure the peer's API endpoint with
+  `POSTGRES_PEER` / `POSTGRES_PEER_API` etc.
+- **Don't trust `pg_isready`-style ready signals alone.** Real daemons
+  log "ready" before they accept TCP; the daemon tests poll for both
+  the canonical log line AND a successful `/dev/tcp/127.0.0.1/<port>`
+  probe.
