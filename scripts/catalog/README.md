@@ -264,3 +264,40 @@ sudo ln -sf /opt/http3/bin/curl /usr/local/bin/curl-http3
 The script forces `--ipv4` because cloudflare-quic.com resolves to
 both v4 and v6; the default uwgsocks engine config doesn't enable
 IPv6 outbound through the tunnel (`engine.IPv6 disabled` error).
+
+## Building Odoo from source
+
+Ubuntu noble's apt `odoo` package ships Odoo 16, whose `odoo/http.py`
+imports `werkzeug.__version__` — a constant Werkzeug 3.x removed. So
+the apt path is permanently broken on Ubuntu 26.04 LTS (Werkzeug pins
+to 3.x). Catalog uses a source-built Odoo 18 in a venv.
+
+```bash
+sudo apt-get install -y python3-venv libpq-dev libxml2-dev libxslt-dev \
+    libjpeg-dev libldap2-dev libsasl2-dev libssl-dev libffi-dev git
+
+sudo mkdir -p /opt/odoo && cd /opt/odoo
+sudo git clone --depth 1 --branch 18.0 https://github.com/odoo/odoo
+
+sudo python3 -m venv /opt/odoo/venv
+/opt/odoo/venv/bin/pip install --quiet --upgrade pip wheel setuptools
+
+# Don't install -r requirements.txt as-is on Python 3.14: lxml's
+# pinned old version fails to compile. Install latest:
+/opt/odoo/venv/bin/pip install --quiet \
+    lxml lxml-html-clean psycopg2-binary werkzeug babel pytz \
+    python-dateutil docutils chardet decorator gevent requests \
+    passlib pyopenssl cryptography pillow num2words polib reportlab \
+    vobject xlrd xlsxwriter xlwt openpyxl libsass jinja2 markupsafe \
+    PyPDF2 idna geoip2 cbor2 asn1crypto rjsmin urllib3 zeep \
+    ofxparse python-stdnum psutil qrcode pyserial pyusb
+
+# Shim that the catalog script auto-detects:
+sudo tee /usr/local/bin/odoo-bin >/dev/null <<'SHIM'
+#!/bin/sh
+exec /opt/odoo/venv/bin/python /opt/odoo/odoo/odoo-bin "$@"
+SHIM
+sudo chmod +x /usr/local/bin/odoo-bin
+
+/usr/local/bin/odoo-bin --version    # → Odoo Server 18.0
+```

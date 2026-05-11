@@ -72,7 +72,7 @@ non-discriminating.
 | `iperf3-udp` | UDP | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | UDP throughput against an ephemeral local iperf3 server. |
 | `udp-echo-bind` | UDP server | ✅ `systrap-supervised` | — | — | — | Wrapped Python UDP echo server bound to a tunnel WG address; same-host loopback edge case. |
 | `curl-http3` | QUIC | ✅ `systrap-supervised` | — | — | — | curl --http3-only — gated on a libcurl build with ngtcp2/nghttp3. |
-| `odoo` | Python ERP | — | — | — | — | Odoo --version (boot smoke; full ERP install is a separate soak). |
+| `odoo` | Python ERP | ✅ `systrap-supervised` | — | — | — | Odoo --version (boot smoke; full ERP install is a separate soak). |
 | `pytorch-mnist` | ML | 🚧 | 🚧 | ✅ `systrap-supervised` | — | PyTorch + torchvision MNIST training (vast.ai GPU host). |
 
 <!-- END: rendered table -->
