@@ -77,6 +77,7 @@ non-discriminating.
 | `curl-http3` | QUIC | ✅ `systrap-supervised` | — | — | — | curl --http3-only — gated on a libcurl build with ngtcp2/nghttp3. |
 | `odoo` | Python ERP | ✅ `systrap-supervised` | — | — | — | Odoo --version (boot smoke; full ERP install is a separate soak). |
 | `kubectl` | K8s control plane | — | — | ✅ `?` | — | Full lifecycle through wrapper: run pod → wait → exec (websocket upgrade) → logs → watch → delete. Tests HTTP/2 long-poll + WebSocket upgrade — the new signal vs every other HTTPS client. |
+| `helm-odoo` | K8s deployed app | ✅ `?` | — | — | — | End-to-end: wrapped helm deploys Odoo+Postgres to microk8s, wrapped kubectl pulls the admin password from the cluster secret, wrapped curl completes Odoo's CSRF login + JSON-RPC, gets back an authenticated admin session through the WG tunnel. |
 | `pytorch-mnist` | ML | 🚧 | 🚧 | ✅ `systrap-supervised` | — | PyTorch + torchvision MNIST training (vast.ai GPU host). |
 
 <!-- END: rendered table -->

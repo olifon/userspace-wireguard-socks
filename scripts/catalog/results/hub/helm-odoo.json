@@ -1,0 +1,9 @@
+{
+  "host": "hub",
+  "app": "helm-odoo",
+  "transport": "",
+  "wrapped_ok": true,
+  "unwrapped_blocked": true,
+  "duration_seconds": 1.22,
+  "notes": "host=10.200.0.3:30080 login_status=400 csrf-len=51 session-len=2028 | err-tail: "
+}
