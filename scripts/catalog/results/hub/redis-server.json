@@ -1,0 +1,9 @@
+{
+  "host": "hub",
+  "app": "redis-server",
+  "transport": "",
+  "wrapped_ok": true,
+  "unwrapped_blocked": true,
+  "duration_seconds": 0.75,
+  "notes": "wg_ip=10.200.0.1 port=51590 ready=true | out: OK\nhello-redis\n1\nPONG | err-tail: "
+}

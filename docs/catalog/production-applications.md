@@ -67,6 +67,7 @@ non-discriminating.
 | `mongo` | DB client | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | — | Docker-hosted Mongo + `mongosh` ping through wrapper. |
 | `mongo-server` | DB server | ✅ `?` | — | — | — | Wrapped `mongod` bound to a tunnel WG address; peer's mongosh runs `ping` end-to-end. |
 | `mariadb-server` | DB server | ✅ `systrap-supervised` | — | — | — | Wrapped `mariadbd` bound to a tunnel WG address; auto `aa-complain`s its AppArmor profile. |
+| `redis-server` | DB server | ✅ `?` | — | — | — | Wrapped `redis-server` bound to a tunnel WG address; peer's `redis-cli` runs SET/GET/DEL/PING through WG. Single-threaded epoll daemon — distinct fingerprint from the fork/thread-pool DB servers. |
 | `dig` | DNS / UDP | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | BIND9 `dig @1.1.1.1` (UDP 53) through wrapper. |
 | `ntp` | NTP / UDP | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | ntpdig / sntp / python NTP — exercises unconnected-UDP path to non-tunnel destinations. |
 | `iperf3-udp` | UDP | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | UDP throughput against an ephemeral local iperf3 server. |
