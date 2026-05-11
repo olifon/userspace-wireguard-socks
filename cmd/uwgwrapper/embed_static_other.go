@@ -4,7 +4,7 @@
 // Stub for archs that don't have a freestanding static blob built.
 // Cross-builds for darwin/windows/bsd land here.
 
-//go:build !amd64 && !arm64
+//go:build linux && !amd64 && !arm64
 
 package main
 

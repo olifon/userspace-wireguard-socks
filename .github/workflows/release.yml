@@ -56,6 +56,15 @@ jobs:
           set -euo pipefail
           bash ./preload/build_ptloader.sh cmd/uwgwrapper/assets
 
+      - name: Build Linux uwgwrapper static-injection blob
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # cmd/uwgwrapper/embed_static_${arch}.go //go:embed's this file.
+          bash ./preload/build_static.sh >/dev/null
+          ls -la cmd/uwgwrapper/assets/uwgpreload-static-*.so
+
       - name: Run tests
         if: runner.os != 'Linux'
         shell: bash
@@ -407,6 +416,13 @@ jobs:
           set -euo pipefail
           bash ./preload/build_ptloader.sh cmd/uwgwrapper/assets
 
+      - name: Build Linux uwgwrapper static-injection blob
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ./preload/build_static.sh >/dev/null
+
       - name: Run lite tests
         shell: bash
         run: |
@@ -688,12 +704,18 @@ jobs:
         with:
           version: 0.14.1
 
-      # Build ptloader first: tests call `go build ./cmd/uwgwrapper` which
-      # requires the embedded ptloader asset to be present.
+      # Build ptloader + static blob first: tests call `go build ./cmd/uwgwrapper`
+      # which requires both embedded assets to be present (//go:embed errors
+      # otherwise).
       - name: Build uwgwrapper ptloader asset
         run: |
           set -euo pipefail
           bash ./preload/build_ptloader.sh cmd/uwgwrapper/assets
+
+      - name: Build uwgwrapper static-injection blob
+        run: |
+          set -euo pipefail
+          bash ./preload/build_static.sh >/dev/null
 
       # Run preload and wrapper tests before building the release artifact.
       # gnu: run tests on the host runner, but build the shipped preload asset later in
@@ -878,6 +900,7 @@ jobs:
                    go version; \
                    gcc --version | head -1; \
                    bash ./preload/build_ptloader.sh cmd/uwgwrapper/assets; \
+                   bash ./preload/build_static.sh >/dev/null; \
                    go test -buildvcs=false -count=1 -timeout 600s ./tests/preload/... || \
                      go test -buildvcs=false -count=1 -timeout 600s ./tests/preload/...'
 

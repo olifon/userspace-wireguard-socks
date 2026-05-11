@@ -57,6 +57,18 @@ jobs:
           set -euo pipefail
           bash ./preload/build_ptloader.sh cmd/uwgwrapper/assets
 
+      - name: Build Linux uwgwrapper static-injection blob
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # cmd/uwgwrapper/embed_static_${arch}.go //go:embed's this file —
+          # `go build` errors with "pattern …: no matching files found"
+          # without it. Required before any `go test ./tests/preload` /
+          # `go build ./cmd/uwgwrapper` invocation in this workflow.
+          bash ./preload/build_static.sh >/dev/null
+          ls -la cmd/uwgwrapper/assets/uwgpreload-static-*.so
+
       - name: Run tests
         if: runner.os != 'Linux'
         shell: bash
@@ -327,6 +339,14 @@ jobs:
           set -euo pipefail
           bash ./preload/build_ptloader.sh cmd/uwgwrapper/assets
 
+      - name: Build Linux uwgwrapper static-injection blob
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ./preload/build_static.sh >/dev/null
+          ls -la cmd/uwgwrapper/assets/uwgpreload-static-*.so
+
       - name: Run lite tests
         shell: bash
         run: |
@@ -368,6 +388,7 @@ jobs:
               export PATH=/usr/local/go/bin:$PATH GOTOOLCHAIN=auto
               git init -q . 2>/dev/null || true
               bash ./preload/build_ptloader.sh cmd/uwgwrapper/assets
+              bash ./preload/build_static.sh >/dev/null
               # Slim test set: lock primitives + Phase 2 Go-static (the
               # paths we know work under musl). The arm64+musl+static-PIE
               # +C corner case is documented as a known limitation in

@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: ISC
 //
 // arm64 variant of embed_static — see the amd64 file for rationale.
-// If you're cross-building for arm64 from another host, ensure that
-// preload/build_static.sh has produced
-// cmd/uwgwrapper/assets/uwgpreload-static-arm64.so before `go build`.
+// Build requires preload/build_static.sh has produced
+// cmd/uwgwrapper/assets/uwgpreload-static-arm64.so first.
 
-//go:build arm64
+//go:build linux && arm64
 
 package main
 

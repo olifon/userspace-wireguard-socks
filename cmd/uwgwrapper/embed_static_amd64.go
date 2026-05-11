@@ -6,8 +6,13 @@
 // inject the systrap static-blob into a tracee even when the on-disk
 // uwgpreload-static-${arch}.so asset isn't reachable from the current
 // CWD (the historical staticBlobPath fallback).
+//
+// Build requirement: preload/build_static.sh must run before `go build`.
+// compile.sh handles this. CI workflows that exercise the wrapper without
+// the full compile.sh must call build_static.sh themselves; see
+// .github/workflows/test.yml.
 
-//go:build amd64
+//go:build linux && amd64
 
 package main
 
