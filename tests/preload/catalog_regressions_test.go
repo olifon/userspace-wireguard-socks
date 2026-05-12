@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,53 @@ import (
 	"testing"
 	"time"
 )
+
+// TestConcurrentRawSyscallSurvivesAutoCascade pins the auto-cascade
+// fix for the systrap-supervised SIGILL on multi-threaded raw Go
+// syscalls. The repro is exactly Caddy's net.ipStackCapabilities
+// probe (and the same pattern Python's stdlib tickles in test_urllib):
+// 8 concurrent goroutines each calling syscall.Socket(AF_INET6,
+// SOCK_STREAM|CLOEXEC|NONBLOCK, IPPROTO_TCP) + setsockopt(IPV6_V6ONLY).
+//
+// Pre-fix this consistently SIGILL'd under systrap-supervised, which
+// was the auto cascade's pick for dynamic targets with seccomp+ptrace.
+// The fix demoted systrap-supervised in the auto cascade so dynamic
+// targets default to plain systrap (no execve supervisor). This test
+// re-runs the auto cascade and asserts the repro doesn't crash.
+//
+// If a future change re-promotes systrap-supervised in the cascade
+// (or otherwise breaks the multi-threaded raw-syscall path), this
+// test goes red.
+func TestConcurrentRawSyscallSurvivesAutoCascade(t *testing.T) {
+	requirePhase1Toolchain(t)
+	art := buildPhase1Artifacts(t)
+	_, httpSock := setupWrapperNetwork(t)
+
+	// Build the repro.
+	repo := filepath.Clean(filepath.Join("..", ".."))
+	repro := filepath.Join(t.TempDir(), "concurrent_raw_syscall")
+	build := exec.Command("go", "build", "-o", repro,
+		filepath.Join("tests", "preload", "testdata", "concurrent_raw_syscall.go"))
+	build.Dir = repo
+	build.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build concurrent_raw_syscall: %v\n%s", err, out)
+	}
+
+	// Drive through the auto cascade.
+	cmd := wrappedCommand(t, art, httpSock, "auto", repro, nil, wrapperRunOptions{})
+	body, runErr := runCommandCombinedFileBacked(t, cmd)
+	text := string(body)
+	if runErr != nil {
+		t.Fatalf("repro under auto cascade exited with error: %v\noutput=%s", runErr, text)
+	}
+	if strings.Contains(text, "SIGILL") || strings.Contains(text, "fatal error:") {
+		t.Fatalf("auto cascade picked a transport that SIGILLs on concurrent raw syscalls — the supervisor concurrency bug is back. output=%s", text)
+	}
+	if !strings.Contains(text, "OK: concurrent_raw_syscall") {
+		t.Fatalf("repro didn't reach success line. output=%s", text)
+	}
+}
 
 // TestCatalogRegressions pins the specific wrapper interop bugs the
 // 2026-05 catalog batch fixed. Each subtest exercises one bug-prone

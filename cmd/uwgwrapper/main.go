@@ -552,13 +552,34 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 		}
 		switch {
 		case seccompOK && ptraceOK:
-			// Best correctness + performance: real systrap-
-			// supervised (LD_PRELOAD + seccomp + SIGSYS in-
-			// process + execve-only ptrace supervisor).
+			// Dynamic target with both seccomp and ptrace available.
+			//
+			// Historically the auto cascade picked systrap-supervised
+			// here (LD_PRELOAD + seccomp + SIGSYS in-tracee + execve-
+			// only ptrace supervisor). But systrap-supervised has a
+			// known concurrency bug: multi-threaded Go binaries that
+			// issue raw SYSCALL instructions (bypassing libc) — Caddy,
+			// Python's stdlib test_urllib in some sub-tests, etc. —
+			// hit SIGILL when their threads race the ptrace
+			// supervisor's SIGSYS-forward path. The bug is in the
+			// supervisor, NOT in plain systrap, so the safe default
+			// for dynamic targets is to drop the execve supervisor
+			// and run as plain systrap. Users who genuinely need
+			// the execve re-arm (fork+exec into static descendants)
+			// can opt back in with --transport=systrap-supervised.
+			//
+			// Concrete regression that drove this: scripts/catalog/
+			// apps/caddy.sh, where Caddy's net.ipStackCapabilities
+			// probe (raw socket()/setsockopt()) consistently SIGILL'd
+			// under systrap-supervised but passes cleanly under
+			// systrap. See memory:project_caddy_sigill_systrap_supervised.md
+			// for the deep-dive and tests/preload/
+			// catalog_regressions_test.go::TestConcurrentRawSyscall
+			// for the regression guard.
 			if debug {
-				log.Printf("auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)")
+				log.Printf("auto: chose systrap (dynamic target, seccomp=true ptrace=true; supervisor demoted — see caddy SIGILL repro)")
 			}
-			systrapSupervisedRun()
+			systrapRun()
 		case seccompOK:
 			// systrap-docker is preferred over plain systrap when ptrace
 			// is blocked: PT_INTERP injection survives execve into static

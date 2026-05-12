@@ -1,9 +1,9 @@
 {
   "host": "hub",
   "app": "caddy",
-  "transport": "",
+  "transport": "systrap",
   "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 0.96,
-  "notes": "wg_ip=10.200.0.1 port=56017 ready=true | out: uwg-catalog-caddy-56017-ok | err-tail: o\",\"ts\":1778532021.4318523,\"msg\":\"autosaved config (load with --resume flag)\",\"file\":\"/root/.config/caddy/autosave.json\"}|{\"level\":\"info\",\"ts\":1778532021.431863,\"msg\":\"serving initial configuration\"}|"
+  "duration_seconds": 2.37,
+  "notes": "wg_ip=10.200.0.1 port=50109 ready=true | out: uwg-catalog-caddy-50109-ok | err-tail: 3486,\"logger\":\"tls\",\"msg\":\"cleaning storage unit\",\"description\":\"FileStorage:/root/.local/share/caddy\"}|{\"level\":\"info\",\"ts\":1778549918.8235047,\"logger\":\"tls\",\"msg\":\"finished cleaning storage units\"}|"
 }

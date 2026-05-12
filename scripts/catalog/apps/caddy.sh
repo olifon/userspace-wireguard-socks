@@ -79,16 +79,12 @@ start=$(date +%s.%N)
 # Caddy's `run` mode stays in foreground (no daemonize). Output goes
 # to stderr; we route via the wrapper's -v err file.
 #
-# Transport pinned to `preload` rather than `auto` because the auto
-# cascade picks systrap-supervised for caddy (dynamic-Go with cgo)
-# and that path SIGILLs on the first AF_INET6 socket() during
-# Go's net.ipStackCapabilities.probe — a real wrapper bug, see
-# memory/project_caddy_sigill_systrap_supervised.md. Caddy is a
-# normal dynamic-libc binary so preload is the right transport here
-# regardless; this just avoids the broken cascade. Until the
-# systrap-supervised RIP-handling bug is fixed, treat this as the
-# canary case for that issue.
-nohup "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=preload --allow-bind -v -- \
+# Auto cascade. The original repro that pinned this to preload was
+# systrap-supervised's concurrent-raw-syscall SIGILL; the cascade now
+# demotes systrap-supervised → systrap for dynamic targets and Caddy
+# works there. If a future change re-promotes systrap-supervised in
+# the cascade without fixing the bug, this row goes red.
+nohup "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto --allow-bind -v -- \
     "$caddy_bin" run --config "$work/Caddyfile" --adapter caddyfile \
     </dev/null >"$log_out" 2>"$err" &
 SRVPID=$!
