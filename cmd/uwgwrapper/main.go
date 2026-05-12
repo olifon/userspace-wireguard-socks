@@ -63,7 +63,7 @@ func main() {
 	flag.StringVar(&preloadPath, "preload", os.Getenv("UWGS_PRELOAD"), "path to preload shared library; defaults to embedded copy extracted to /tmp")
 	flag.StringVar(&listenPath, "listen", getenv("UWGS_FDPROXY", ""), "Unix socket path exposed to the preload wrapper")
 	flag.StringVar(&dnsMode, "dns-mode", getenv("UWGS_DNS_MODE", "full"), "DNS handling mode: full, libc, none")
-	flag.StringVar(&transport, "transport", getenv("UWGS_WRAPPER_TRANSPORT", "auto"), "transport mode: auto, systrap-supervised, systrap-docker, systrap, systrap-static, preload, ptrace, ptrace-seccomp, ptrace-only")
+	flag.StringVar(&transport, "transport", getenv("UWGS_WRAPPER_TRANSPORT", "auto"), "transport mode: auto, systrap-elf, systrap, systrap-supervised, systrap-static, preload, ptrace, ptrace-seccomp, ptrace-only (systrap-docker is a deprecated alias for systrap-elf)")
 	flag.BoolVar(&forceLoopbackDNS, "force-loopback-dns", getenv("UWGS_DISABLE_LOOPBACK_DNS53", "") == "", "force loopback TCP/UDP port 53 to DNS proxy (default true)")
 	flag.BoolVar(&spawnFDProxy, "spawn-fdproxy", getenv("UWGS_WRAPPER_SPAWN_FDPROXY", "") != "0", "launch built-in fdproxy daemon automatically in launch mode")
 	flag.BoolVar(&noNewPrivileges, "no-new-privileges", getenv("UWGS_WRAPPER_NO_NEW_PRIVILEGES", "1") != "0", "set PR_SET_NO_NEW_PRIVS before launching the wrapped program (default true)")
@@ -160,14 +160,27 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 	}
 	debug := verbose || os.Getenv("UWGS_WRAPPER_DEBUG") != ""
 
-	// systrap-docker (and auto, which may select systrap-docker for static
-	// targets) calls syscall.Exec, which kills all Go OS threads except the
-	// calling one. If the fdproxy was spawned from a different OS thread,
-	// its PR_SET_PDEATHSIG fires prematurely during exec and kills fdproxy
-	// before the wrapped binary can connect. Lock this goroutine to its
-	// current OS thread so that fdproxy's parent thread IS the thread that
-	// later calls execve — that thread survives exec.
-	if transport == "systrap-docker" || transport == "auto" {
+	// Normalize the deprecated alias `systrap-docker` → `systrap-elf`
+	// early so every downstream check sees the canonical name. The
+	// alias is retained for backward compatibility with scripts and
+	// docs pinned to the old name; it will be removed in a future
+	// major version. Emit a one-time warning under -v.
+	if transport == "systrap-docker" {
+		if debug {
+			log.Printf("note: --transport=systrap-docker is a deprecated alias for --transport=systrap-elf; update scripts to use the canonical name")
+		}
+		transport = "systrap-elf"
+	}
+
+	// systrap-elf (and auto, which may select systrap-elf for either
+	// static or dynamic targets) calls syscall.Exec, which kills all Go OS
+	// threads except the calling one. If the fdproxy was spawned from a
+	// different OS thread, its PR_SET_PDEATHSIG fires prematurely during
+	// exec and kills fdproxy before the wrapped binary can connect. Lock
+	// this goroutine to its current OS thread so that fdproxy's parent
+	// thread IS the thread that later calls execve — that thread survives
+	// exec.
+	if transport == "systrap-elf" || transport == "auto" {
 		runtime.LockOSThread()
 	}
 
@@ -433,15 +446,16 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 	//   - ptrace               ptrace-seccomp → ptrace-only fallback.
 	//
 	// auto ordering favors correctness then speed (dynamic target):
-	//   systrap-supervised → systrap-docker → ptrace → preload
+	//   systrap-elf → systrap → ptrace-seccomp → ptrace → preload
 	//
 	// preload (libc-only) is last because raw-asm syscalls leak past
 	// the libc hooks; it's a fallback for hosts where nothing else
-	// works at all.
+	// works at all. See the full cascade comment on `case "auto":`
+	// below for the static-target cascade.
 	switch transport {
 	case "preload":
 		if isStaticELF(target) && !forcePreload {
-			log.Fatalf("transport=preload: target %q is a statically-linked binary; LD_PRELOAD has no effect on static binaries and interception will be absent. Use --transport=systrap-docker (seccomp OK), --transport=systrap-supervised (ptrace OK), or --transport=systrap-static. Pass --force-preload to override.", target)
+			log.Fatalf("transport=preload: target %q is a statically-linked binary; LD_PRELOAD has no effect on static binaries and interception will be absent. Use --transport=systrap-elf (seccomp OK), --transport=systrap-supervised (ptrace OK), or --transport=systrap-static. Pass --force-preload to override.", target)
 		}
 		libcOnlyRun()
 	case "systrap":
@@ -450,18 +464,26 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 		// Pre-flight: systrap-supervised requires ptrace for the
 		// execve supervisor. Fail fast if blocked.
 		if !probePtraceAvailable() {
-			log.Fatal("systrap-supervised: ptrace(2) is blocked on this host. systrap-supervised needs ptrace for the execve hook. Use --transport=systrap (dynamic-only, no execve supervisor) instead.")
+			log.Fatal("systrap-supervised: ptrace(2) is blocked on this host. systrap-supervised needs ptrace for the execve hook. Use --transport=systrap (dynamic-only, no execve supervisor) or --transport=systrap-elf (PT_INTERP injection, no ptrace) instead.")
 		}
 		systrapSupervisedRun()
 	case "systrap-static":
 		systrapStaticRun()
-	case "systrap-docker":
-		// systrap-docker: ELF PT_INTERP injection, no ptrace required.
-		// Requires seccomp (SECCOMP_RET_TRAP). Designed for Docker
-		// containers where ptrace(2) is blocked but seccomp is available;
-		// auto selects this for static targets in that host shape.
+	case "systrap-elf":
+		// systrap-elf: ELF PT_INTERP injection via memfd_create. No
+		// ptrace required. Requires seccomp (SECCOMP_RET_TRAP) and
+		// memfd_create(2). Renamed from `systrap-docker` in v0.1.7
+		// — the old name described the audience (Docker default-
+		// seccomp containers) rather than the mechanism. The auto
+		// cascade now picks this for both static AND dynamic targets
+		// whenever seccomp is available, because PT_INTERP injection
+		// has no concurrency surface (unlike systrap-supervised) and
+		// transparently re-arms across execve boundaries.
 		if !probeSeccompAvailable() {
-			log.Fatal("systrap-docker: seccomp is not available on this host (SECCOMP_RET_TRAP requires kernel seccomp support). Use --transport=ptrace if seccomp is blocked but ptrace is allowed.")
+			log.Fatal("systrap-elf: seccomp is not available on this host (SECCOMP_RET_TRAP requires kernel seccomp support). Use --transport=ptrace if seccomp is blocked but ptrace is allowed.")
+		}
+		if !probeMemfdAvailable() {
+			log.Fatal("systrap-elf: memfd_create(2) is blocked on this host. Use --transport=systrap-supervised (PTRACE_POKETEXT-based static injection) or --transport=systrap (dynamic-only) instead.")
 		}
 		systrapDockerRun(target, progArgs, env, preloadPath, shared)
 	case "ptrace-seccomp":
@@ -484,35 +506,51 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 		// first one whose host requirements are met.
 		//
 		// Dynamic target cascade:
-		//   1. systrap-supervised   seccomp ✅ + ptrace ✅
-		//   2. systrap-docker       seccomp ✅ + ptrace ❌
-		//      PT_INTERP injection; preferred over plain systrap because
-		//      it survives execve into static children (bash scripts,
-		//      sub-commands). The common Docker + no-ptrace shape.
-		//   3. ptrace               seccomp ❌ + ptrace ✅
-		//   4. preload              seccomp ❌ + ptrace ❌
+		//   1. systrap-elf          seccomp ✅ + memfd ✅
+		//      PT_INTERP injection; preferred for dynamic targets too because
+		//      the kernel handles loader linkage atomically and the in-tracee
+		//      execve trap transparently re-arms across exec→static
+		//      descendants (bash → gh, scripts → kubectl, etc.). No ptrace
+		//      surface = no concurrency hazards.
+		//   2. systrap              seccomp ✅ + memfd ❌
+		//      Plain in-tracee SIGSYS handler. Faster (no exec round-trip)
+		//      but cannot intercept static descendants — they die on the
+		//      first trapped syscall after exec. Reachable only when memfd
+		//      is unavailable, which is rare.
+		//   3. ptrace-seccomp       seccomp ❌ + ptrace ✅
+		//      ptrace with seccomp accelerator; falls back to ptrace-only
+		//      if seccomp install fails inside the cascade.
+		//   4. ptrace               seccomp ❌ + ptrace ✅ (fallback)
+		//   5. preload              seccomp ❌ + ptrace ❌
 		//
 		// Static target cascade (pre-flight: isStaticELF):
-		//   1. systrap-docker       seccomp ✅ (ptrace optional)
+		//   1. systrap-elf          seccomp ✅ + memfd ✅
 		//      PT_INTERP injection — kernel loads ptloader before _start.
-		//      Preferred for static targets because it does not depend on
-		//      ptrace-based memory injection. Many container seccomp profiles
-		//      allow basic ptrace(TRACEME) but block PTRACE_POKETEXT/mmap
-		//      injection; probeSeccompAvailable is more reliable than
-		//      probePtraceAvailable as a proxy for "will injection work?".
-		//      Use --transport=systrap-supervised explicitly when you need
-		//      the execve-supervisor to re-arm across dynamic descendants.
-		//   2. ptrace               ptrace ✅ (seccomp unavailable)
-		//      Universal slow path via per-syscall ptrace interception.
-		//   3. FAIL fast            neither
+		//      No ptrace needed; works in Docker default-seccomp.
+		//   2. systrap-supervised   seccomp ✅ + ptrace ✅ + memfd ❌
+		//      PTRACE_POKETEXT-based blob injection for hosts where memfd
+		//      is blocked but ptrace works (grsec/PaX, rare container
+		//      shapes). Has a known concurrency bug under multi-threaded
+		//      raw-syscall load — see memory:project_caddy_sigill_
+		//      systrap_supervised.md.
+		//   3. ptrace-seccomp       seccomp ❌ + ptrace ✅
+		//   4. ptrace               seccomp ❌ + ptrace ✅ (fallback)
+		//   5. FAIL fast            neither
 		//
-		// Note: ptrace-seccomp is intentionally NOT in the auto
-		// cascade. When seccomp+ptrace are both available we
-		// always prefer systrap-supervised (better hot-path
-		// performance — no per-syscall ptrace round-trip).
-		// ptrace-seccomp remains as a user-selectable mode.
+		// Note: systrap-supervised is intentionally NOT in the dynamic
+		// auto cascade. systrap-elf supersedes it functionally (both
+		// handle exec→static descendants) without the supervisor's
+		// SIGSYS-forward race. Users who need supervised explicitly
+		// (process introspection, etc.) can still select it via
+		// --transport=systrap-supervised.
+		//
+		// ptrace-seccomp and ptrace are intentionally separate cascade
+		// slots — ptrace-seccomp tries the accelerator first and only
+		// falls through to ptrace-only on install failure. Both stay as
+		// user-selectable modes.
 		seccompOK := probeSeccompAvailable()
 		ptraceOK := probePtraceAvailable()
+		memfdOK := probeMemfdAvailable()
 
 		// Static-target pre-flight: if the wrapped target is a
 		// statically-linked ELF, libc-only `preload` (the last
@@ -526,70 +564,66 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 		targetStatic := isStaticELF(target)
 		if targetStatic {
 			switch {
-			case seccompOK:
-				// systrap-docker is preferred for static targets when seccomp
-				// is available, regardless of whether ptrace is also available.
-				// PT_INTERP injection does not require ptrace-based memory
-				// injection, which container profiles often block independently
-				// of basic ptrace(TRACEME) availability.
+			case seccompOK && memfdOK:
+				// systrap-elf is the preferred static path: PT_INTERP
+				// injection via memfd_create, no ptrace required.
 				if debug {
-					log.Printf("auto: chose systrap-docker (static target, seccomp=%v ptrace=%v)", seccompOK, ptraceOK)
+					log.Printf("auto: chose systrap-elf (static target, seccomp=%v memfd=%v ptrace=%v)", seccompOK, memfdOK, ptraceOK)
 				}
 				systrapDockerRun(target, progArgs, env, preloadPath, shared)
 				return
-			case ptraceOK:
+			case seccompOK && ptraceOK:
+				// Fallback for the rare host where seccomp works but
+				// memfd_create is blocked — use systrap-supervised's
+				// PTRACE_POKETEXT-based static injection. See memory:
+				// project_caddy_sigill_systrap_supervised.md for the
+				// known concurrency caveat.
 				if debug {
-					log.Printf("auto: chose ptrace-only (static target, seccomp=false ptrace=true)")
+					log.Printf("auto: chose systrap-supervised (static target, seccomp=true memfd=false ptrace=true)")
+				}
+				systrapSupervisedRun()
+				return
+			case ptraceOK:
+				// No seccomp: try ptrace-seccomp first (the accelerator
+				// will fail at filter install and fall back internally),
+				// then plain ptrace-only.
+				if debug {
+					log.Printf("auto: chose ptrace cascade (static target, seccomp=false ptrace=true)")
+				}
+				if err := traceSimple(); err == nil {
+					return
 				}
 				if err := traceNoSeccomp(); err != nil {
-					log.Fatalf("auto: ptrace-only failed for static target %q: %v", target, err)
+					log.Fatalf("auto: ptrace cascade failed for static target %q: %v", target, err)
 				}
 				return
 			default:
-				log.Fatalf("auto: target %q is statically linked, but this host blocks ptrace(2) and seccomp; no mode can intercept a static binary. Options: (a) use a host that allows ptrace(2) or seccomp (systrap-docker), (b) wrap a dynamic target, or (c) use --transport=preload to accept no-interception.", target)
+				log.Fatalf("auto: target %q is statically linked, but this host blocks both seccomp and ptrace(2); no mode can intercept a static binary. Options: (a) use a host that allows ptrace(2) or seccomp+memfd_create (systrap-elf), (b) wrap a dynamic target, or (c) use --transport=preload to accept no-interception.", target)
 			}
 			return
 		}
 		switch {
-		case seccompOK && ptraceOK:
-			// Dynamic target with both seccomp and ptrace available.
-			//
-			// Historically the auto cascade picked systrap-supervised
-			// here (LD_PRELOAD + seccomp + SIGSYS in-tracee + execve-
-			// only ptrace supervisor). But systrap-supervised has a
-			// known concurrency bug: multi-threaded Go binaries that
-			// issue raw SYSCALL instructions (bypassing libc) — Caddy,
-			// Python's stdlib test_urllib in some sub-tests, etc. —
-			// hit SIGILL when their threads race the ptrace
-			// supervisor's SIGSYS-forward path. The bug is in the
-			// supervisor, NOT in plain systrap, so the safe default
-			// for dynamic targets is to drop the execve supervisor
-			// and run as plain systrap. Users who genuinely need
-			// the execve re-arm (fork+exec into static descendants)
-			// can opt back in with --transport=systrap-supervised.
-			//
-			// Concrete regression that drove this: scripts/catalog/
-			// apps/caddy.sh, where Caddy's net.ipStackCapabilities
-			// probe (raw socket()/setsockopt()) consistently SIGILL'd
-			// under systrap-supervised but passes cleanly under
-			// systrap. See memory:project_caddy_sigill_systrap_supervised.md
-			// for the deep-dive and tests/preload/
-			// catalog_regressions_test.go::TestConcurrentRawSyscall
-			// for the regression guard.
+		case seccompOK && memfdOK:
+			// systrap-elf for dynamic targets too. PT_INTERP injection
+			// transparently re-arms across exec→static descendants
+			// (bash → gh / kubectl / caddy / etc.) without the
+			// systrap-supervised ptracer's SIGSYS-forward concurrency
+			// surface. Same hot path as plain systrap for non-exec
+			// syscalls — the in-tracee SIGSYS handler does the work.
 			if debug {
-				log.Printf("auto: chose systrap (dynamic target, seccomp=true ptrace=true; supervisor demoted — see caddy SIGILL repro)")
-			}
-			systrapRun()
-		case seccompOK:
-			// systrap-docker is preferred over plain systrap when ptrace
-			// is blocked: PT_INTERP injection survives execve into static
-			// children, whereas plain systrap loses interception at any
-			// statically-linked exec boundary.
-			if debug {
-				log.Printf("auto: chose systrap-docker (dynamic target, seccomp=true ptrace=false)")
+				log.Printf("auto: chose systrap-elf (dynamic target, seccomp=true memfd=true ptrace=%v)", ptraceOK)
 			}
 			systrapDockerRun(target, progArgs, env, preloadPath, shared)
 			return
+		case seccompOK:
+			// memfd is blocked. Fall back to plain systrap — the
+			// dynamic target itself works fine via the in-tracee
+			// SIGSYS handler, but exec→static descendants will lose
+			// interception. Rare host shape.
+			if debug {
+				log.Printf("auto: chose systrap (dynamic target, seccomp=true memfd=false ptrace=%v)", ptraceOK)
+			}
+			systrapRun()
 		case ptraceOK:
 			// Try ptrace-seccomp first (it tries with-seccomp,
 			// which fails-fast if seccomp is blocked, then
@@ -614,7 +648,7 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 			libcOnlyRun()
 		}
 	default:
-		log.Fatalf("unsupported transport %q (supported: auto, systrap, systrap-static, systrap-docker, preload, ptrace-seccomp, ptrace-only, ptrace)", transport)
+		log.Fatalf("unsupported transport %q (supported: auto, systrap-elf, systrap, systrap-supervised, systrap-static, preload, ptrace, ptrace-seccomp, ptrace-only; systrap-docker is a deprecated alias for systrap-elf)", transport)
 	}
 }
 

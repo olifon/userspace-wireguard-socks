@@ -37,6 +37,25 @@ func probeSeccompAvailable() bool {
 	return true
 }
 
+// probeMemfdAvailable returns true if this process can call
+// memfd_create(2). systrap-elf (formerly systrap-docker) needs memfd
+// to materialize the binFD/ptlFD/masterFD anonymous files that hold
+// the patched-PT_INTERP target binary and the per-exec ptloader copy.
+// Seccomp profiles that block memfd_create are unusual but not
+// impossible (some grsec/PaX setups, very old container runtimes).
+// Returning false here causes the auto cascade for static targets to
+// fall through to systrap-supervised; for dynamic targets it falls
+// through to plain systrap. Either way the wrapper keeps working,
+// just without exec-boundary re-arm.
+func probeMemfdAvailable() bool {
+	fd, err := unix.MemfdCreate("uwg-memfd-probe", unix.MFD_CLOEXEC)
+	if err != nil {
+		return false
+	}
+	_ = unix.Close(fd)
+	return true
+}
+
 // probePtraceAvailable returns true if this process can ptrace a
 // child. Container runtimes that block ptrace (Docker default
 // seccomp, K8s pods without SYS_PTRACE) cause this to return false.

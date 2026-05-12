@@ -370,30 +370,44 @@ It depends on Linux-specific pieces:
 Do not assume portability to macOS/BSD. `uwgsocks` itself is broadly portable;
 `uwgwrapper` is not. Treat wrapper portability as a separate project.
 
-### Wrapper modes (post-Phase 2 rename)
+### Wrapper modes (v0.1.7 cascade rework)
 
 Note: the old names `preload-only`, `ptrace-assisted`, `seccomp-assisted-tracing`
-have been REPLACED. Do not use them. Current modes (`-transport=<name>`):
+have been REPLACED. Do not use them. Current modes (`--transport=<name>`):
 
 - `preload`: pure libc-symbol interposition. Lowest overhead, dynamic-libc
   binaries only, no kernel-trap involvement.
-- `systrap`: SIGSYS+seccomp BPF kernel-trap path. Catches direct syscalls that
-  bypass libc (Go statically-linked binaries that don't go through libc, etc).
-  Phase 1.
-- `systrap-static`: like `systrap`, but with a freestanding-runtime preload
-  that has zero libc dependency. For static binaries that lack a dynamic
-  loader (musl-static, fully-statically-linked Go programs). Phase 2.
+- `systrap`: SIGSYS+seccomp BPF kernel-trap path. In-tracee SIGSYS handler
+  catches direct syscalls that bypass libc (Go-style raw-asm SYSCALL). Cannot
+  intercept exec→static descendants because the new image loses the in-tracee
+  SIGSYS handler. Phase 1.
+- `systrap-elf`: like `systrap`, plus an in-tracee execve trap that rewrites
+  each new binary's PT_INTERP to load the embedded `uwgptloader-<arch>.so`
+  via a memfd_create copy. The kernel does the loader linkage atomically
+  before `_start`. Survives exec→static descendants (bash → gh / kubectl /
+  caddy / etc.) without ptrace. Renamed in v0.1.7 from `systrap-docker`;
+  the old name is retained as a deprecated alias.
+- `systrap-static`: freestanding-runtime preload (no libc deps) for static
+  binaries that lack a dynamic loader. Phase 2.
 - `systrap-supervised`: ptrace-supervised systrap. The ptracer re-arms the
-  preload across `execve` boundaries — including dynamic→static and the
-  Chromium zygote fork+exec model. Phase 1.5+2 fusion.
+  preload across `execve` boundaries via PTRACE_POKETEXT-based blob injection.
+  Has a known SIGSYS-forward concurrency bug under multi-threaded raw-asm
+  syscall load (Caddy's `net.ipStackCapabilities.probe`, Python's
+  `test_urllib`) — see memory:project_caddy_sigill_systrap_supervised.md. Not
+  in the dynamic auto cascade; reachable as a static-target fallback for
+  hosts where `memfd_create` is blocked but ptrace works.
 - `ptrace`: ptrace-only fallback for hosts where seccomp BPF or RET_TRAP isn't
   available (some containers). Slowest path.
-- `auto` (default): probes the host and the target binary, picks the fastest
-  viable mode. Cascade order: `systrap-supervised` → `systrap` → `systrap-static`
-  → `ptrace` → `preload`. Falls back fast on a static-target × no-ptrace host
+- `ptrace-seccomp`: ptrace with seccomp accelerator; user-selectable. Auto
+  cascade includes it as a fallback when seccomp isn't reachable but ptrace is.
+- `auto` (default): probes the host (seccomp, ptrace, memfd_create) and the
+  target binary, picks the fastest viable mode.
+  - Dynamic-target cascade: `systrap-elf` → `systrap` → `ptrace-seccomp` →
+    `ptrace` → `preload`.
+  - Static-target cascade: `systrap-elf` → `systrap-supervised` →
+    `ptrace-seccomp` → `ptrace` → FAIL fast.
+  Falls back fast on hosts where no mode can intercept a static target
   rather than silently mis-routing.
-- `ptrace-seccomp`: legacy mode kept for diagnostic comparison. Excluded from
-  the auto cascade — never selected unless requested explicitly.
 
 The authoritative perf comparison + host-shape compatibility matrix:
 - `docs/howto/wrapper-modes.md`

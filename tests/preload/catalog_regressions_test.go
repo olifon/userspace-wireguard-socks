@@ -31,13 +31,15 @@ import (
 //
 // Pre-fix this consistently SIGILL'd under systrap-supervised, which
 // was the auto cascade's pick for dynamic targets with seccomp+ptrace.
-// The fix demoted systrap-supervised in the auto cascade so dynamic
-// targets default to plain systrap (no execve supervisor). This test
-// re-runs the auto cascade and asserts the repro doesn't crash.
+// The current auto cascade picks systrap-elf (PT_INTERP injection, no
+// ptracer at all) for dynamic targets with seccomp+memfd, which has
+// no concurrency surface — the SIGSYS handler is per-thread, in-tracee,
+// stateless. This test re-runs the auto cascade and asserts the repro
+// doesn't crash.
 //
-// If a future change re-promotes systrap-supervised in the cascade
-// (or otherwise breaks the multi-threaded raw-syscall path), this
-// test goes red.
+// If a future change re-promotes systrap-supervised in the dynamic
+// cascade (or otherwise breaks the multi-threaded raw-syscall path),
+// this test goes red.
 func TestConcurrentRawSyscallSurvivesAutoCascade(t *testing.T) {
 	requirePhase1Toolchain(t)
 	art := buildPhase1Artifacts(t)
