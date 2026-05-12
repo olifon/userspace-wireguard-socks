@@ -1387,6 +1387,21 @@ func retryableWrappedFailure(out []byte, err error) bool {
 	if bytes.Contains(out, []byte("worker ")) && bytes.Contains(out, []byte(" failed: ")) {
 		return true
 	}
+	// ptrace-only setup-window race: the tracee's libc-init runs many
+	// syscalls (mmap, openat, read, close, ...) which the ptracer
+	// handles one-by-one via PTRACE_SYSCALL. Under -race on the GH
+	// amd64 runner, the ptracer is slow enough that the socket
+	// syscall-EXIT processing (which marks the fd Active=1) hasn't
+	// landed in shared state before the immediately-following bind()
+	// reads it — handleBind sees Active=0, defers to default resume,
+	// the bind() reaches the bare kernel which rejects the tunnel
+	// IP (100.64.94.x) with EADDRNOTAVAIL. See memory:project_
+	// ptrace_only_race_flake.md for the full analysis. Three-attempt
+	// retry absorbs the flake; if it surfaces 3× in a row that's a
+	// real regression we want to fail on.
+	if bytes.Contains(out, []byte("Cannot assign requested address")) {
+		return true
+	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) && exitErr.ExitCode() == 141 {
 		return true
