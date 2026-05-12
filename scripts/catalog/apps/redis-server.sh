@@ -67,6 +67,26 @@ for i in $(seq 1 60); do
 done
 
 redis_out=""
+# CI bind-only mode: when CATALOG_BIND_ONLY=1, the wrapped bind path is
+# the signal we care about. The dial side currently requires a real
+# peer (hub branch) or TCP-same-host-loopback (non-hub branch) which
+# is still deferred (see memory:project_tcp_loopback_and_qemu_network_
+# deferred.md). Short-circuit here so ci-selfloop can include this row
+# without needing the dial-side infrastructure.
+if [[ "$ready" == "true" && "${CATALOG_BIND_ONLY:-}" == "1" ]]; then
+  end=$(date +%s.%N)
+  dur=$(awk -v s="$start" -v e="$end" 'BEGIN{printf "%.2f", e-s}')
+  transport=""
+  if grep -q 'auto: chose ' "$err"; then
+    transport=$(grep 'auto: chose ' "$err" | head -1 | sed -E 's/.*auto: chose ([a-z-]+).*/\1/')
+  fi
+  record_result "$app" true "${UNWRAPPED_BLOCKED:-true}" "$transport" "$dur" \
+    "bind-only mode: redis-server bound to $wg_ip:$REDIS_PORT and reached 'Ready to accept connections' under wrapper; dial side skipped (CATALOG_BIND_ONLY=1)"
+  kill -9 "$SRVPID" 2>/dev/null || true
+  wait "$SRVPID" 2>/dev/null || true
+  exit 0
+fi
+
 if [[ "$ready" == "true" ]]; then
   case "$CATALOG_HOST" in
     hub|*amd64-host*|*hub*)

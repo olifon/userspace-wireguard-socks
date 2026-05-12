@@ -162,12 +162,16 @@ if [[ "$(uname -m)" == "x86_64" && ! -f /opt/alpine-vm/vmlinuz ]]; then
     || curl -fsSL "$ALPINE_BASE/initramfs-virt"  -o /opt/alpine-vm/initramfs 2>/dev/null || true
 fi
 
-# Catalog rows that work without a real WG peer. Three groups:
+# Catalog rows that work without a real WG peer. Four groups:
 #  1. existing peer-free client tests (proven green)
-#  2. new fast server tests added by the catalog batches — udp-echo-
-#     bind is already validated by the same-host UDP loopback engine
-#     code path
+#  2. peer-free UDP / loopback (existing)
 #  3. wrapped upstream test suites — fully self-contained, no peer
+#  4. VM-under-wrapper — qemu Alpine boot
+#  5. server bind-only — wrapped server binds tunnel addr + reaches
+#     ready signal; dial side skipped via CATALOG_BIND_ONLY=1 because
+#     same-host TCP loopback is still deferred (see memory:project_
+#     tcp_loopback_and_qemu_network_deferred.md). Validates the
+#     wrapped-bind interception path for real db daemons.
 APPS=(
   # Group 1: HTTPS / TCP clients
   curl wget python node ssh git pip xh gh cloudflared java-http nginx dig
@@ -181,7 +185,15 @@ APPS=(
   # fallback otherwise. x86_64 only — netboot/arm64 path not wired
   # yet, qemu-alpine.sh records no-alpine-image and exits 0.
   qemu-alpine
+  # Group 5: server bind-only (CATALOG_BIND_ONLY=1). redis-server
+  # binds 10.200.0.x:$port and waits for "Ready to accept
+  # connections" under the wrapper, exits 0 without dialing.
+  redis-server
 )
+# Hint to the catalog row scripts that the dial side should be skipped
+# — the bind path is the signal in CI's single-node setup. Server rows
+# that don't recognize this var fall through to their normal flow.
+export CATALOG_BIND_ONLY=1
 pass=0; fail=0; skip=0
 for a in "${APPS[@]}"; do
   s="scripts/catalog/apps/${a}.sh"
