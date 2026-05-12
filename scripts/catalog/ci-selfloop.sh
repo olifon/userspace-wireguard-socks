@@ -20,6 +20,27 @@ cd "$(dirname "$0")/../.."
 
 CATALOG_HOST="${CATALOG_HOST:-hub}"
 export CATALOG_HOST
+
+# Self-contained build of the wrapper + daemon binaries the catalog
+# rows need. Required when running under release.yml's "release test"
+# job, where the binaries aren't otherwise built in the repo root.
+# (test.yml's main path goes through compile.sh which DOES build them;
+# release.yml's ci-selfloop step does go-test + then runs us, so the
+# binaries are missing here.)
+if [[ ! -x ./uwgsocks ]]; then
+  echo "ci-selfloop: building uwgsocks…"
+  go build -o uwgsocks ./cmd/uwgsocks
+fi
+if [[ ! -x ./uwgwrapper ]]; then
+  echo "ci-selfloop: building uwgwrapper…"
+  # The wrapper embeds preload/assets/uwgpreload.so via go:embed; build
+  # it first if missing so the binary actually carries an interceptor.
+  if [[ ! -f cmd/uwgwrapper/assets/uwgpreload.so ]]; then
+    bash preload/build_phase1.sh cmd/uwgwrapper/assets/uwgpreload.so >/dev/null 2>&1 || true
+  fi
+  go build -o uwgwrapper ./cmd/uwgwrapper
+fi
+
 TMPCFG=$(mktemp)
 trap 'rm -f "$TMPCFG"; pkill -9 -f "uwgsocks --config $TMPCFG" 2>/dev/null || true' EXIT
 
