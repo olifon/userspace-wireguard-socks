@@ -195,6 +195,7 @@ APPS=(
 # that don't recognize this var fall through to their normal flow.
 export CATALOG_BIND_ONLY=1
 pass=0; fail=0; skip=0
+failed_rows=()
 for a in "${APPS[@]}"; do
   s="scripts/catalog/apps/${a}.sh"
   if [[ ! -x "$s" ]]; then
@@ -204,7 +205,24 @@ for a in "${APPS[@]}"; do
     pass=$((pass+1))
   else
     fail=$((fail+1))
+    failed_rows+=("$a")
   fi
 done
 echo "ci-selfloop summary: pass=$pass fail=$fail skip=$skip"
+# On any failure, dump each failed row's recorded JSON so the next
+# debugging session has the actual error message + stderr-tail in the
+# CI log (instead of just the one-line summary). Without this, post-
+# mortem requires reproducing locally — slow inner loop.
+if (( fail > 0 )); then
+  for a in "${failed_rows[@]}"; do
+    for hostdir in scripts/catalog/results/*/; do
+      f="${hostdir}${a}.json"
+      if [[ -f "$f" ]]; then
+        echo "=== failed row: $a ==="
+        cat "$f"
+        echo
+      fi
+    done
+  done
+fi
 exit $(( fail > 0 ? 1 : 0 ))
