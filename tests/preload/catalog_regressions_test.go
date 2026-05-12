@@ -71,6 +71,61 @@ func TestConcurrentRawSyscallSurvivesAutoCascade(t *testing.T) {
 	}
 }
 
+// TestConcurrentRawSyscallExplicitSupervised pins the
+// remoteSyscallAtSIGSYS fix: under EXPLICIT --transport=systrap-
+// supervised, the same 8-goroutine concurrent raw-syscall repro
+// (Caddy's net.ipStackCapabilities probe pattern) must complete
+// without SIGILL.
+//
+// Pre-fix bug: remoteSyscall poked SYSCALL bytes at the tracee's PC
+// via PTRACE_POKEDATA. Any sibling thread executing at the same
+// .text address during the brief poke→singlestep→restore window
+// would stumble through the overlayed bytes, advance into the
+// middle of a wrong-decoded instruction, and SIGILL. The fix is to
+// rewind PC to the original SYSCALL instruction at SIGSYS-stop (the
+// bytes are still there) and SingleStep that — no memory poke = no
+// process-wide instruction-text race.
+//
+// This test goes red if remoteSyscallAtSIGSYS regresses to memory-
+// poke behaviour, or if the supervisor's wait-loop sends SIGSYS
+// stops through the wrong code path.
+//
+// systrap-supervised is NOT in the dynamic auto cascade (see
+// TestConcurrentRawSyscallSurvivesAutoCascade), so this pin only
+// triggers when the user explicitly selects supervised — but that
+// usage is real (browser sandboxes, scripts that exec into static
+// descendants, anyone wanting ptrace-based introspection). The
+// "all modes prod-ready" goal requires this to stay green.
+func TestConcurrentRawSyscallExplicitSupervised(t *testing.T) {
+	requirePhase1Toolchain(t)
+	requireWrapperToolchain(t)
+	art := buildPhase1Artifacts(t)
+	_, httpSock := setupWrapperNetwork(t)
+
+	repo := filepath.Clean(filepath.Join("..", ".."))
+	repro := filepath.Join(t.TempDir(), "concurrent_raw_syscall")
+	build := exec.Command("go", "build", "-o", repro,
+		filepath.Join("tests", "preload", "testdata", "concurrent_raw_syscall.go"))
+	build.Dir = repo
+	build.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build concurrent_raw_syscall: %v\n%s", err, out)
+	}
+
+	cmd := wrappedCommand(t, art, httpSock, "systrap-supervised", repro, nil, wrapperRunOptions{})
+	body, runErr := runCommandCombinedFileBacked(t, cmd)
+	text := string(body)
+	if runErr != nil {
+		t.Fatalf("repro under --transport=systrap-supervised exited with error: %v\noutput=%s", runErr, text)
+	}
+	if strings.Contains(text, "SIGILL") || strings.Contains(text, "fatal error:") {
+		t.Fatalf("systrap-supervised SIGILL'd on concurrent raw syscalls — the remoteSyscallAtSIGSYS rewind fix has regressed. output=%s", text)
+	}
+	if !strings.Contains(text, "OK: concurrent_raw_syscall") {
+		t.Fatalf("repro didn't reach success line under systrap-supervised. output=%s", text)
+	}
+}
+
 // TestCatalogRegressions pins the specific wrapper interop bugs the
 // 2026-05 catalog batch fixed. Each subtest exercises one bug-prone
 // syscall pattern that surfaced in a real production application:

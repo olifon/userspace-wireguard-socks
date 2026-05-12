@@ -20,9 +20,15 @@ func readSyscallResult(regs *unix.PtraceRegs) uintptr {
 }
 
 func getPC(regs *unix.PtraceRegs) uint64     { return regs.Pc }
+func setPC(regs *unix.PtraceRegs, pc uint64) { regs.Pc = pc }
 func getSP(regs *unix.PtraceRegs) uint64     { return regs.Sp }
 func setSP(regs *unix.PtraceRegs, sp uint64) { regs.Sp = sp }
 func getArchName() string                    { return "arm64" }
+
+// syscallInstSize is the byte length of the SVC #0 instruction.
+// remoteSyscallAtSIGSYS rewinds PC by this many bytes to re-execute
+// the original SVC #0 instruction at a RET_TRAP SIGSYS-stop.
+const syscallInstSize = 4
 
 func setupHandoffWithEnvp(regs *unix.PtraceRegs, entry, retAddr, envp uint64) {
 	regs.Pc = entry

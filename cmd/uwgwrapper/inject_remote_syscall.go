@@ -130,3 +130,95 @@ func remoteSyscall(pid int, nr uintptr, args ...uintptr) (uintptr, error) {
 
 	return readSyscallResult(&post), nil
 }
+
+// remoteSyscallAtSIGSYS executes a syscall in the tracee at a SIGSYS
+// signal-delivery-stop, WITHOUT modifying any process memory.
+//
+// The trick: at a RET_TRAP-induced SIGSYS stop, the kernel has already
+// advanced PC past the SYSCALL/SVC #0 instruction that caused the trap.
+// The original instruction bytes are still in place. We rewind PC by
+// syscallInstSize so PTRACE_SINGLESTEP re-executes that same syscall
+// instruction; setting arg5 to the bypass-secret makes the BPF filter
+// return SECCOMP_RET_ALLOW instead of trapping again, so the syscall
+// runs for real.
+//
+// Why this is the SIGSYS-stop-only fix and not a drop-in for the
+// general remoteSyscall:
+//
+//   - remoteSyscall (the original) is also used at PTRACE_EVENT_EXEC
+//     stops where PC points at the new binary's entry point, NOT
+//     immediately after a SYSCALL instruction. There's no syscall byte
+//     sequence to rewind to, so the original code overwrites the
+//     bytes at PC with SYSCALL. That's safe in the post-exec context
+//     because the tracee is the only thread of the process (execve
+//     killed all siblings atomically).
+//
+//   - At a SIGSYS-stop from systrap-supervised's hot path, the tracee
+//     IS multi-threaded — other threads are running normally and any
+//     of them can fetch instructions from the same .text page that
+//     remoteSyscall is poking. The original poke-and-restore race
+//     surfaces as random SIGILL when a sibling thread executes the
+//     overlayed bytes. See memory:project_caddy_sigill_systrap_
+//     supervised.md for the architectural deep-dive.
+//
+// This rewind-only variant has zero process-wide instruction-memory
+// side effects, so other threads can keep running concurrently.
+//
+// Caller MUST guarantee:
+//   - pid is in a SIGSYS signal-delivery-stop (cause==0, sig==SIGSYS)
+//   - PC was auto-advanced past a SYSCALL/SVC #0 instruction (always
+//     true at RET_TRAP-induced SIGSYS-stops per seccomp(2))
+//   - args[5] is set to the bypass-secret so the BPF filter ALLOWs
+//     the re-issued syscall.
+func remoteSyscallAtSIGSYS(pid int, nr uintptr, args ...uintptr) (uintptr, error) {
+	if len(args) > 6 {
+		return 0, fmt.Errorf("remoteSyscallAtSIGSYS: max 6 args, got %d", len(args))
+	}
+	var padded [6]uintptr
+	for i, a := range args {
+		padded[i] = a
+	}
+
+	var saved unix.PtraceRegs
+	if err := unix.PtraceGetRegs(pid, &saved); err != nil {
+		return 0, fmt.Errorf("PtraceGetRegs: %w", err)
+	}
+
+	// Rewind PC to the original SYSCALL/SVC instruction.
+	rewindPC := getPC(&saved) - uint64(syscallInstSize)
+
+	regs := saved
+	setPC(&regs, rewindPC)
+	loadSyscallRegs(&regs, nr, padded)
+
+	if err := unix.PtraceSetRegs(pid, &regs); err != nil {
+		return 0, fmt.Errorf("PtraceSetRegs: %w", err)
+	}
+
+	if err := unix.PtraceSingleStep(pid); err != nil {
+		return 0, fmt.Errorf("PtraceSingleStep: %w", err)
+	}
+
+	var ws unix.WaitStatus
+	if _, err := unix.Wait4(pid, &ws, 0, nil); err != nil {
+		return 0, fmt.Errorf("Wait4 after syscall: %w", err)
+	}
+	if !ws.Stopped() {
+		return 0, fmt.Errorf("tracee not stopped after syscall (status=%v)", ws)
+	}
+
+	var post unix.PtraceRegs
+	if err := unix.PtraceGetRegs(pid, &post); err != nil {
+		return 0, fmt.Errorf("PtraceGetRegs post: %w", err)
+	}
+
+	// Restore the saved regs so the tracee's view at SIGSYS-delivery
+	// is exactly as it was — PC = past_syscall, original arg regs.
+	// The caller (handleSIGSYSStop) will then overlay RAX/X0 with the
+	// syscall result via writeSyscallReturn.
+	if err := unix.PtraceSetRegs(pid, &saved); err != nil {
+		return 0, fmt.Errorf("PtraceSetRegs restore: %w", err)
+	}
+
+	return readSyscallResult(&post), nil
+}

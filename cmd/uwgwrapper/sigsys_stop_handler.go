@@ -99,21 +99,31 @@ func handleSIGSYSStop(pid int, sig syscall.Signal, bypassSecret uint64) (handled
 	a3 := uintptr(readSyscallArg(&regs, 3))
 	a4 := uintptr(readSyscallArg(&regs, 4))
 
-	// Issue the syscall on the tracee's behalf via remoteSyscall.
-	// remoteSyscall takes up to 6 args; we put the bypass secret in
-	// the 6th positional (index 5) so the seccomp filter's bypass-
-	// check at the top of the BPF program ALLOWs the call without
-	// re-trapping. The original syscall's arg5 (if any) is dropped
-	// — the trap-list candidates (read/write/close/dup/dup2/dup3/
-	// fcntl) all have ≤ 4 args, so this is safe.
-	rc, callErr := remoteSyscall(pid, syscallNr, a0, a1, a2, a3, a4, uintptr(bypassSecret))
+	// Issue the syscall on the tracee's behalf via the SIGSYS-stop
+	// variant of remoteSyscall. The variant rewinds PC by
+	// syscallInstSize to re-execute the original SYSCALL instruction
+	// (whose bytes are still intact in the tracee's .text) — NO
+	// process memory is modified. The 6th positional arg carries the
+	// bypass secret so the BPF filter's secret-check at the top of
+	// the program returns SECCOMP_RET_ALLOW instead of trapping again.
+	// The original syscall's arg5 (if any) is dropped — the trap-list
+	// candidates (read/write/close/dup/dup2/dup3/fcntl) all have ≤ 4
+	// args, so this is safe.
+	//
+	// IMPORTANT: this MUST be remoteSyscallAtSIGSYS, not remoteSyscall,
+	// because the original remoteSyscall pokes SYSCALL bytes at PC,
+	// which is a process-wide instruction-memory mutation that races
+	// against sibling threads of the tracee — see
+	// memory:project_caddy_sigill_systrap_supervised.md for the deep-
+	// dive.
+	rc, callErr := remoteSyscallAtSIGSYS(pid, syscallNr, a0, a1, a2, a3, a4, uintptr(bypassSecret))
 	if callErr != nil {
-		return true, fmt.Errorf("remoteSyscall on behalf of tracee at SIGSYS-stop: %w", callErr)
+		return true, fmt.Errorf("remoteSyscallAtSIGSYS on behalf of tracee at SIGSYS-stop: %w", callErr)
 	}
 
-	// remoteSyscall already restored the saved regs as part of its
-	// teardown, so the tracee's view of regs is exactly as it was
-	// at SIGSYS-delivery — including PC past the trapped syscall
+	// remoteSyscallAtSIGSYS already restored the saved regs as part
+	// of its teardown, so the tracee's view of regs is exactly as it
+	// was at SIGSYS-delivery — including PC past the trapped syscall
 	// instruction (kernel auto-advanced before delivering). Now
 	// override RAX/X0 with our result and PtraceSetRegs.
 	post := regs
