@@ -43,6 +43,11 @@ type socketSession struct {
 	// Cleared on session close to drop the registration.
 	udpLoopback     *udpLoopbackEntry
 	udpLoopbackBind netip.AddrPort
+	// tcpLoopback / tcpLoopbackBind are set when this session is a TCP
+	// listener registered in the engine's same-host loopback registry.
+	// Cleared on session close to drop the registration.
+	tcpLoopback     *tcpLoopbackEntry
+	tcpLoopbackBind netip.AddrPort
 
 	acceptOnce sync.Once
 	accepted   chan struct{}
@@ -279,6 +284,13 @@ func (s *socketServer) openTCPConn(id uint64, bind, dest netip.AddrPort, version
 	if !s.e.outboundAllowed(s.src, dest, "tcp") {
 		return errProxyACL
 	}
+	// Same-host TCP short-circuit: if the destination is a registered
+	// socket-API TCP listener on this engine, deliver via in-process
+	// pipe (gVisor netstack can't loop TCP between two listeners bound
+	// to the same NIC IP). See type comment on tcpLoopbackEntry.
+	if handled, err := s.tryTCPLoopback(id, bind, dest, version); handled {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(s.e.ctx, 30*time.Second)
 	defer cancel()
 	c, err := s.dialSocket(ctx, "tcp", bind, dest)
@@ -362,11 +374,75 @@ func (s *socketServer) openTCPListener(id uint64, bind netip.AddrPort, version u
 	ln := s.e.wrapPeerListener(baseLn)
 	ss := &socketSession{id: id, proto: socketproto.ProtoTCP, listener: ln}
 	s.storeSession(ss)
-	if err := s.sendAccept(id, version, socketproto.ProtoTCP, addrPortFromNetAddr(ln.Addr())); err != nil {
+	// Register this listener in the engine's same-host TCP loopback
+	// registry so a wrapped client dialing the same tunnel addr:port
+	// short-circuits through an in-process pipe pair (gVisor netstack
+	// can't loop TCP between two same-NIC-IP listeners). The accept
+	// callback feeds the loopback server-side conn into this listener's
+	// session as a new accept — same code path acceptTCP uses for real
+	// netstack-arrived conns.
+	localAP := addrPortFromNetAddr(ln.Addr())
+	listenerID := id
+	entry := &tcpLoopbackEntry{
+		listenerAP: localAP,
+		accept: func(serverConn net.Conn, clientAP netip.AddrPort) error {
+			return s.deliverLoopbackTCP(listenerID, serverConn, clientAP, localAP)
+		},
+	}
+	ss.tcpLoopback = entry
+	ss.tcpLoopbackBind = localAP
+	s.e.registerTCPLoopback(localAP, entry)
+	if err := s.sendAccept(id, version, socketproto.ProtoTCP, localAP); err != nil {
 		s.closeSession(id, false)
 		return err
 	}
 	go s.acceptTCP(id, ln)
+	return nil
+}
+
+// deliverLoopbackTCP feeds a same-host-shortcut TCP conn into a listener
+// session as if it had been freshly accepted from netstack. Mirrors the
+// per-accept body of acceptTCP — ACL check, new session, send
+// ActionConnect frame, await accepted then startReader.
+//
+// Honours inboundAllowed exactly like the real-accept path. If the ACL
+// rejects (or any framing step fails), returns an error and closes
+// serverConn.
+func (s *socketServer) deliverLoopbackTCP(listenerID uint64, serverConn net.Conn, clientAP, listenerAP netip.AddrPort) error {
+	if !s.e.inboundAllowed(clientAP, listenerAP, "tcp") {
+		_ = serverConn.Close()
+		return errors.New("TCP loopback: inbound ACL rejected")
+	}
+	id := s.e.nextSocketServerID()
+	ss := &socketSession{id: id, proto: socketproto.ProtoTCP, conn: serverConn, accepted: make(chan struct{})}
+	s.storeSession(ss)
+	payload, err := socketproto.EncodeConnect(socketproto.Connect{
+		ListenerID: listenerID,
+		IPVersion:  socketproto.AddrVersion(listenerAP.Addr()),
+		Protocol:   socketproto.ProtoTCP,
+		BindIP:     listenerAP.Addr(),
+		BindPort:   listenerAP.Port(),
+		DestIP:     clientAP.Addr(),
+		DestPort:   clientAP.Port(),
+	})
+	if err != nil {
+		s.closeSession(id, false)
+		return err
+	}
+	if err := s.send(socketproto.Frame{ID: id, Action: socketproto.ActionConnect, Payload: payload}); err != nil {
+		s.closeSession(id, false)
+		return err
+	}
+	go func(sess *socketSession) {
+		select {
+		case <-sess.accepted:
+			sess.startReader(s, false)
+		case <-time.After(30 * time.Second):
+			s.sendClose(sess.id, errors.New("TCP loopback accept timeout"))
+			s.closeSession(sess.id, false)
+		case <-s.closed:
+		}
+	}(ss)
 	return nil
 }
 
@@ -781,6 +857,9 @@ func (s *socketServer) closeSession(id uint64, notify bool) {
 	ss.closeOnce.Do(func() {
 		if ss.udpLoopback != nil {
 			s.e.unregisterUDPLoopback(ss.udpLoopbackBind, ss.udpLoopback)
+		}
+		if ss.tcpLoopback != nil {
+			s.e.unregisterTCPLoopback(ss.tcpLoopbackBind, ss.tcpLoopback)
 		}
 		if ss.conn != nil {
 			_ = ss.conn.Close()

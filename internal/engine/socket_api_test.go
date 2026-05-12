@@ -863,6 +863,134 @@ func TestSocketAPISameHostUDPLoopback(t *testing.T) {
 	}
 }
 
+// TestSocketAPISameHostTCPLoopback exercises the same-host TCP loopback
+// path added alongside the UDP one. gVisor netstack does NOT loop TCP
+// between two listeners bound to the same NIC IP; without engine-level
+// short-circuit, two wrapped processes on the same host both targeting
+// the tunnel addr (e.g. wrapped postgres-server + wrapped psql client)
+// cannot connect. The engine's tcpLoopbackRegistry hands an in-process
+// net.Pipe pair to both sides on a dial hit, so the dialer's wrapped
+// session sees the same observable behavior it would over a real
+// netstack TCP round-trip.
+//
+// Test shape: register a TCP listener at the tunnel addr, dial from a
+// second socket-API connection, exchange a few bytes both ways,
+// confirm everything observable matches the netstack-arrived path
+// (LocalAddr, RemoteAddr on both ends; ActionAccept payloads contain
+// the listener's bind addr; etc).
+func TestSocketAPISameHostTCPLoopback(t *testing.T) {
+	key := mustKey(t)
+	cfg := config.Default()
+	cfg.WireGuard.PrivateKey = key.String()
+	cfg.WireGuard.Addresses = []string{"100.64.97.2/32"}
+	cfg.API.Listen = "127.0.0.1:0"
+	cfg.API.Token = "secret"
+	cfg.SocketAPI.Bind = true
+	cfg.SocketAPI.TransparentBind = true
+	eng := mustStart(t, cfg)
+
+	apiAddr := "http://" + eng.Addr("api")
+	srvConn := socketAPIConn(t, apiAddr, "secret")
+	defer srvConn.Close()
+	cliConn := socketAPIConn(t, apiAddr, "secret")
+	defer cliConn.Close()
+
+	// Server side: bind a TCP listener at the tunnel addr.
+	srvBind := netip.MustParseAddr("100.64.97.2")
+	srvPort := uint16(19098)
+	srvListenerID := socketproto.ClientIDBase + 900
+	srvPayload, err := socketproto.EncodeConnect(socketproto.Connect{
+		IPVersion: socketproto.AddrVersion(srvBind),
+		Protocol:  socketproto.ProtoTCP,
+		BindIP:    srvBind,
+		BindPort:  srvPort,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := socketproto.WriteFrame(srvConn, socketproto.Frame{ID: srvListenerID, Action: socketproto.ActionConnect, Payload: srvPayload}); err != nil {
+		t.Fatal(err)
+	}
+	srvAccept := readSocketFrame(t, srvConn)
+	if srvAccept.Action != socketproto.ActionAccept {
+		t.Fatalf("server TCP listener not accepted: action %d payload %q", srvAccept.Action, srvAccept.Payload)
+	}
+
+	// Client side: dial the tunnel addr — should hit the loopback registry.
+	cliID := socketproto.ClientIDBase + 901
+	cliPayload, err := socketproto.EncodeConnect(socketproto.Connect{
+		IPVersion: socketproto.AddrVersion(srvBind),
+		Protocol:  socketproto.ProtoTCP,
+		DestIP:    srvBind,
+		DestPort:  srvPort,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := socketproto.WriteFrame(cliConn, socketproto.Frame{ID: cliID, Action: socketproto.ActionConnect, Payload: cliPayload}); err != nil {
+		t.Fatal(err)
+	}
+	cliAccept := readSocketFrame(t, cliConn)
+	if cliAccept.Action != socketproto.ActionAccept {
+		t.Fatalf("client TCP dial not accepted (loopback path): action %d payload %q", cliAccept.Action, cliAccept.Payload)
+	}
+	cliLocal, err := socketproto.DecodeAccept(cliAccept.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientAP := netip.AddrPortFrom(cliLocal.BindIP, cliLocal.BindPort)
+	if !clientAP.IsValid() {
+		t.Fatalf("client did not get a synthesized source addr: %+v", cliLocal)
+	}
+
+	// Server should see an ActionConnect frame for the new accepted conn.
+	srvFrame := readSocketFrame(t, srvConn)
+	if srvFrame.Action != socketproto.ActionConnect {
+		t.Fatalf("server did not see accepted-conn ActionConnect: action %d", srvFrame.Action)
+	}
+	srvAcc, err := socketproto.DecodeConnect(srvFrame.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if srvAcc.ListenerID != srvListenerID {
+		t.Fatalf("accepted-conn ListenerID = %d, want %d", srvAcc.ListenerID, srvListenerID)
+	}
+	gotSrcAP := netip.AddrPortFrom(srvAcc.DestIP, srvAcc.DestPort)
+	if gotSrcAP != clientAP {
+		t.Fatalf("server saw client source %v, want %v (loopback should preserve synthesized client addr)", gotSrcAP, clientAP)
+	}
+	acceptedID := srvFrame.ID
+	// Server acknowledges the new accepted session via ActionAccept (same
+	// frame the engine uses for both directions of the connect handshake).
+	if err := socketproto.WriteFrame(srvConn, socketproto.Frame{ID: acceptedID, Action: socketproto.ActionAccept}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Client sends data → server reads.
+	if err := socketproto.WriteFrame(cliConn, socketproto.Frame{ID: cliID, Action: socketproto.ActionData, Payload: []byte("ping-loopback")}); err != nil {
+		t.Fatal(err)
+	}
+	dataFrame := readSocketFrame(t, srvConn)
+	if dataFrame.Action != socketproto.ActionData || dataFrame.ID != acceptedID {
+		t.Fatalf("server data frame: action=%d id=%d want ActionData id=%d", dataFrame.Action, dataFrame.ID, acceptedID)
+	}
+	if string(dataFrame.Payload) != "ping-loopback" {
+		t.Fatalf("server payload = %q, want %q", dataFrame.Payload, "ping-loopback")
+	}
+
+	// Server echoes → client reads.
+	if err := socketproto.WriteFrame(srvConn, socketproto.Frame{ID: acceptedID, Action: socketproto.ActionData, Payload: []byte("pong-loopback")}); err != nil {
+		t.Fatal(err)
+	}
+	echoFrame := readSocketFrame(t, cliConn)
+	if echoFrame.Action != socketproto.ActionData || echoFrame.ID != cliID {
+		t.Fatalf("client echo frame: action=%d id=%d want ActionData id=%d", echoFrame.Action, echoFrame.ID, cliID)
+	}
+	if string(echoFrame.Payload) != "pong-loopback" {
+		t.Fatalf("client echo payload = %q, want %q", echoFrame.Payload, "pong-loopback")
+	}
+}
+
 func socketAPIConn(t *testing.T, api, token string) net.Conn {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

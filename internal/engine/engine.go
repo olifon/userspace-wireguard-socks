@@ -127,6 +127,23 @@ type Engine struct {
 	udpLoopbackMu       sync.Mutex
 	udpLoopbackRegistry map[netip.AddrPort]*udpLoopbackEntry
 
+	// tcpLoopbackMu guards tcpLoopbackRegistry. Same shape as the UDP
+	// registry above, but for TCP listeners. gVisor netstack doesn't loop
+	// TCP between two same-NIC-IP listeners either; engine-level
+	// short-circuit unlocks same-host wrapped-server + wrapped-client
+	// catalog rows (postgres, mariadb, mongo, apache, caddy bind+dial).
+	// On a dial hit, the engine creates an in-process net.Pipe pair and
+	// delivers one side to the listener via the entry's accept callback,
+	// the other side to the dialer's session — identical observable
+	// behavior to a netstack round-trip minus the broken loopback.
+	tcpLoopbackMu       sync.Mutex
+	tcpLoopbackRegistry map[netip.AddrPort]*tcpLoopbackEntry
+	// tcpLoopbackEphNext is a monotonic counter for the TCP loopback's
+	// synthesized client-side ephemeral ports. In-process only — never
+	// reaches the kernel — so collision detection isn't needed.
+	tcpLoopbackEphMu   sync.Mutex
+	tcpLoopbackEphNext uint16
+
 	// socksConnSem caps the number of concurrent SOCKS5 control connections
 	// the engine will service. nil means uncapped (used by tests that opt
 	// into a different limit). Initialised lazily by serveSOCKSConn.
