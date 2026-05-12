@@ -81,7 +81,7 @@ echo "host all all 10.200.0.0/24 trust" >> "$work/data/pg_hba.conf"
 err="$work/wrapper.err"
 log_out="$work/server.log"
 start=$(date +%s.%N)
-nohup sudo -u "$PG_USER" "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v --allow-bind -- \
+nohup sudo -u "$PG_USER" "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v --allow-bind -- \
     "$PG_SERVER" -D "$work/data" >"$log_out" 2>"$err" &
 SRVPID=$!
 
@@ -107,10 +107,10 @@ if [[ "$ready" == "true" ]]; then
       # Use arm64 by default as the peer prober (unless POSTGRES_PEER set).
       PEER="${POSTGRES_PEER:-root@51.15.66.128}"
       PEER_API="${POSTGRES_PEER_API:-http://127.0.0.1:9092}"
-      sql_out=$(ssh -o BatchMode=yes "$PEER" "/usr/local/bin/uwgwrapper --api=$PEER_API --transport=auto -- psql -h $wg_ip -p $PG_PORT -U uwg -d postgres -tAc \"SELECT 'pgsrv-tunnel-ok'\" 2>&1") || true
+      sql_out=$(ssh -o BatchMode=yes "$PEER" "/usr/local/bin/uwgwrapper --api=$PEER_API --transport=${CATALOG_TRANSPORT:-auto} -- psql -h $wg_ip -p $PG_PORT -U uwg -d postgres -tAc \"SELECT 'pgsrv-tunnel-ok'\" 2>&1") || true
       ;;
     *)
-      sql_out=$(PGPASSWORD="" "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -- \
+      sql_out=$(PGPASSWORD="" "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -- \
           psql -h "$wg_ip" -p "$PG_PORT" -U uwg -d postgres -tAc "SELECT 'pgsrv-tunnel-ok'" 2>&1) || true
       ;;
   esac

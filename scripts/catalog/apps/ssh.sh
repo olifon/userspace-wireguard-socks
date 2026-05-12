@@ -26,7 +26,7 @@ case "$CATALOG_HOST" in
   hub|*amd64-host*|*hub*) ssh_port=9091 ;;
   *)                       ssh_port=8787 ;;
 esac
-out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
+out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v -- \
     timeout 8 bash -c "echo '' | ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=5 -p $ssh_port banner-probe@10.200.0.1 true 2>&1 | head -5" 2>"$err" || true)
 end=$(date +%s.%N)
 dur=$(awk -v s="$start" -v e="$end" 'BEGIN{printf "%.2f", e-s}')

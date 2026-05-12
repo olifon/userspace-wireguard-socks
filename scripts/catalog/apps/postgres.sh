@@ -51,7 +51,7 @@ port="${PGTARGET#*:}"
 
 err=$(mktemp)
 start=$(date +%s.%N)
-out=$(PGPASSWORD=uwgcatalog "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
+out=$(PGPASSWORD=uwgcatalog "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v -- \
     psql -h "$host" -p "$port" -U uwg -d uwgdb -tAc "SELECT 'wrapper-pg-ok'" 2>"$err") || true
 end=$(date +%s.%N)
 dur=$(awk -v s="$start" -v e="$end" 'BEGIN{printf "%.2f", e-s}')

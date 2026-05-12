@@ -63,7 +63,7 @@ err="$work/wrapper.err"
 log_out="$work/server.log"
 start=$(date +%s.%N)
 # php -S is foreground, prints "PHP X.Y.Z Development Server (...) started"
-nohup "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto --allow-bind -v -- \
+nohup "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} --allow-bind -v -- \
     php -S "$wg_ip:$PHP_PORT" -t "$work" \
     </dev/null >"$log_out" 2>"$err" &
 SRVPID=$!
@@ -76,7 +76,7 @@ for i in $(seq 1 30); do
   if [[ "$CATALOG_HOST" =~ ^(hub|.*amd64-host.*) ]] && (( i % 5 == 0 )); then
     PEER="${PHP_PEER:-root@51.15.66.128}"
     PEER_API="${PHP_PEER_API:-http://127.0.0.1:9092}"
-    if ssh -o BatchMode=yes "$PEER" "timeout 3 /usr/local/bin/uwgwrapper --api=$PEER_API --transport=auto -- bash -c 'exec 9<>/dev/tcp/$wg_ip/$PHP_PORT'" >/dev/null 2>&1; then
+    if ssh -o BatchMode=yes "$PEER" "timeout 3 /usr/local/bin/uwgwrapper --api=$PEER_API --transport=${CATALOG_TRANSPORT:-auto} -- bash -c 'exec 9<>/dev/tcp/$wg_ip/$PHP_PORT'" >/dev/null 2>&1; then
       ready=true; break
     fi
   fi
@@ -91,10 +91,10 @@ if [[ "$ready" == "true" ]]; then
     hub|*amd64-host*|*hub*)
       PEER="${PHP_PEER:-root@51.15.66.128}"
       PEER_API="${PHP_PEER_API:-http://127.0.0.1:9092}"
-      php_out=$(ssh -o BatchMode=yes "$PEER" "/usr/local/bin/uwgwrapper --api=$PEER_API --transport=auto -- curl -sS --max-time 8 -D - http://$wg_ip:$PHP_PORT/" 2>&1) || true
+      php_out=$(ssh -o BatchMode=yes "$PEER" "/usr/local/bin/uwgwrapper --api=$PEER_API --transport=${CATALOG_TRANSPORT:-auto} -- curl -sS --max-time 8 -D - http://$wg_ip:$PHP_PORT/" 2>&1) || true
       ;;
     *)
-      php_out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -- \
+      php_out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -- \
           curl -sS --max-time 8 -D - "http://$wg_ip:$PHP_PORT/" 2>&1) || true
       ;;
   esac

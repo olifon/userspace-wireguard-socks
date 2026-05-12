@@ -47,7 +47,7 @@ err="$work/wrapper.err"
 
 start=$(date +%s.%N)
 # Test 1: --version (no network) — proves wrapper survives chromium boot.
-ver_out=$(timeout 10 "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
+ver_out=$(timeout 10 "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v -- \
   "$chrome" --no-sandbox --headless=new --version 2>"$err") || true
 end=$(date +%s.%N)
 dur=$(awk -v s="$start" -v e="$end" 'BEGIN{printf "%.2f", e-s}')

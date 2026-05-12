@@ -18,7 +18,7 @@ if ! bin_exists cloudflared; then
 fi
 
 start=$(date +%s.%N)
-out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
+out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v -- \
     cloudflared --version 2>&1) || rc=$?
 end=$(date +%s.%N)
 dur=$(awk -v s="$start" -v e="$end" 'BEGIN{printf "%.2f", e-s}')

@@ -29,7 +29,7 @@ run_http_client_test() {
   local rendered_cmd; rendered_cmd=$(printf '%s' "$cmd_template" | sed "s|@URL@|$MESH_PROBE_URL|g")
   # shellcheck disable=SC2086
   local out
-  if out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- bash -c "$rendered_cmd" 2>"$err"); then
+  if out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v -- bash -c "$rendered_cmd" 2>"$err"); then
     rc=0
   else
     rc=$?

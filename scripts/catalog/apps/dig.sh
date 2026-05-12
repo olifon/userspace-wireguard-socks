@@ -24,7 +24,7 @@ err=$(mktemp)
 start=$(date +%s.%N)
 # Query 1.1.1.1 directly to force the UDP path (avoid 127.0.0.53 stub
 # resolver which the wrapper short-circuits to /v1/resolve).
-out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
+out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v -- \
     dig +short +time=3 +tries=1 @1.1.1.1 A example.com 2>"$err") || true
 end=$(date +%s.%N)
 dur=$(awk -v s="$start" -v e="$end" 'BEGIN{printf "%.2f", e-s}')

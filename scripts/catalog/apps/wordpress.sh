@@ -69,7 +69,7 @@ cleanup() {
 trap cleanup EXIT
 
 err="$work/wrapper.err"
-WRAP() { "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto "$@"; }
+WRAP() { "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} "$@"; }
 
 start=$(date +%s.%N)
 
@@ -100,7 +100,7 @@ WRAP -- wp --allow-root --path="$WP_ROOT" plugin activate hello >>"$err" 2>&1
 # 5. Boot php -S to serve the install. Bind to the tunnel addr.
 # Same docroot perm trick as apache2.sh: php -S forks no workers, so
 # the WP install runs as root throughout. Path: bind on tunnel WG.
-nohup "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto --allow-bind -v -- \
+nohup "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} --allow-bind -v -- \
     php -S "$wg_ip:$WP_PORT" -t "$WP_ROOT" </dev/null >"$work/server.log" 2>"$err" &
 SRVPID=$!
 
@@ -109,7 +109,7 @@ for i in $(seq 1 60); do
   if [[ "$CATALOG_HOST" =~ ^(hub|.*amd64-host.*) ]] && (( i % 5 == 0 )); then
     PEER="${WP_PEER:-root@51.15.66.128}"
     PEER_API="${WP_PEER_API:-http://127.0.0.1:9092}"
-    if ssh -o BatchMode=yes "$PEER" "timeout 3 /usr/local/bin/uwgwrapper --api=$PEER_API --transport=auto -- bash -c 'exec 9<>/dev/tcp/$wg_ip/$WP_PORT'" >/dev/null 2>&1; then
+    if ssh -o BatchMode=yes "$PEER" "timeout 3 /usr/local/bin/uwgwrapper --api=$PEER_API --transport=${CATALOG_TRANSPORT:-auto} -- bash -c 'exec 9<>/dev/tcp/$wg_ip/$WP_PORT'" >/dev/null 2>&1; then
       ready=true; break
     fi
   fi
@@ -128,11 +128,11 @@ plugin_check=""
 if [[ "$ready" == "true" ]]; then
   case "$CATALOG_HOST" in
     hub|*amd64-host*|*hub*)
-      api_resp=$(ssh -o BatchMode=yes "$PEER" "/usr/local/bin/uwgwrapper --api=$PEER_API --transport=auto -- curl -sS --max-time 8 http://$wg_ip:$WP_PORT/?rest_route=/wp/v2/types" 2>&1) || true
-      plugin_check=$(ssh -o BatchMode=yes "$PEER" "/usr/local/bin/uwgwrapper --api=$PEER_API --transport=auto -- curl -sS --max-time 8 'http://$wg_ip:$WP_PORT/?rest_route=/wp/v2/plugins'" 2>&1) || true
+      api_resp=$(ssh -o BatchMode=yes "$PEER" "/usr/local/bin/uwgwrapper --api=$PEER_API --transport=${CATALOG_TRANSPORT:-auto} -- curl -sS --max-time 8 http://$wg_ip:$WP_PORT/?rest_route=/wp/v2/types" 2>&1) || true
+      plugin_check=$(ssh -o BatchMode=yes "$PEER" "/usr/local/bin/uwgwrapper --api=$PEER_API --transport=${CATALOG_TRANSPORT:-auto} -- curl -sS --max-time 8 'http://$wg_ip:$WP_PORT/?rest_route=/wp/v2/plugins'" 2>&1) || true
       ;;
     *)
-      api_resp=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -- \
+      api_resp=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -- \
           curl -sS --max-time 8 "http://$wg_ip:$WP_PORT/?rest_route=/wp/v2/types" 2>&1) || true
       ;;
   esac

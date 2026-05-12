@@ -31,7 +31,7 @@ fi
 if [[ "$torch_ok" == "false" ]]; then
   if [[ "$need_gpu" == "true" ]]; then
     log "torch not present; trying pip install via wrapper..."
-    "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -- \
+    "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -- \
       python3 -m pip install --quiet --disable-pip-version-check torch torchvision 2>&1 | tail -10 || true
     python3 -c 'import torch' 2>/dev/null && torch_ok=true
   else
@@ -77,7 +77,7 @@ PY
 
 export DATA_ROOT="$work/mnist"
 start=$(date +%s.%N)
-out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
+out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v -- \
     python3 "$work/mnist_smoke.py" 2>&1) || true
 end=$(date +%s.%N)
 dur=$(awk -v s="$start" -v e="$end" 'BEGIN{printf "%.2f", e-s}')

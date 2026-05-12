@@ -36,7 +36,7 @@ fi
 
 err=$(mktemp)
 start=$(date +%s.%N)
-out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
+out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v -- \
     "$CURL_BIN" --http3-only --ipv4 -sS --max-time 10 -o /dev/null -w '%{http_version}|%{http_code}\n' \
     https://cloudflare-quic.com/ 2>"$err") || true
 end=$(date +%s.%N)

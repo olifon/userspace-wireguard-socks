@@ -37,18 +37,18 @@ log() { printf '%s [%s] %s\n' "$(date -u +%H:%M:%SZ)" "$CATALOG_HOST" "$*" >&2; 
 
 # wrap_cmd <cmd...> — emits the full uwgwrapper invocation we use.
 wrap_cmd() {
-  local args=("$UWGWRAPPER_BIN" "--api=$UWGSOCKS_API" "--transport=auto" "-v")
+  local args=("$UWGWRAPPER_BIN" "--api=$UWGSOCKS_API" "--transport=${CATALOG_TRANSPORT:-auto}" "-v")
   printf '%q ' "${args[@]}" "$@"
 }
 
 # wrapped <cmd...> — run cmd via uwgwrapper, return its exit status.
 wrapped() {
-  "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto "$@"
+  "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} "$@"
 }
 
 # wrapped_v <cmd...> — verbose wrapper run; emits transport selection to stderr.
 wrapped_v() {
-  "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v "$@"
+  "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v "$@"
 }
 
 # probe_unwrapped — direct probe of the mesh endpoint; must FAIL on every
@@ -110,5 +110,5 @@ require_unwrapped_blocked() {
 # run_wrapped_capture <stderr_file> <cmd...> — run wrapper, capture stderr.
 run_wrapped_capture() {
   local err="$1"; shift
-  "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v "$@" 2>"$err"
+  "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v "$@" 2>"$err"
 }

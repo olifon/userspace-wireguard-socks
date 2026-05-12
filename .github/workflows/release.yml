@@ -115,6 +115,20 @@ jobs:
           # regression and fails the release job.
           bash scripts/catalog/ci-selfloop.sh
 
+      - name: Run catalog multi-mode (systrap-elf + supervised + ptrace-seccomp)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Multi-mode catalog smoke. Pins that explicit wrapper transports
+          # (systrap-elf, systrap-supervised, ptrace-seccomp) stay prod-
+          # ready on the same dynamic-target app subset that the auto
+          # cascade exercises. Catches mode-specific regressions the
+          # auto cascade hides — like the supervised SIGSYS-forward race
+          # that surfaced before the v0.1.7 remoteSyscallAtSIGSYS fix.
+          # ~3 minutes budget. amd64 + arm64 parity.
+          bash scripts/catalog/ci-multi-mode.sh
+
       - name: Run standalone TURN tests
         shell: bash
         run: |

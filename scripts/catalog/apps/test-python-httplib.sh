@@ -64,7 +64,7 @@ MODULES=(
 )
 
 start=$(date +%s.%N)
-"$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
+"$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v -- \
     python3 -m test "${MODULES[@]}" >"$work/out.log" 2>"$err"
 exit_code=$?
 end=$(date +%s.%N)

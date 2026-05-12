@@ -17,15 +17,15 @@ start=$(date +%s.%N)
 # tunneling tests. Path 2: legacy `sntp`. Path 3: `ntpdate -q`. Path 4:
 # hand-rolled python NTP client.
 if bin_exists ntpdig; then
-  out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
+  out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v -- \
       ntpdig -t 4 pool.ntp.org 2>"$err") || true
   tool=ntpdig
 elif bin_exists sntp; then
-  out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
+  out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v -- \
       sntp -K /dev/null -t 4 pool.ntp.org 2>"$err") || true
   tool=sntp
 elif bin_exists ntpdate; then
-  out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
+  out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v -- \
       ntpdate -q -t 4 pool.ntp.org 2>"$err") || true
   tool=ntpdate
 else
@@ -43,7 +43,7 @@ secs = struct.unpack("!I", data[40:44])[0] - NTP_EPOCH
 delta = abs(time.time() - secs)
 print(f"ntp_epoch={secs} delta={delta:.1f}s")
 PY
-  out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
+  out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v -- \
       python3 "$err.py" 2>"$err") || true
   tool=python-ntp
   rm -f "$err.py"

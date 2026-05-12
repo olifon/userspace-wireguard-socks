@@ -43,7 +43,7 @@ password="${HELM_ODOO_PASS:-}"
 if [[ -z "$password" ]]; then
   # Try to retrieve directly via wrapped kubectl if kubeconfig is set
   if bin_exists kubectl && [[ -f /root/.kube/config ]]; then
-    password=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -- \
+    password=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -- \
         kubectl get secret -n odoo odoo -o jsonpath='{.data.odoo-password}' 2>/dev/null | base64 -d 2>/dev/null) || true
   fi
 fi
@@ -62,7 +62,7 @@ trap 'rm -rf "$work"' EXIT
 JAR="$work/cookies.txt"
 err="$work/wrapper.err"
 
-WRAP() { "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto "$@"; }
+WRAP() { "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} "$@"; }
 
 start=$(date +%s.%N)
 # 1. Initial GET — captures session cookie + csrf token

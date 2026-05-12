@@ -44,7 +44,7 @@ start=$(date +%s.%N)
 # diagnostics that can stall mongod's stderr drain under nohup, making
 # the listener loop never wake. The catalog harness reads the wrapper's
 # auto-cascade decision via the env-gated UWGS_PRELOAD_TRACE instead.
-nohup "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto --allow-bind -- \
+nohup "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} --allow-bind -- \
     "$MONGOD" --bind_ip "$wg_ip" --port "$MONGO_PORT" --dbpath "$work/data" \
               --noauth --nounixsocket --logpath "$log_out" \
     </dev/null >/dev/null 2>/dev/null &
@@ -71,7 +71,7 @@ for i in $(seq 1 240); do
   if [[ "$CATALOG_HOST" =~ ^(hub|.*amd64-host.*) ]] && (( i % 30 == 0 )); then
     PEER="${MONGO_PEER:-root@51.15.66.128}"
     PEER_API="${MONGO_PEER_API:-http://127.0.0.1:9092}"
-    if ssh -o BatchMode=yes "$PEER" "timeout 3 /usr/local/bin/uwgwrapper --api=$PEER_API --transport=auto -- bash -c 'exec 9<>/dev/tcp/$wg_ip/$MONGO_PORT'" >/dev/null 2>&1; then
+    if ssh -o BatchMode=yes "$PEER" "timeout 3 /usr/local/bin/uwgwrapper --api=$PEER_API --transport=${CATALOG_TRANSPORT:-auto} -- bash -c 'exec 9<>/dev/tcp/$wg_ip/$MONGO_PORT'" >/dev/null 2>&1; then
       ready=true; break
     fi
   fi
@@ -85,10 +85,10 @@ if [[ "$ready" == "true" ]]; then
     hub|*amd64-host*|*hub*)
       PEER="${MONGO_PEER:-root@51.15.66.128}"
       PEER_API="${MONGO_PEER_API:-http://127.0.0.1:9092}"
-      mongo_out=$(ssh -o BatchMode=yes "$PEER" "/usr/local/bin/uwgwrapper --api=$PEER_API --transport=auto -- mongosh --quiet 'mongodb://$wg_ip:$MONGO_PORT/test' --eval 'JSON.stringify(db.runCommand({ping:1}))' 2>&1") || true
+      mongo_out=$(ssh -o BatchMode=yes "$PEER" "/usr/local/bin/uwgwrapper --api=$PEER_API --transport=${CATALOG_TRANSPORT:-auto} -- mongosh --quiet 'mongodb://$wg_ip:$MONGO_PORT/test' --eval 'JSON.stringify(db.runCommand({ping:1}))' 2>&1") || true
       ;;
     *)
-      mongo_out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -- \
+      mongo_out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -- \
           "$client" --quiet "mongodb://$wg_ip:$MONGO_PORT/test" --eval 'JSON.stringify(db.runCommand({ping:1}))' 2>&1) || true
       ;;
   esac

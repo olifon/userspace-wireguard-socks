@@ -29,7 +29,7 @@ JAVA
 javac "$work/Probe.java" 2>/dev/null || { record_result "$app" false "${UNWRAPPED_BLOCKED:-true}" "no-javac" 0 "javac missing"; exit 0; }
 
 start=$(date +%s.%N)
-out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
+out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v -- \
     java -cp "$work" Probe "$MESH_PROBE_URL" 2>&1) || true
 end=$(date +%s.%N)
 dur=$(awk -v s="$start" -v e="$end" 'BEGIN{printf "%.2f", e-s}')

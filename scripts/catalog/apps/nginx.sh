@@ -35,7 +35,7 @@ http {
 EOF
 
 start=$(date +%s.%N)
-"$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
+"$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v -- \
     nginx -c "$cfgdir/nginx.conf" -p "$cfgdir/" 2>"$err" >/dev/null </dev/null &
 WPID=$!
 

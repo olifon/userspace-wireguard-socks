@@ -32,7 +32,7 @@ for i in $(seq 1 20); do
 done
 
 start=$(date +%s.%N)
-out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
+out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v -- \
     iperf3 -c 127.0.0.1 -p $port -u -b 5M -t 2 -l 1200 --connect-timeout 4000 -J 2>"$err") || true
 end=$(date +%s.%N)
 dur=$(awk -v s="$start" -v e="$end" 'BEGIN{printf "%.2f", e-s}')

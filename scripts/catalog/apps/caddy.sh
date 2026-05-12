@@ -84,7 +84,7 @@ start=$(date +%s.%N)
 # demotes systrap-supervised → systrap for dynamic targets and Caddy
 # works there. If a future change re-promotes systrap-supervised in
 # the cascade without fixing the bug, this row goes red.
-nohup "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto --allow-bind -v -- \
+nohup "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} --allow-bind -v -- \
     "$caddy_bin" run --config "$work/Caddyfile" --adapter caddyfile \
     </dev/null >"$log_out" 2>"$err" &
 SRVPID=$!
@@ -101,7 +101,7 @@ for i in $(seq 1 60); do
   if [[ "$CATALOG_HOST" =~ ^(hub|.*amd64-host.*) ]] && (( i % 6 == 0 )); then
     PEER="${CADDY_PEER:-root@51.15.66.128}"
     PEER_API="${CADDY_PEER_API:-http://127.0.0.1:9092}"
-    if ssh -o BatchMode=yes "$PEER" "timeout 3 /usr/local/bin/uwgwrapper --api=$PEER_API --transport=auto -- bash -c 'exec 9<>/dev/tcp/$wg_ip/$CADDY_PORT'" >/dev/null 2>&1; then
+    if ssh -o BatchMode=yes "$PEER" "timeout 3 /usr/local/bin/uwgwrapper --api=$PEER_API --transport=${CATALOG_TRANSPORT:-auto} -- bash -c 'exec 9<>/dev/tcp/$wg_ip/$CADDY_PORT'" >/dev/null 2>&1; then
       ready=true; break
     fi
   fi
@@ -115,10 +115,10 @@ if [[ "$ready" == "true" ]]; then
     hub|*amd64-host*|*hub*)
       PEER="${CADDY_PEER:-root@51.15.66.128}"
       PEER_API="${CADDY_PEER_API:-http://127.0.0.1:9092}"
-      caddy_out=$(ssh -o BatchMode=yes "$PEER" "/usr/local/bin/uwgwrapper --api=$PEER_API --transport=auto -- curl -sS --max-time 8 http://$wg_ip:$CADDY_PORT/" 2>&1) || true
+      caddy_out=$(ssh -o BatchMode=yes "$PEER" "/usr/local/bin/uwgwrapper --api=$PEER_API --transport=${CATALOG_TRANSPORT:-auto} -- curl -sS --max-time 8 http://$wg_ip:$CADDY_PORT/" 2>&1) || true
       ;;
     *)
-      caddy_out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -- \
+      caddy_out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -- \
           curl -sS --max-time 8 "http://$wg_ip:$CADDY_PORT/" 2>&1) || true
       ;;
   esac

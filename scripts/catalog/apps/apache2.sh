@@ -119,7 +119,7 @@ for i in $(seq 1 30); do
   if [[ "$CATALOG_HOST" =~ ^(hub|.*amd64-host.*) ]] && (( i % 3 == 0 )); then
     PEER="${APACHE_PEER:-root@51.15.66.128}"
     PEER_API="${APACHE_PEER_API:-http://127.0.0.1:9092}"
-    if ssh -o BatchMode=yes "$PEER" "timeout 3 /usr/local/bin/uwgwrapper --api=$PEER_API --transport=auto -- bash -c 'exec 9<>/dev/tcp/$wg_ip/$AP_PORT'" >/dev/null 2>&1; then
+    if ssh -o BatchMode=yes "$PEER" "timeout 3 /usr/local/bin/uwgwrapper --api=$PEER_API --transport=${CATALOG_TRANSPORT:-auto} -- bash -c 'exec 9<>/dev/tcp/$wg_ip/$AP_PORT'" >/dev/null 2>&1; then
       ready=true; break
     fi
   fi
@@ -133,10 +133,10 @@ if [[ "$ready" == "true" ]]; then
     hub|*amd64-host*|*hub*)
       PEER="${APACHE_PEER:-root@51.15.66.128}"
       PEER_API="${APACHE_PEER_API:-http://127.0.0.1:9092}"
-      ap_out=$(ssh -o BatchMode=yes "$PEER" "/usr/local/bin/uwgwrapper --api=$PEER_API --transport=auto -- curl -sS --max-time 8 -D - http://$wg_ip:$AP_PORT/" 2>&1) || true
+      ap_out=$(ssh -o BatchMode=yes "$PEER" "/usr/local/bin/uwgwrapper --api=$PEER_API --transport=${CATALOG_TRANSPORT:-auto} -- curl -sS --max-time 8 -D - http://$wg_ip:$AP_PORT/" 2>&1) || true
       ;;
     *)
-      ap_out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -- \
+      ap_out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -- \
           curl -sS --max-time 8 -D - "http://$wg_ip:$AP_PORT/" 2>&1) || true
       ;;
   esac

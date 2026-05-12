@@ -60,7 +60,7 @@ err="$work/wrapper.err"
 log_out="$work/vm.log"
 start=$(date +%s.%N)
 
-"$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
+"$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v -- \
     qemu-system-x86_64 \
         -accel "$ACCEL" -m 384 -nographic -no-reboot \
         -kernel "$VM_DIR/vmlinuz" -initrd "$VM_DIR/initramfs" \

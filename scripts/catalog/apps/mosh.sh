@@ -64,7 +64,7 @@ set env(MOSH_KEY) $key
 set env(TERM)     "xterm"
 # Non-zero pty: mosh-client asserts s_height>0 and aborts otherwise.
 set stty_init "rows 24 cols 80"
-spawn $wrapper --api=$api --transport=auto -- mosh-client $host $port
+spawn $wrapper --api=$api --transport=${CATALOG_TRANSPORT:-auto} -- mosh-client $host $port
 expect {
     "Nothing received from server"   { send_user "\nFAIL: handshake never completed\n"; exit 3 }
     "Connection refused"             { send_user "\nFAIL: connection refused\n"; exit 4 }

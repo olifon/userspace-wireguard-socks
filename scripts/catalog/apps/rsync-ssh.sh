@@ -46,7 +46,7 @@ esac
 work=$(mktemp -d)
 # Cleanup must go through the wrapper too — peer's WG addr isn't on a host
 # kernel route, so unwrapped ssh would get "Network is unreachable".
-trap '"$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -- ssh -o BatchMode=yes "$PEER" "rm -f /tmp/uwg-rsync-recv-$$.txt" 2>/dev/null; rm -rf "$work"' EXIT
+trap '"$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -- ssh -o BatchMode=yes "$PEER" "rm -f /tmp/uwg-rsync-recv-$$.txt" 2>/dev/null; rm -rf "$work"' EXIT
 
 # Fixture: 16 KiB of deterministic data so rsync's delta protocol
 # has actual structure to drive.
@@ -57,7 +57,7 @@ DST="/tmp/uwg-rsync-recv-$$.txt"
 
 err="$work/wrapper.err"
 start=$(date +%s.%N)
-"$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
+"$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v -- \
     rsync -e 'ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new' \
           "$SRC" "${PEER}:${DST}" 2>"$err"
 rsync_exit=$?
@@ -74,7 +74,7 @@ fi
 # through the wrapper too — same path the rsync used.
 recv_sum=""
 if [[ $rsync_exit -eq 0 ]]; then
-  recv_sum=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -- \
+  recv_sum=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -- \
       ssh -o BatchMode=yes "$PEER" "sha256sum $DST 2>/dev/null | awk '{print \$1}'" 2>/dev/null) || true
 fi
 

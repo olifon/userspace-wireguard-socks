@@ -18,7 +18,7 @@ start=$(date +%s.%N)
 # which launches curl).  Picks systrap-supervised because git is dynamic but
 # spawns dynamic children that also need re-arming.
 tmp=$(mktemp -d)
-out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
+out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v -- \
     git -c http.lowSpeedLimit=0 -c http.lowSpeedTime=0 clone --depth 1 --quiet \
     https://github.com/octocat/Hello-World.git "$tmp/repo" 2>&1) || true
 end=$(date +%s.%N)

@@ -43,7 +43,7 @@ fi
 
 work=$(mktemp -d)
 POD="uwg-catalog-$$-$RANDOM"
-WRAP() { "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto "$@"; }
+WRAP() { "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} "$@"; }
 cleanup() {
   # delete via wrapper so the cleanup goes through the same network
   # path as the rest of the test
@@ -63,19 +63,19 @@ launch_out=$(WRAP -- kubectl run "$POD" --image=busybox --restart=Never --comman
     sh -c 'echo "kubectl-wrapped-launch-$(hostname)"; sleep 120' 2>>"$err") || true
 
 # 3. wait — HTTP/2 long-poll until pod reports Ready
-wait_out=$(timeout 60 "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -- \
+wait_out=$(timeout 60 "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -- \
     kubectl wait pod "$POD" --for=condition=Ready --timeout=50s 2>>"$err") || true
 
 # 4. exec — WEBSOCKET UPGRADE, the load-bearing new signal
-exec_out=$(timeout 15 "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -- \
+exec_out=$(timeout 15 "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -- \
     kubectl exec "$POD" -- sh -c 'echo "kubectl-wrapped-exec-ok"; uname -m' 2>>"$err") || true
 
 # 5. logs — streaming HTTPS GET
-logs_out=$(timeout 10 "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -- \
+logs_out=$(timeout 10 "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -- \
     kubectl logs "$POD" --tail=10 2>>"$err") || true
 
 # 6. watch — HTTP/2 long-poll, bounded by short timeout (= success)
-watch_lines=$(timeout 4 "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -- \
+watch_lines=$(timeout 4 "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -- \
     kubectl get pods --watch 2>>"$err" | wc -l) || true
 
 end=$(date +%s.%N)

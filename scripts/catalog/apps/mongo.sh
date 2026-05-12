@@ -43,7 +43,7 @@ fi
 err=$(mktemp)
 start=$(date +%s.%N)
 # Use ping command; success returns `{ ok: 1 }`.
-out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
+out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v -- \
     "$client" --quiet "mongodb://$MONGOTARGET/test" --eval 'JSON.stringify(db.runCommand({ping:1}))' 2>"$err") || true
 end=$(date +%s.%N)
 dur=$(awk -v s="$start" -v e="$end" 'BEGIN{printf "%.2f", e-s}')

@@ -67,7 +67,7 @@ start=$(date +%s.%N)
 # + assets compilation work under the wrapper.
 # Odoo writes its INFO log to stderr; combine into init_log so the
 # success grep below can see the "Modules loaded." marker.
-"$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
+"$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v -- \
     "$odoo_bin" --no-http \
                 -d "$DB" -i base \
                 --db_host 127.0.0.1 --db_port 5432 --db_user odoo --db_password odoo \
@@ -96,7 +96,7 @@ fi
 # 2. Launch the running server on the initialized DB. Odoo writes the
 # "HTTP service (werkzeug) running on" ready marker to stderr — combine
 # stdout+stderr into srv_log so the ready-detect grep below works.
-"$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto --allow-bind -v -- \
+"$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} --allow-bind -v -- \
     "$odoo_bin" \
         -d "$DB" \
         --db_host 127.0.0.1 --db_port 5432 --db_user odoo --db_password odoo \

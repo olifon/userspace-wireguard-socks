@@ -18,7 +18,7 @@ fi
 
 start=$(date +%s.%N)
 tmp=$(mktemp -d)
-out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
+out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v -- \
     bash -c "$pipbin --disable-pip-version-check download --no-deps --no-binary :all: --dest=$tmp 'six==1.16.0' 2>&1" 2>&1) || true
 end=$(date +%s.%N)
 dur=$(awk -v s="$start" -v e="$end" 'BEGIN{printf "%.2f", e-s}')

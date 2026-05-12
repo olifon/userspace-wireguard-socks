@@ -67,7 +67,7 @@ sudo -u "$DB_USER" "$INSTALL" --datadir="$work/data" --auth-root-authentication-
 err="$work/wrapper.err"
 log_out="$work/server.log"
 start=$(date +%s.%N)
-nohup sudo -u "$DB_USER" "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v --allow-bind -- \
+nohup sudo -u "$DB_USER" "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v --allow-bind -- \
     "$MARIADBD" --datadir="$work/data" --bind-address="$wg_ip" --port="$MARIA_PORT" \
                 --skip-networking=0 --skip-name-resolve --skip-grant-tables \
                 --socket="$work/maria.sock" --pid-file="$work/maria.pid" \
@@ -90,10 +90,10 @@ if [[ "$ready" == "true" ]]; then
     hub|*amd64-host*|*hub*)
       PEER="${MARIA_PEER:-root@51.15.66.128}"
       PEER_API="${MARIA_PEER_API:-http://127.0.0.1:9092}"
-      maria_out=$(ssh -o BatchMode=yes "$PEER" "/usr/local/bin/uwgwrapper --api=$PEER_API --transport=auto -- mariadb -h $wg_ip -P $MARIA_PORT -u root -N -B -e \"SELECT 'maria-tunnel-ok'\" 2>&1") || true
+      maria_out=$(ssh -o BatchMode=yes "$PEER" "/usr/local/bin/uwgwrapper --api=$PEER_API --transport=${CATALOG_TRANSPORT:-auto} -- mariadb -h $wg_ip -P $MARIA_PORT -u root -N -B -e \"SELECT 'maria-tunnel-ok'\" 2>&1") || true
       ;;
     *)
-      maria_out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -- \
+      maria_out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -- \
           "$client" -h "$wg_ip" -P "$MARIA_PORT" -u root -N -B -e "SELECT 'maria-tunnel-ok'" 2>&1) || true
       ;;
   esac

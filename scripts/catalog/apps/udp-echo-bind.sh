@@ -55,7 +55,7 @@ for _ in range(20):
 PY
 
 err="$work/srv.err"
-"$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v --allow-bind -- \
+"$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v --allow-bind -- \
     python3 "$work/srv.py" "$self_ip" "$port" >"$work/srv.log" 2>"$err" &
 SRVPID=$!
 
@@ -77,7 +77,7 @@ data, _ = s.recvfrom(1500)
 print(data.decode())
 s.sendto(b"quit", (host, port))
 PY
-out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -- \
+out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -- \
     python3 "$work/cli.py" "$self_ip" "$port" 2>>"$err") || true
 end=$(date +%s.%N)
 dur=$(awk -v s="$start" -v e="$end" 'BEGIN{printf "%.2f", e-s}')

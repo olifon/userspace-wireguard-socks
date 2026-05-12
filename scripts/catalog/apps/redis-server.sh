@@ -37,7 +37,7 @@ trap '[[ -n "${SRVPID:-}" ]] && kill -9 "$SRVPID" 2>/dev/null; rm -rf "$work"' E
 err="$work/wrapper.err"
 log_out="$work/server.log"
 start=$(date +%s.%N)
-nohup "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto --allow-bind -- \
+nohup "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} --allow-bind -- \
     redis-server --bind "$wg_ip" --port "$REDIS_PORT" --daemonize no \
                  --save "" --appendonly no --protected-mode no \
                  --logfile "$log_out" \
@@ -58,7 +58,7 @@ for i in $(seq 1 60); do
   if [[ "$CATALOG_HOST" =~ ^(hub|.*amd64-host.*) ]] && (( i % 10 == 0 )); then
     PEER="${REDIS_PEER:-root@51.15.66.128}"
     PEER_API="${REDIS_PEER_API:-http://127.0.0.1:9092}"
-    if ssh -o BatchMode=yes "$PEER" "timeout 3 /usr/local/bin/uwgwrapper --api=$PEER_API --transport=auto -- bash -c 'exec 9<>/dev/tcp/$wg_ip/$REDIS_PORT'" >/dev/null 2>&1; then
+    if ssh -o BatchMode=yes "$PEER" "timeout 3 /usr/local/bin/uwgwrapper --api=$PEER_API --transport=${CATALOG_TRANSPORT:-auto} -- bash -c 'exec 9<>/dev/tcp/$wg_ip/$REDIS_PORT'" >/dev/null 2>&1; then
       ready=true; break
     fi
   fi
@@ -74,7 +74,7 @@ if [[ "$ready" == "true" ]]; then
       PEER_API="${REDIS_PEER_API:-http://127.0.0.1:9092}"
       # Send a small command sequence via wrapped redis-cli on peer.
       # Use SET then GET then DEL to actually exercise the protocol.
-      redis_out=$(ssh -o BatchMode=yes "$PEER" "/usr/local/bin/uwgwrapper --api=$PEER_API --transport=auto -- redis-cli -h $wg_ip -p $REDIS_PORT --no-auth-warning <<EOF
+      redis_out=$(ssh -o BatchMode=yes "$PEER" "/usr/local/bin/uwgwrapper --api=$PEER_API --transport=${CATALOG_TRANSPORT:-auto} -- redis-cli -h $wg_ip -p $REDIS_PORT --no-auth-warning <<EOF
 SET uwg-catalog-key hello-redis
 GET uwg-catalog-key
 DEL uwg-catalog-key
@@ -83,7 +83,7 @@ EOF
 " 2>&1) || true
       ;;
     *)
-      redis_out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -- \
+      redis_out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -- \
           redis-cli -h "$wg_ip" -p "$REDIS_PORT" --no-auth-warning <<EOF
 SET uwg-catalog-key hello-redis
 GET uwg-catalog-key

@@ -25,7 +25,7 @@ JS
 
 err=$(mktemp)
 start=$(date +%s.%N)
-out=$(PROBE_URL="$MESH_PROBE_URL" "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
+out=$(PROBE_URL="$MESH_PROBE_URL" "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v -- \
     node "$work/probe.js" 2>"$err") || true
 end=$(date +%s.%N)
 dur=$(awk -v s="$start" -v e="$end" 'BEGIN{printf "%.2f", e-s}')

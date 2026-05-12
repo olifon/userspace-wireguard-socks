@@ -93,7 +93,7 @@ sudo -u postgres dropdb --if-exists "$DB" 2>/dev/null
 # 2. Wrapped run on a fresh DB. Combine stdout+stderr into one log —
 # Odoo's INFO logger writes the "N failed, M error(s) of T tests"
 # summary to stderr, and we grep for it below.
-"$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
+"$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v -- \
     "$odoo_py" "$odoo_bin" \
     --no-http -d "$DB" -i base --test-enable \
     --db_host 127.0.0.1 --db_port 5432 --db_user odoo --db_password odoo \

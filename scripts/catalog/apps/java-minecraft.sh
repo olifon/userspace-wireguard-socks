@@ -61,7 +61,7 @@ start=$(date +%s.%N)
 # so we can grep wrapper "auto: chose" diagnostics from the same buffer that
 # captures Paper's own log lines.
 ( cd "$work" && \
-  "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=auto -v -- \
+  "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v -- \
     "$JAVA_BIN" -Xmx1024M -Xms512M -jar paper.jar --nogui </dev/null >"$log_out" 2>&1 ) &
 srvpid=$!
 
