@@ -57,10 +57,18 @@ PUB=$(echo "$PRIV" | ./uwgsocks pubkey 2>/dev/null) || PUB=$(echo "$PRIV" | wg p
   PUB=$(head -c 32 /dev/urandom | base64)
 }
 
-# Use random high ports for both WG and runtime API so we don't clash
-# with an already-running uwgsocks on the same host.
+# Use a random WG port so we don't collide with a real wg-quick on the
+# same host. The API port stays FIXED at 9091 because scripts/catalog/lib.sh
+# hard-codes MESH_PROBE_URL=http://10.200.0.1:9091/v1/status for the hub
+# host. With inbound.transparent + host_forward.inbound, packets to
+# 10.200.0.1:9091 get rewritten to 127.0.0.1:9091, which only lands a
+# listener if the API is actually on 9091. A random API port silently
+# breaks the 6 HTTPS-client rows that dial MESH_PROBE_URL (curl, wget,
+# python, node, ssh, java-http) — they pass on the real hub VPS only
+# because a long-running uwgsocks happens to occupy 9091. In CI's fresh
+# runner there's nothing on 9091 so we own it.
 WG_PORT=$(( ( RANDOM % 20000 ) + 41820 ))
-API_PORT=$(( ( RANDOM % 20000 ) + 41091 ))
+API_PORT=9091
 cat >"$TMPCFG" <<EOF
 wireguard:
   private_key: "$PRIV"
