@@ -87,6 +87,46 @@ if (echo > /dev/tcp/127.0.0.1/25565) 2>/dev/null; then
   listener_ok=true
 fi
 
+# Optional: if Minecraft Console Client (MCC) is available, connect to
+# the booted server in offline mode and assert "Logged in" — a real
+# end-to-end login through the wrapped Paper server. MCC binary is
+# resolved from $MCC_BIN (env override) or PATH (`mcc` or
+# `MinecraftClient`). If not present, mcc_ok stays "skip" and only the
+# "Done (" assertion gates pass/fail.
+mcc_ok="skip"
+mcc_log=""
+MCC_BIN_FOUND="${MCC_BIN:-}"
+if [[ -z "$MCC_BIN_FOUND" ]]; then
+  MCC_BIN_FOUND=$(command -v mcc 2>/dev/null || command -v MinecraftClient 2>/dev/null || true)
+fi
+if [[ -n "$MCC_BIN_FOUND" && "$ok" == "true" ]]; then
+  mcc_log="$work/mcc.log"
+  # MCC's offline-mode connect: no auth, deterministic test username.
+  # `--no-auth` keeps it from contacting Mojang. `--username` sets
+  # the offline name. We give MCC 30s to connect + receive at least
+  # one chunk; then kill it. MCC's "Logged in" + "Joining server"
+  # output line is what we grep for.
+  (
+    cd "$work" && \
+    "$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport=${CATALOG_TRANSPORT:-auto} -v -- \
+      "$MCC_BIN_FOUND" --username=uwgsocks-ci --password=- --server=127.0.0.1:25565 \
+      </dev/null >"$mcc_log" 2>&1
+  ) &
+  mccpid=$!
+  for j in $(seq 1 60); do
+    if grep -qE 'Logged in|Server was changed|Joined|chunk' "$mcc_log" 2>/dev/null; then
+      mcc_ok="true"; break
+    fi
+    if ! kill -0 $mccpid 2>/dev/null; then break; fi
+    sleep 0.5
+  done
+  if [[ "$mcc_ok" != "true" ]]; then
+    mcc_ok="false"
+  fi
+  kill $mccpid 2>/dev/null || true
+  wait $mccpid 2>/dev/null || true
+fi
+
 # Shutdown
 kill $srvpid 2>/dev/null
 wait 2>/dev/null
@@ -101,13 +141,29 @@ fi
 wrapped_ok=false
 # Paper "Done (Xs)!" means the JVM completed bootstrap, JIT, datafixer init,
 # world generation, and all the heavy lifting under wrapper interception.
-# We treat that as the pass signal. listener_ok is captured for diagnostics
-# but not required — Paper's netty epoll listener has an epoll_ctl quirk
-# under wrapper interception (tracked in production-applications.md).
-[[ "$ok" == "true" ]] && wrapped_ok=true
+# That's the load-bearing pass signal — listener_ok is captured for
+# diagnostics but not required (Paper's netty epoll listener has an
+# epoll_ctl quirk under wrapper interception, tracked in production-
+# applications.md). mcc_ok strengthens the signal when MCC is available:
+# offline-mode login confirms TCP+netty are wrapper-friendly end-to-end,
+# but its absence doesn't fail the row.
+if [[ "$ok" == "true" ]]; then
+  if [[ "$mcc_ok" == "false" ]]; then
+    # MCC was tried but failed to log in — that's a regression we WANT
+    # to fail on. Otherwise we'd silently ship a server that boots but
+    # nobody can connect to.
+    wrapped_ok=false
+  else
+    wrapped_ok=true
+  fi
+fi
 
 # Capture relevant log tail.
 tail_log=$(tail -c 1500 "$log_out" | tr '\n' '|' | head -c 1500)
-notes="paper-version=$PAPER_VER build=$PAPER_BUILD | done-line=$ok listener=$listener_ok | log-tail: $tail_log | err-tail: $(tail -c 400 "$err" | tr '\n' '|')"
+mcc_tail=""
+if [[ -n "$mcc_log" && -f "$mcc_log" ]]; then
+  mcc_tail=" | mcc-tail: $(tail -c 400 "$mcc_log" | tr '\n' '|')"
+fi
+notes="paper-version=$PAPER_VER build=$PAPER_BUILD | done-line=$ok listener=$listener_ok mcc=$mcc_ok | log-tail: $tail_log${mcc_tail} | err-tail: $(tail -c 400 "$err" | tr '\n' '|')"
 record_result "$app" "$wrapped_ok" "${UNWRAPPED_BLOCKED:-true}" "$transport" "$dur" "$notes"
 [[ "$wrapped_ok" == "true" ]]

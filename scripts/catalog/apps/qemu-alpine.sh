@@ -87,6 +87,17 @@ done
 end=$(date +%s.%N)
 dur=$(awk -v s="$start" -v e="$end" 'BEGIN{printf "%.2f", e-s}')
 
+# Reap qemu cleanly BEFORE the EXIT trap fires, so bash doesn't print
+# "scripts/catalog/apps/qemu-alpine.sh: line 1: NNNN Killed ..." at
+# script exit. The `wait` swallows bash's job-control "killed by
+# signal" message that surfaces if the bg job was SIGKILL'd. After
+# this point VMPID is dead; clear it so the trap's kill is a no-op.
+if [[ -n "${VMPID:-}" ]] && kill -0 "$VMPID" 2>/dev/null; then
+  kill -9 "$VMPID" 2>/dev/null || true
+  wait "$VMPID" 2>/dev/null || true
+fi
+VMPID=""
+
 transport=""
 if grep -q 'auto: chose ' "$err"; then
   transport=$(grep 'auto: chose ' "$err" | head -1 | sed -E 's/.*auto: chose ([a-z-]+).*/\1/')
