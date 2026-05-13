@@ -207,24 +207,31 @@ int uwg_seccomp_docker_flag = 0;
 # endif
 #endif
 
-/* execve/execveat/clone3 → SECCOMP_RET_TRAP for systrap-docker mode.
+/* execve/execveat → SECCOMP_RET_TRAP for systrap-docker mode.
  * Mutually exclusive with the supervised-trace list (a given process
  * runs either supervised or docker, not both).
  *
- * clone3 is included so the SIGSYS handler can strip CLONE_CLEAR_SIGHAND
- * before passing through. Any runtime (Go, Rust, static-libc) that uses
- * clone3 with that flag would reset all signal handlers in the child,
- * including our SIGSYS trap. Stripping the flag lets the child inherit
- * our handler so execve interception survives the exec boundary. */
+ * NOTE: clone3 is intentionally NOT in this list.
+ *
+ * On glibc 2.38-2.39, __libc_fork() calls
+ *   INTERNAL_SYSCALL_CALL(rt_sigprocmask, SIG_BLOCK, ~all, &prev)
+ * via inline assembly BEFORE calling clone3, blocking SIGSYS. If
+ * clone3 were in the BPF trap list, force_sig_info_to_task would see
+ * SIGSYS blocked, reset our handler to SIG_DFL, and kill the process.
+ * Removing clone3 from the trap lets glibc's fork() pass through; the
+ * child's signal mask is restored (SIGSYS unblocked) by glibc's own
+ * SIG_SETMASK(prev) call after clone3 returns.
+ *
+ * CLONE_CLEAR_SIGHAND stripping is handled without the BPF trap by:
+ *   1. PLT shim for posix_spawn / posix_spawnp → fork()+exec (no clone3).
+ *   2. PLT shim for syscall() → dispatch.c case SYS_clone3 → strips the
+ *      flag and passthroughs with bypass_secret (BPF ALLOWs it). */
 static const int uwg_trapped_docker_syscalls[] = {
 #ifdef SYS_execve
     SYS_execve,
 #endif
 #ifdef SYS_execveat
     SYS_execveat,
-#endif
-#ifdef SYS_clone3
-    SYS_clone3,
 #endif
 };
 #define UWG_N_TRAPPED_DOCKER \

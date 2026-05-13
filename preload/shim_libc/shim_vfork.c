@@ -31,9 +31,10 @@
  * the child calls execve(2) or _exit(2), exactly as the vfork(2) ABI
  * requires.
  *
- * For static-libc callers (no PLT interception), the seccomp filter's
- * docker-mode rt_sigprocmask(SIG_BLOCK/SIG_SETMASK) conditional trap
- * handles step 1 before it can block SIGSYS.
+ * For static-libc callers (no PLT interception), the uwgptloader
+ * injected via systrap-elf installs its own SIGSYS handler before the
+ * binary's init runs, so the rt_sigprocmask(SIG_BLOCK) in static vfork
+ * implementations is handled by that handler context.
  *
  * This shim does NOT override vfork2() or __vfork(); those symbols
  * are internal glibc names not used by application code.
