@@ -441,7 +441,6 @@ func TestUWGWrapperPtraceSeccompSocketSyscallSurfaceStats(t *testing.T) {
 		"write",
 		"read",
 		"dup",
-		"dup2",
 		"dup3",
 		"getsockname",
 		"getpeername",
@@ -449,12 +448,15 @@ func TestUWGWrapperPtraceSeccompSocketSyscallSurfaceStats(t *testing.T) {
 		"fcntl",
 		"getsockopt",
 		"setsockopt",
-		"poll",
 		"ppoll",
 		"close",
 	} {
 		assertSyscallAtLeast(t, stats, name, 1)
 	}
+	// arm64 has no dup2 syscall (libc maps dup2→dup3); assert at least one.
+	assertSyscallAtLeastOneOf(t, stats, 1, "dup2", "dup3")
+	// arm64 has no poll syscall (libc maps poll→ppoll); assert at least one.
+	assertSyscallAtLeastOneOf(t, stats, 1, "poll", "ppoll")
 }
 
 // TestUWGWrapperSocketSyscallSurfaceExtra runs the extended
@@ -491,11 +493,12 @@ func TestUWGWrapperSocketSyscallSurfaceExtra(t *testing.T) {
 					"sendto",
 					"recvfrom",
 					"fcntl",
-					"poll",
 					"shutdown",
 				} {
 					assertSyscallAtLeast(t, stats, name, 1)
 				}
+				// arm64 maps poll→ppoll at the syscall level.
+				assertSyscallAtLeastOneOf(t, stats, 1, "poll", "ppoll")
 				// Two shutdowns (SHUT_WR then SHUT_RDWR) — assert both
 				// to catch a partial-shutdown bypass.
 				assertSyscallAtLeast(t, stats, "shutdown", 2)
@@ -1324,6 +1327,16 @@ func assertSyscallAtLeast(t *testing.T, stats traceStats, name string, want uint
 	if got < want {
 		t.Fatalf("expected traced syscall %s>=%d, got %d (all=%v)", name, want, got, stats.Syscalls)
 	}
+}
+
+func assertSyscallAtLeastOneOf(t *testing.T, stats traceStats, want uint64, names ...string) {
+	t.Helper()
+	for _, name := range names {
+		if stats.Syscalls[name] >= want {
+			return
+		}
+	}
+	t.Fatalf("expected at least one of %v>=%d, got (all=%v)", names, want, stats.Syscalls)
 }
 
 func assertSyscallDelta(t *testing.T, baseline, stats traceStats, name string, want int64) {
