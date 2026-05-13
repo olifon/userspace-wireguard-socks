@@ -67,6 +67,9 @@
 #ifndef AT_EMPTY_PATH
 #  define AT_EMPTY_PATH 0x1000
 #endif
+#ifndef SIG_BLOCK
+#  define SIG_BLOCK   0
+#endif
 #ifndef SIG_UNBLOCK
 #  define SIG_UNBLOCK 1
 #endif
