@@ -312,14 +312,16 @@ static int uwg_build_filter(struct uwg_filter_prog *p, uint64_t bypass_secret,
         }
 
         /* Note: rt_sigprocmask is NOT added to the BPF trap list here.
-         * Although glibc's static posix_spawn blocks SIGSYS via a raw
-         * rt_sigprocmask(SIG_BLOCK, ~[]) before clone3, trapping
-         * rt_sigprocmask breaks dynamic binary initialization: ld.so and
-         * glibc's own constructors call rt_sigprocmask before the
-         * LD_PRELOAD constructor can install the SIGSYS handler, causing
-         * force_sig_info to kill the process with SIG_DFL. Dynamic-binary
-         * posix_spawn is covered by the PLT shim; Go/Rust/direct clone3
-         * callers do not block SIGSYS before calling clone3. */
+         * glibc's ld.so calls rt_sigprocmask(SIG_SETMASK/SIG_BLOCK) during
+         * its startup (before LD_PRELOAD constructors run), so trapping it
+         * would cause the post-exec window to fire SIGSYS with no handler →
+         * SIG_DFL → process killed. Dynamic binaries are covered by the PLT
+         * shim in shim_sigprocmask.c and shim_vfork.c (clone3 bypass avoids
+         * the blocking call entirely). For static-libc callers, the
+         * uwgptloader injected via systrap-elf installs the SIGSYS handler
+         * before static binary init runs, so they are handled through a
+         * separate filter installed by uwgptloader that does not have the
+         * same post-exec window problem. */
     }
 
     /* (4) trapped syscalls → SECCOMP_RET_TRAP */
