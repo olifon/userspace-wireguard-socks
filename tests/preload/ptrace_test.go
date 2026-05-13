@@ -928,8 +928,11 @@ func requireWrapperToolchain(t *testing.T) {
 	if testing.Short() {
 		t.Skip("wrapper integration tests skipped in -short mode (run without -short or in release CI)")
 	}
-	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
-		t.Skip("wrapper tests are linux/amd64 only")
+	if runtime.GOOS != "linux" {
+		t.Skip("wrapper tests are linux-only")
+	}
+	if runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64" {
+		t.Skipf("wrapper tests require linux/amd64 or linux/arm64 (got %s)", runtime.GOARCH)
 	}
 	if _, err := exec.LookPath("gcc"); err != nil {
 		t.Skip("gcc is required for wrapper integration tests")
@@ -1120,6 +1123,15 @@ func unsupportedWrappedMode(out []byte) bool {
 	return bytes.Contains(out, []byte("function not implemented"))
 }
 
+// ptraceUnavailableOnArch returns true when the wrapper rejected the requested
+// transport because ptrace-only is not supported on this CPU architecture
+// (e.g. arm64 requires seccomp trace stops to resolve syscall entry/exit
+// ambiguity). Tests that include ptrace-only in their transport loop should
+// skip gracefully rather than fail.
+func ptraceUnavailableOnArch(out []byte) bool {
+	return bytes.Contains(out, []byte("ptrace tracing unavailable"))
+}
+
 func startWrappedListenerProcess(t *testing.T, art wrapperArtifacts, httpSock, transport, target string, args []string, opts wrapperRunOptions) (*exec.Cmd, *bytes.Buffer, chan error) {
 	t.Helper()
 	var lastErr error
@@ -1173,6 +1185,9 @@ func startWrappedListenerProcess(t *testing.T, art wrapperArtifacts, httpSock, t
 		if runningRestrictedGVisor() && unsupportedWrappedMode(stderr.Bytes()) {
 			t.Skipf("skipping wrapper mode %q on restricted gVisor kernel: %s", transport, strings.TrimSpace(stderr.String()))
 		}
+		if ptraceUnavailableOnArch(stderr.Bytes()) {
+			t.Skipf("skipping transport %q: %s", transport, strings.TrimSpace(stderr.String()))
+		}
 		if retryableWrappedFailure(stderr.Bytes(), nil) {
 			t.Logf("retrying wrapped listener after startup failure: %s %v", target, args)
 			continue
@@ -1214,6 +1229,9 @@ func runWrappedTargetWithOptions(t *testing.T, art wrapperArtifacts, httpSock, t
 		lastErr = err
 		if runningRestrictedGVisor() && unsupportedWrappedMode(out) {
 			t.Skipf("skipping wrapper mode %q on restricted gVisor kernel: %s", transport, strings.TrimSpace(string(out)))
+		}
+		if ptraceUnavailableOnArch(out) {
+			t.Skipf("skipping transport %q: %s", transport, strings.TrimSpace(string(out)))
 		}
 		if ctx.Err() == context.DeadlineExceeded {
 			killProcessGroup(cmd)
