@@ -18,13 +18,7 @@ fi
 
 start=$(date +%s.%N)
 tmp=$(mktemp -d)
-# pip on Ubuntu 24.04 noble's GH runner regressed under transport=systrap-elf
-# in v0.1.7 (passes under explicit --transport=systrap, passes locally on the
-# dev box). Pin to plain systrap until the pip × systrap-elf interaction is
-# isolated. Tracked in memory:project_pip_systrap_elf_regression.md.
-# CATALOG_TRANSPORT explicit override still wins (the multi-mode matrix
-# exercises pip under each explicit mode in turn).
-pip_transport="${CATALOG_TRANSPORT:-systrap}"
+pip_transport="${CATALOG_TRANSPORT:-auto}"
 out=$("$UWGWRAPPER_BIN" --api="$UWGSOCKS_API" --transport="$pip_transport" -v -- \
     bash -c "$pipbin --disable-pip-version-check download --no-deps --no-binary :all: --dest=$tmp 'six==1.16.0' 2>&1" 2>&1) || true
 end=$(date +%s.%N)

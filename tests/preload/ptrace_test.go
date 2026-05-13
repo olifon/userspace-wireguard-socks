@@ -1258,7 +1258,7 @@ func runWrappedTargetWithStats(t *testing.T, art wrapperArtifacts, httpSock, tra
 
 func transportUsesPreload(transport string) bool {
 	switch transport {
-	case "systrap", "combo-only", "preload+seccomp", "preload-plus-seccomp", "preload", "preload-only", "systrap-docker":
+	case "systrap", "combo-only", "preload+seccomp", "preload-plus-seccomp", "preload", "preload-only", "systrap-docker", "systrap-elf":
 		return true
 	default:
 		return false

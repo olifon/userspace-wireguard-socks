@@ -587,3 +587,140 @@ func truncate(b []byte, n int) []byte {
 	}
 	return b[:n]
 }
+
+// TestSystrapElfPythonSubprocess exercises the posix_spawn PLT shim fix:
+// Python's subprocess module on glibc 2.28+ uses posix_spawn internally, which
+// calls clone3(CLONE_VM|CLONE_VFORK|CLONE_CLEAR_SIGHAND). CLONE_CLEAR_SIGHAND
+// resets all signal handlers (including our SIGSYS trap) to SIG_DFL in the
+// child. Before the shim, the child's execve seccomp-trap fired with no
+// handler and the child was killed. The shim intercepts posix_spawn at PLT
+// level and uses fork()+execve() instead.
+func TestSystrapElfPythonSubprocess(t *testing.T) {
+	requireSystrapDockerToolchain(t)
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not found")
+	}
+	art, _ := buildSystrapDockerArtifacts(t)
+	_, httpSock := setupWrapperNetwork(t)
+
+	out := runWrappedTargetWithOptions(t, art, httpSock,
+		"systrap-elf", "python3",
+		[]string{"-c", `import subprocess; r = subprocess.check_output(["uname", "-r"]); print("spawn-ok", r.decode().strip())`},
+		wrapperRunOptions{timeout: 30 * time.Second})
+
+	if !strings.Contains(string(out), "spawn-ok") {
+		t.Fatalf("expected 'spawn-ok' in output; got %q", out)
+	}
+}
+
+// TestSystrapElfPosixSpawnNetworked builds a C parent that calls posix_spawn
+// to launch stub_client (which makes a TCP echo through the tunnel). Verifies
+// that the posix_spawn PLT shim hands off to fork()+execve(), that the spawned
+// child gets ptloader injected via execve_docker_dispatch, and that the child
+// can establish tunnel connections normally.
+func TestSystrapElfPosixSpawnNetworked(t *testing.T) {
+	requireSystrapDockerToolchain(t)
+	art, _ := buildSystrapDockerArtifacts(t)
+	_, httpSock := setupWrapperNetwork(t)
+
+	repo := filepath.Clean(filepath.Join("..", ".."))
+	tmp := t.TempDir()
+
+	parentSrc := filepath.Join(tmp, "posix_spawn_parent.c")
+	if err := os.WriteFile(parentSrc, []byte(`
+#define _GNU_SOURCE
+#include <spawn.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <errno.h>
+extern char **environ;
+int main(int argc, char **argv) {
+    if (argc < 5) { fprintf(stderr, "usage: parent stub host port sentinel\n"); return 1; }
+    char *child_argv[] = { argv[1], argv[2], argv[3], argv[4], "tcp", NULL };
+    pid_t pid;
+    int rc = posix_spawn(&pid, argv[1], NULL, NULL, child_argv, environ);
+    if (rc != 0) { fprintf(stderr, "posix_spawn: %s\n", strerror(rc)); return 1; }
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) { perror("waitpid"); return 1; }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        fprintf(stderr, "child failed: status=%d\n", WEXITSTATUS(status)); return 1;
+    }
+    printf("posix-spawn-parent-ok\n");
+    return 0;
+}
+`), 0o644); err != nil {
+		t.Fatalf("write posix_spawn_parent.c: %v", err)
+	}
+	parent := filepath.Join(tmp, "posix_spawn_parent")
+	run(t, repo, "gcc", "-O2", "-Wall", "-o", parent, parentSrc)
+
+	out := runWrappedTargetWithOptions(t, art, httpSock,
+		"systrap-elf", parent,
+		[]string{art.stub, "100.64.94.1", "18080", "elf-posixspawn-echo"},
+		wrapperRunOptions{timeout: 30 * time.Second})
+
+	if !strings.Contains(string(out), "elf-posixspawn-echo") {
+		t.Fatalf("posix_spawn chain: expected echo sentinel in output; got %q", out)
+	}
+	if !strings.Contains(string(out), "posix-spawn-parent-ok") {
+		t.Fatalf("posix_spawn chain: expected 'posix-spawn-parent-ok' in output; got %q", out)
+	}
+}
+
+// TestSystrapElfVforkExec builds a C parent that calls vfork()+execv(stub_client).
+// vfork uses clone(CLONE_VM|CLONE_VFORK) without CLONE_CLEAR_SIGHAND, so the child
+// inherits the SIGSYS handler. This validates that the vfork+exec code path
+// (distinct from posix_spawn's clone3 path) also works end-to-end under systrap-elf.
+func TestSystrapElfVforkExec(t *testing.T) {
+	requireSystrapDockerToolchain(t)
+	art, _ := buildSystrapDockerArtifacts(t)
+	_, httpSock := setupWrapperNetwork(t)
+
+	repo := filepath.Clean(filepath.Join("..", ".."))
+	tmp := t.TempDir()
+
+	parentSrc := filepath.Join(tmp, "vfork_parent.c")
+	if err := os.WriteFile(parentSrc, []byte(`
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/wait.h>
+int main(int argc, char **argv) {
+    if (argc < 5) { fprintf(stderr, "usage: parent stub host port sentinel\n"); return 1; }
+    pid_t pid = vfork();
+    if (pid < 0) { perror("vfork"); return 1; }
+    if (pid == 0) {
+        char *child_argv[] = { argv[1], argv[2], argv[3], argv[4], "tcp", NULL };
+        execv(argv[1], child_argv);
+        _exit(127);
+    }
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) { perror("waitpid"); return 1; }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        fprintf(stderr, "child failed: status=%d\n", WEXITSTATUS(status)); return 1;
+    }
+    printf("vfork-parent-ok\n");
+    return 0;
+}
+`), 0o644); err != nil {
+		t.Fatalf("write vfork_parent.c: %v", err)
+	}
+	parent := filepath.Join(tmp, "vfork_parent")
+	run(t, repo, "gcc", "-O2", "-Wall", "-o", parent, parentSrc)
+
+	out := runWrappedTargetWithOptions(t, art, httpSock,
+		"systrap-elf", parent,
+		[]string{art.stub, "100.64.94.1", "18080", "elf-vfork-echo"},
+		wrapperRunOptions{timeout: 30 * time.Second})
+
+	if !strings.Contains(string(out), "elf-vfork-echo") {
+		t.Fatalf("vfork chain: expected echo sentinel in output; got %q", out)
+	}
+	if !strings.Contains(string(out), "vfork-parent-ok") {
+		t.Fatalf("vfork chain: expected 'vfork-parent-ok' in output; got %q", out)
+	}
+}
