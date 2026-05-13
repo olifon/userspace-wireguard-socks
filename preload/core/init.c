@@ -200,6 +200,21 @@ int uwg_core_init(void) {
     rc = uwg_install_sigsys_handler();
     if (rc < 0) return rc;
 
+    /* (4a) Unblock SIGSYS now that the handler is in place.
+     *
+     * execve_docker.c blocks SIGSYS before the passthrough execve so the
+     * new process always starts with SIGSYS blocked — preventing any BPF
+     * trap in the ld.so startup window from delivering with SIG_DFL and
+     * killing the child. We unblock here, after the handler is installed,
+     * so queued BPF-trap SIGSYSes (if any) deliver to our handler. This
+     * call is idempotent: if SIGSYS was already unblocked (e.g. in the
+     * top-level wrapped process or the fork-child path), it is a no-op. */
+    {
+        unsigned long sigsys_bit = (unsigned long)1 << (SIGSYS - 1);
+        uwg_syscall4(SYS_rt_sigprocmask, SIG_UNBLOCK,
+                     (long)&sigsys_bit, 0L, 8L);
+    }
+
     /* (4b) Atfork child handler to close the CLONE_CLEAR_SIGHAND window.
      *
      * glibc 2.38-2.39's fork() calls clone3(CLONE_CLEAR_SIGHAND) which

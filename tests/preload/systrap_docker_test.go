@@ -590,15 +590,16 @@ func truncate(b []byte, n int) []byte {
 
 // TestSystrapElfPythonSubprocess exercises the fork+exec path from inside a
 // wrapped Python process. Python 3.12's subprocess.check_output(["uname", "-r"])
-// uses fork()+execve() for bare executable names (posix_spawn requires a
-// directory component). glibc 2.38-2.39's fork() calls
-// clone3(CLONE_CLEAR_SIGHAND) which resets all signal handlers (including our
-// SIGSYS handler) to SIG_DFL in the child, then runs atfork child handlers
-// (including Python's _PyOS_AfterFork_Child), and only then restores the
-// signal mask. Any BPF-trapped syscall in that window queues a SIGSYS;
-// when unblocked it fires with SIG_DFL and kills the child. Fixed by
-// registering a pthread_atfork child handler in uwg_core_init() that
-// reinstalls the SIGSYS handler before glibc unblocks SIGSYS.
+// uses fork()+execve() for bare executable names. The exec'd child (uname)
+// inherits the active BPF filter but has its SIGSYS handler reset to SIG_DFL
+// by the kernel on execve. The previous execve_docker.c code called
+// SIG_UNBLOCK on SIGSYS before the passthrough execve, so uname started with
+// SIGSYS unblocked + SIG_DFL + BPF active: any trapped syscall during the
+// ld.so startup window killed the child. Fixed by switching to SIG_BLOCK
+// before the passthrough execve (so BPF traps queue instead of firing with
+// SIG_DFL) and unblocking in uwg_core_init() after the handler is installed.
+// The pthread_atfork child handler (also in uwg_core_init) closes the
+// CLONE_CLEAR_SIGHAND window in the fork child itself.
 func TestSystrapElfPythonSubprocess(t *testing.T) {
 	requireSystrapDockerToolchain(t)
 	if _, err := exec.LookPath("python3"); err != nil {

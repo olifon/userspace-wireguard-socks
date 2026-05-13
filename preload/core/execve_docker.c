@@ -365,14 +365,14 @@ static long uwg_docker_patch_exec(int orig_fd, long orig_size,
         goto out_bin;
     }
 
-    /* Unblock SIGSYS before exec: we're invoked from the SIGSYS handler
-     * (no SA_NODEFER), so SIGSYS is blocked in our signal mask. The new
-     * process inherits the mask; unblocking here ensures seccomp traps in
-     * the ptloader-initialized child deliver to the SIGSYS handler rather
-     * than queuing indefinitely or firing with the default kill action. */
+    /* Block SIGSYS before exec. The new process inherits the signal mask
+     * across execve; keeping SIGSYS blocked until uwg_core_init() installs
+     * the handler ensures any BPF trap in the ld.so startup window queues
+     * rather than firing with SIG_DFL and killing the child. Unblocking is
+     * done in uwg_core_init() immediately after handler installation. */
     {
         uint64_t _sigsys_mask = (uint64_t)1 << (SIGSYS - 1);
-        uwg_syscall4(SYS_rt_sigprocmask, SIG_UNBLOCK,
+        uwg_syscall4(SYS_rt_sigprocmask, SIG_BLOCK,
                      (long)&_sigsys_mask, 0L, 8L);
     }
 
@@ -480,14 +480,14 @@ long uwg_execve_docker_dispatch(const char *path,
 passthrough:
     uwg_syscall2(SYS_munmap, mm, UWG_DOCKER_BUF_TOTAL);
     uwg_syscall1(SYS_close, fd);
-    /* Unblock SIGSYS: we're invoked from the SIGSYS handler (no
-     * SA_NODEFER), so SIGSYS is auto-masked for the handler's duration.
-     * The new process image inherits the signal mask across execve; if
-     * we don't unblock, the child starts with SIGSYS blocked and any
-     * subsequent seccomp trap kills it before our handler can run. */
+    /* Block SIGSYS before exec (same reasoning as the static-binary path
+     * above: queued SIGSYS is safe, SIG_DFL with SIGSYS unblocked kills).
+     * This also handles the PLT-shim callsite where SIGSYS was already
+     * unblocked in the calling process; blocking here is the safe default
+     * for all callers. uwg_core_init() unblocks after handler install. */
     {
         uint64_t _sigsys_mask = (uint64_t)1 << (SIGSYS - 1);
-        uwg_syscall4(SYS_rt_sigprocmask, SIG_UNBLOCK,
+        uwg_syscall4(SYS_rt_sigprocmask, SIG_BLOCK,
                      (long)&_sigsys_mask, 0L, 8L);
     }
     return uwg_passthrough_syscall3(SYS_execve, (long)path,
