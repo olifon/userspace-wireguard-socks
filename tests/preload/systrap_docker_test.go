@@ -670,6 +670,118 @@ int main(int argc, char **argv) {
 	}
 }
 
+// TestSystrapElfClone3ClearSighand verifies the BPF-level CLONE_CLEAR_SIGHAND
+// interception path. The test builds a C parent that calls clone3(2) directly via
+// syscall(SYS_clone3, ...) with ca.flags = CLONE_CLEAR_SIGHAND (fork-like, no
+// CLONE_VM). Without the BPF trap + dispatch strip the child's SIGSYS handler would
+// be reset to SIG_DFL, the execve seccomp-trap would have no handler, and
+// force_sig_info_to_task would kill the child.
+//
+// This covers Go runtimes, Rust process::Command, and static-libc binaries that
+// call clone3 directly rather than routing through glibc's posix_spawn PLT symbol
+// (which is intercepted separately by the PLT shim for dynamic binaries).
+func TestSystrapElfClone3ClearSighand(t *testing.T) {
+	requireSystrapDockerToolchain(t)
+	art, _ := buildSystrapDockerArtifacts(t)
+	_, httpSock := setupWrapperNetwork(t)
+
+	repo := filepath.Clean(filepath.Join("..", ".."))
+	tmp := t.TempDir()
+
+	src := filepath.Join(tmp, "clone3_parent.c")
+	if err := os.WriteFile(src, []byte(`
+#define _GNU_SOURCE
+#include <errno.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <sys/syscall.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#ifndef SYS_clone3
+# if defined(__x86_64__) || defined(__aarch64__)
+#  define SYS_clone3 435
+# endif
+#endif
+
+#ifndef CLONE_CLEAR_SIGHAND
+# define CLONE_CLEAR_SIGHAND 0x100000000ULL
+#endif
+
+struct uwg_clone_args {
+    uint64_t flags;
+    uint64_t pidfd;
+    uint64_t child_tid;
+    uint64_t parent_tid;
+    uint64_t exit_signal;
+    uint64_t stack;
+    uint64_t stack_size;
+    uint64_t tls;
+};
+
+int main(int argc, char **argv) {
+    if (argc < 5) {
+        fprintf(stderr, "usage: clone3test stub host port sentinel\n");
+        return 1;
+    }
+    struct uwg_clone_args ca;
+    memset(&ca, 0, sizeof(ca));
+    ca.flags = CLONE_CLEAR_SIGHAND;
+    ca.exit_signal = SIGCHLD;
+    long pid = syscall(SYS_clone3, &ca, sizeof(ca));
+    if (pid < 0) {
+        if (errno == ENOSYS) {
+            /* Kernel < 5.3: clone3 not available; skip gracefully. */
+            printf("clone3-not-available\n");
+            return 0;
+        }
+        fprintf(stderr, "clone3: %s\n", strerror(errno));
+        return 1;
+    }
+    if (pid == 0) {
+        /* child: exec into stub_client for the TCP echo */
+        char *child_argv[] = { argv[1], argv[2], argv[3], argv[4], "tcp", NULL };
+        execv(argv[1], child_argv);
+        _exit(127);
+    }
+    /* parent */
+    int status = 0;
+    if (waitpid((pid_t)pid, &status, 0) < 0) { perror("waitpid"); return 1; }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        fprintf(stderr, "child failed: exit=%d\n", WEXITSTATUS(status));
+        return 1;
+    }
+    printf("clone3-parent-ok\n");
+    return 0;
+}
+`), 0o644); err != nil {
+		t.Fatalf("write clone3_parent.c: %v", err)
+	}
+	parent := filepath.Join(tmp, "clone3_parent")
+	run(t, repo, "gcc", "-O2", "-Wall", "-o", parent, src)
+
+	out := runWrappedTargetWithOptions(t, art, httpSock,
+		"systrap-elf", parent,
+		[]string{art.stub, "100.64.94.1", "18080", "elf-clone3-echo"},
+		wrapperRunOptions{timeout: 30 * time.Second})
+
+	t.Logf("=== clone3 CLEAR_SIGHAND output ===\n%s\n=== end ===", out)
+
+	if strings.Contains(string(out), "clone3-not-available") {
+		t.Skip("clone3 not available on this kernel (< 5.3); skipping")
+	}
+	if !strings.Contains(string(out), "elf-clone3-echo") {
+		t.Fatalf("clone3 CLEAR_SIGHAND: expected echo sentinel in output; got %q", out)
+	}
+	if !strings.Contains(string(out), "clone3-parent-ok") {
+		t.Fatalf("clone3 CLEAR_SIGHAND: expected 'clone3-parent-ok' in output; got %q", out)
+	}
+}
+
 // TestSystrapElfVforkExec builds a C parent that calls vfork()+execv(stub_client).
 // vfork uses clone(CLONE_VM|CLONE_VFORK) without CLONE_CLEAR_SIGHAND, so the child
 // inherits the SIGSYS handler. This validates that the vfork+exec code path

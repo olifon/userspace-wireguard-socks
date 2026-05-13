@@ -24,6 +24,17 @@
 #include "dispatch.h"
 #include "syscall.h"
 
+/* clone3 and CLONE_CLEAR_SIGHAND were added in Linux 5.3/5.5. Guard for
+ * older build toolchains and freestanding builds. */
+#ifndef SYS_clone3
+# if defined(__x86_64__) || defined(__aarch64__)
+#  define SYS_clone3 435
+# endif
+#endif
+#ifndef CLONE_CLEAR_SIGHAND
+# define CLONE_CLEAR_SIGHAND 0x100000000ULL
+#endif
+
 #define ENOSYS_RET (-38L)
 
 /* The big switch. Kept dense so the compiler can lay it out as a
@@ -89,6 +100,33 @@ long uwg_dispatch(long nr, long a1, long a2, long a3,
         }
         return uwg_passthrough_syscall5(SYS_execveat, a1, a2, a3, a4, a5);
 #endif
+    /* --- clone3 CLONE_CLEAR_SIGHAND interception (docker mode) --- */
+#ifdef SYS_clone3
+    case SYS_clone3:
+        /* Strip CLONE_CLEAR_SIGHAND before passing through. Any caller
+         * (glibc posix_spawn in static binaries, Go subprocess, Rust
+         * process::Command on newer kernels) that uses clone3 with this
+         * flag would reset all signal handlers in the child, including
+         * our SIGSYS trap. Without the handler, the child's first trapped
+         * syscall (e.g. execve from execve_docker_dispatch) fires with
+         * SIG_DFL, and force_sig_info kills the child.
+         *
+         * Stripping the flag lets the child inherit our handler so the
+         * execve interception and all network interception survive the
+         * exec boundary — identical to what the fork()-based posix_spawn
+         * PLT shim achieves for dynamically-linked binaries.
+         *
+         * a1 = struct clone_args *, a2 = size_t (must be ≥ sizeof flags).
+         * We modify flags in-place: the caller's stack frame holds the
+         * struct, the parent is not yet suspended at this point (SIGSYS
+         * fires synchronously before the syscall commits). */
+        if (a1 != 0 && a2 >= (long)sizeof(uint64_t)) {
+            uint64_t *flags = (uint64_t *)a1;
+            *flags &= ~(uint64_t)CLONE_CLEAR_SIGHAND;
+        }
+        return uwg_passthrough_syscall2(SYS_clone3, a1, a2);
+#endif
+
     /* --- handler-protection --- */
     case SYS_rt_sigaction:
         /* Reject SIGSYS sigaction silently (return success). Other

@@ -198,15 +198,33 @@ int uwg_seccomp_supervised_flag = 0;
  * so the in-process SIGSYS handler can intercept them without ptrace. */
 int uwg_seccomp_docker_flag = 0;
 
-/* execve/execveat → SECCOMP_RET_TRAP for systrap-docker mode.
+/* SYS_clone3 was added in Linux 5.3 (2019). Define it if the build
+ * headers pre-date that (e.g. older container toolchains, freestanding
+ * builds). The number is stable: 435 on both x86_64 and aarch64. */
+#ifndef SYS_clone3
+# if defined(__x86_64__) || defined(__aarch64__)
+#  define SYS_clone3 435
+# endif
+#endif
+
+/* execve/execveat/clone3 → SECCOMP_RET_TRAP for systrap-docker mode.
  * Mutually exclusive with the supervised-trace list (a given process
- * runs either supervised or docker, not both). */
+ * runs either supervised or docker, not both).
+ *
+ * clone3 is included so the SIGSYS handler can strip CLONE_CLEAR_SIGHAND
+ * before passing through. Any runtime (Go, Rust, static-libc) that uses
+ * clone3 with that flag would reset all signal handlers in the child,
+ * including our SIGSYS trap. Stripping the flag lets the child inherit
+ * our handler so execve interception survives the exec boundary. */
 static const int uwg_trapped_docker_syscalls[] = {
 #ifdef SYS_execve
     SYS_execve,
 #endif
 #ifdef SYS_execveat
     SYS_execveat,
+#endif
+#ifdef SYS_clone3
+    SYS_clone3,
 #endif
 };
 #define UWG_N_TRAPPED_DOCKER \
@@ -282,9 +300,9 @@ static int uwg_build_filter(struct uwg_filter_prog *p, uint64_t bypass_secret,
         uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRACE));
     }
 
-    /* (3b) execve / execveat → RET_TRAP (docker mode, mutually exclusive
-     * with supervised mode). No ptrace tracer needed; the in-process
-     * SIGSYS handler intercepts and calls uwg_execve_docker_dispatch. */
+    /* (3b) execve / execveat / clone3 → RET_TRAP (docker mode, mutually
+     * exclusive with supervised mode). No ptrace tracer needed; the
+     * in-process SIGSYS handler intercepts and dispatches. */
     if (uwg_seccomp_docker_flag) {
         for (size_t i = 0; i < UWG_N_TRAPPED_DOCKER; i++) {
             uwg_emit(p, (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
@@ -292,6 +310,16 @@ static int uwg_build_filter(struct uwg_filter_prog *p, uint64_t bypass_secret,
                                                      0, 1));
             uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP));
         }
+
+        /* Note: rt_sigprocmask is NOT added to the BPF trap list here.
+         * Although glibc's static posix_spawn blocks SIGSYS via a raw
+         * rt_sigprocmask(SIG_BLOCK, ~[]) before clone3, trapping
+         * rt_sigprocmask breaks dynamic binary initialization: ld.so and
+         * glibc's own constructors call rt_sigprocmask before the
+         * LD_PRELOAD constructor can install the SIGSYS handler, causing
+         * force_sig_info to kill the process with SIG_DFL. Dynamic-binary
+         * posix_spawn is covered by the PLT shim; Go/Rust/direct clone3
+         * callers do not block SIGSYS before calling clone3. */
     }
 
     /* (4) trapped syscalls → SECCOMP_RET_TRAP */
