@@ -194,6 +194,19 @@ static void uwg_apply_spawnattr(const posix_spawnattr_t *sa) {
     }
 }
 
+/* clone3/clone flag and struct definitions needed for the direct fork. */
+#ifndef SIGCHLD
+# define SIGCHLD 17
+#endif
+#ifndef SIG_UNBLOCK
+# define SIG_UNBLOCK 1
+#endif
+#ifndef SYS_clone3
+# if defined(__x86_64__) || defined(__aarch64__)
+#  define SYS_clone3 435
+# endif
+#endif
+
 /* ------------------------------------------------------------------ */
 /* Core docker-mode spawn implementation                                */
 /* ------------------------------------------------------------------ */
@@ -202,25 +215,53 @@ static int uwg_do_posix_spawn(pid_t *pid_out, const char *path,
                                const posix_spawn_file_actions_t *fa,
                                const posix_spawnattr_t *sa,
                                char *const argv[], char *const envp[]) {
-    /* fork() → our shim_fork.c: calls real fork + unblocks SIGSYS in child.
-     * No CLONE_CLEAR_SIGHAND, so the child inherits our SIGSYS handler. */
-    pid_t child = fork();
-    if (child < 0) {
-        int err = errno;
-        return err ? err : EAGAIN;
-    }
+    /* We must NOT call glibc's fork() here. On glibc 2.38-2.39, fork()
+     * uses clone3(CLONE_CLEAR_SIGHAND) which resets ALL signal handlers
+     * to SIG_DFL in the child — including our SIGSYS handler. The child
+     * then cannot handle any BPF trap (e.g. from uwg_apply_spawnattr
+     * calling rt_sigaction(SIGSYS)) and dies before reaching execve.
+     *
+     * Fix: issue clone3 (or clone) directly via passthrough syscall,
+     * without CLONE_CLEAR_SIGHAND. The child inherits our SIGSYS handler
+     * intact. We bypass pthread_atfork handlers, which is safe here
+     * because the child runs only async-signal-safe operations
+     * (uwg_syscall* calls) before execve and never runs Python code. */
+    long child;
+#ifdef SYS_clone3
+    /* CLONE_ARGS_SIZE_VER0 = 8 × sizeof(uint64_t) = 64 bytes.
+     * exit_signal = SIGCHLD for wait(2) compatibility.
+     * No CLONE_CLEAR_SIGHAND: child inherits our SIGSYS handler. */
+    uint64_t ca[8];
+    __builtin_memset(ca, 0, sizeof(ca));
+    /* ca[0] = flags: 0 (pure fork, no special clone flags) */
+    ca[4] = (uint64_t)SIGCHLD; /* exit_signal */
+    child = uwg_passthrough_syscall2(SYS_clone3, (long)(uintptr_t)ca,
+                                     (long)sizeof(ca));
+    if (child == -38L /* -ENOSYS */)
+#endif
+    /* Fallback: SYS_clone with SIGCHLD and no stack/flags. */
+    child = uwg_passthrough_syscall5(SYS_clone, (long)SIGCHLD, 0L, 0L, 0L, 0L);
+
+    if (child < 0) return (int)(-(int)child);
+
     if (child == 0) {
+        /* Child: SIGSYS handler inherited, no CLONE_CLEAR_SIGHAND.
+         * Unblock SIGSYS defensively — the parent's mask is inherited;
+         * if the parent had SIGSYS blocked for any reason, unblock it
+         * so BPF traps route to our handler rather than SIG_DFL. */
+        unsigned long sigsys_bit = (unsigned long)1 << (SIGSYS - 1);
+        uwg_syscall4(SYS_rt_sigprocmask, SIG_UNBLOCK,
+                     (long)&sigsys_bit, 0L, 8L);
+
         uwg_apply_spawnattr(sa);
         uwg_apply_file_actions(fa);
         /* execve() → shim_execve.c::execve() → uwg_execve_docker_dispatch()
-         * → bypass exec (BPF filter sees bypass secret in arg6 → ALLOW).
-         * The bypass path does not require the SIGSYS handler — the filter
-         * allows the exec directly without trapping. */
+         * → bypass exec (BPF filter sees bypass secret in arg6 → ALLOW). */
         execve(path, argv, envp);
         uwg_syscall1(SYS_exit_group, 127);
         __builtin_unreachable();
     }
-    if (pid_out) *pid_out = child;
+    if (pid_out) *pid_out = (pid_t)child;
     return 0;
 }
 
