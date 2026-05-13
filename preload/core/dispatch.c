@@ -102,7 +102,7 @@ long uwg_dispatch(long nr, long a1, long a2, long a3,
 #endif
     /* --- clone3 CLONE_CLEAR_SIGHAND interception (docker mode) --- */
 #ifdef SYS_clone3
-    case SYS_clone3:
+    case SYS_clone3: {
         /* Strip CLONE_CLEAR_SIGHAND before passing through. Any caller
          * (glibc posix_spawn in static binaries, Go subprocess, Rust
          * process::Command on newer kernels) that uses clone3 with this
@@ -116,15 +116,37 @@ long uwg_dispatch(long nr, long a1, long a2, long a3,
          * exec boundary — identical to what the fork()-based posix_spawn
          * PLT shim achieves for dynamically-linked binaries.
          *
+         * This case is reached via the libc syscall(2) PLT shim
+         * (shim_syscall.c).  In that path the passthrough clone3 uses
+         * bypass_secret in r9/x5 → BPF ALLOWs it directly, so the SIGSYS
+         * handler is never invoked and uwg_clone3_trampoline never runs.
+         * We therefore perform the handler-clearing here for the child:
+         * after the fork, if the original call requested CLONE_CLEAR_SIGHAND
+         * and docker mode is active, clear all signal handlers except SIGSYS.
+         *
          * a1 = struct clone_args *, a2 = size_t (must be ≥ sizeof flags).
-         * We modify flags in-place: the caller's stack frame holds the
-         * struct, the parent is not yet suspended at this point (SIGSYS
-         * fires synchronously before the syscall commits). */
+         * We modify flags in-place before the passthrough. */
+        int had_clear_sighand = 0;
         if (a1 != 0 && a2 >= (long)sizeof(uint64_t)) {
             uint64_t *flags = (uint64_t *)a1;
-            *flags &= ~(uint64_t)CLONE_CLEAR_SIGHAND;
+            if (*flags & CLONE_CLEAR_SIGHAND) {
+                *flags &= ~(uint64_t)CLONE_CLEAR_SIGHAND;
+                had_clear_sighand = 1;
+            }
         }
-        return uwg_passthrough_syscall2(SYS_clone3, a1, a2);
+        long r = uwg_passthrough_syscall2(SYS_clone3, a1, a2);
+        /* Child path: clear all handlers except SIGSYS to emulate
+         * CLONE_CLEAR_SIGHAND semantics while preserving interception. */
+        if (r == 0 && had_clear_sighand && uwg_seccomp_docker_flag) {
+            /* 32-byte zero block = SIG_DFL, sa_flags=0, no restorer, empty mask. */
+            long dfl[4] = {0, 0, 0, 0};
+            for (int sig = 1; sig <= 64; sig++) {
+                if (sig == 31) continue; /* preserve SIGSYS */
+                uwg_passthrough_syscall4(SYS_rt_sigaction, sig, (long)dfl, 0, 8);
+            }
+        }
+        return r;
+    }
 #endif
 
     /* --- handler-protection --- */

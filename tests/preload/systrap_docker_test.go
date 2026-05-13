@@ -782,6 +782,132 @@ int main(int argc, char **argv) {
 	}
 }
 
+// TestSystrapElfClone3HandlerCleared verifies the full CLONE_CLEAR_SIGHAND
+// trampoline behaviour: other signal handlers are cleared in the child, but SIGSYS
+// is preserved. The parent installs a custom SIGUSR1 handler, then calls
+// clone3(CLONE_CLEAR_SIGHAND). In the child, querying SIGUSR1 must see SIG_DFL; the
+// child then execs stub_client to confirm SIGSYS is still live and network
+// interception continues to work.
+func TestSystrapElfClone3HandlerCleared(t *testing.T) {
+	requireSystrapDockerToolchain(t)
+	art, _ := buildSystrapDockerArtifacts(t)
+	_, httpSock := setupWrapperNetwork(t)
+
+	repo := filepath.Clean(filepath.Join("..", ".."))
+	tmp := t.TempDir()
+
+	src := filepath.Join(tmp, "clone3_handler_check.c")
+	if err := os.WriteFile(src, []byte(`
+#define _GNU_SOURCE
+#include <errno.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <sys/syscall.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#ifndef SYS_clone3
+# if defined(__x86_64__) || defined(__aarch64__)
+#  define SYS_clone3 435
+# endif
+#endif
+
+#ifndef CLONE_CLEAR_SIGHAND
+# define CLONE_CLEAR_SIGHAND 0x100000000ULL
+#endif
+
+struct uwg_clone_args {
+    uint64_t flags;
+    uint64_t pidfd;
+    uint64_t child_tid;
+    uint64_t parent_tid;
+    uint64_t exit_signal;
+    uint64_t stack;
+    uint64_t stack_size;
+    uint64_t tls;
+};
+
+static void sigusr1_handler(int sig) { (void)sig; }
+
+int main(int argc, char **argv) {
+    if (argc < 5) {
+        fprintf(stderr, "usage: clone3hc stub host port sentinel\n");
+        return 1;
+    }
+    /* Install a non-default SIGUSR1 handler before clone3. */
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = sigusr1_handler;
+    sigaction(SIGUSR1, &sa, NULL);
+
+    struct uwg_clone_args ca;
+    memset(&ca, 0, sizeof(ca));
+    ca.flags = CLONE_CLEAR_SIGHAND;
+    ca.exit_signal = SIGCHLD;
+    long pid = syscall(SYS_clone3, &ca, sizeof(ca));
+    if (pid < 0) {
+        if (errno == ENOSYS) {
+            printf("clone3-not-available\n");
+            return 0;
+        }
+        fprintf(stderr, "clone3: %s\n", strerror(errno));
+        return 1;
+    }
+    if (pid == 0) {
+        /* Child: SIGUSR1 must be SIG_DFL — trampoline should have cleared it. */
+        struct sigaction old;
+        memset(&old, 0, sizeof(old));
+        sigaction(SIGUSR1, NULL, &old);
+        if (old.sa_handler == SIG_DFL)
+            printf("sigusr1-cleared\n");
+        else
+            printf("sigusr1-not-cleared\n");
+        fflush(stdout);
+        /* Exec stub_client to confirm SIGSYS handler is still live. */
+        char *child_argv[] = { argv[1], argv[2], argv[3], argv[4], "tcp", NULL };
+        execv(argv[1], child_argv);
+        _exit(127);
+    }
+    int status = 0;
+    if (waitpid((pid_t)pid, &status, 0) < 0) { perror("waitpid"); return 1; }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        fprintf(stderr, "child failed: exit=%d\n", WEXITSTATUS(status));
+        return 1;
+    }
+    printf("clone3hc-parent-ok\n");
+    return 0;
+}
+`), 0o644); err != nil {
+		t.Fatalf("write clone3_handler_check.c: %v", err)
+	}
+	checker := filepath.Join(tmp, "clone3_handler_check")
+	run(t, repo, "gcc", "-O2", "-Wall", "-o", checker, src)
+
+	out := runWrappedTargetWithOptions(t, art, httpSock,
+		"systrap-elf", checker,
+		[]string{art.stub, "100.64.94.1", "18080", "elf-clone3-hc"},
+		wrapperRunOptions{timeout: 30 * time.Second})
+
+	t.Logf("=== clone3 handler-cleared output ===\n%s\n=== end ===", out)
+
+	if strings.Contains(string(out), "clone3-not-available") {
+		t.Skip("clone3 not available on this kernel (< 5.3); skipping")
+	}
+	if !strings.Contains(string(out), "sigusr1-cleared") {
+		t.Fatalf("clone3 handler-cleared: SIGUSR1 not reset to SIG_DFL in child; got %q", out)
+	}
+	if !strings.Contains(string(out), "elf-clone3-hc") {
+		t.Fatalf("clone3 handler-cleared: expected echo sentinel in output; got %q", out)
+	}
+	if !strings.Contains(string(out), "clone3hc-parent-ok") {
+		t.Fatalf("clone3 handler-cleared: expected 'clone3hc-parent-ok' in output; got %q", out)
+	}
+}
+
 // TestSystrapElfVforkExec builds a C parent that calls vfork()+execv(stub_client).
 // vfork uses clone(CLONE_VM|CLONE_VFORK) without CLONE_CLEAR_SIGHAND, so the child
 // inherits the SIGSYS handler. This validates that the vfork+exec code path

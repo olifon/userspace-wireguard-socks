@@ -34,6 +34,8 @@ CORE_SRCS=(
     preload/core/freestanding_runtime.c
     preload/core/sigreturn_trampoline.c
     preload/core/execve_docker.c
+    preload/core/clone3_trampoline.c
+    preload/core/clone3_asm.S
 )
 
 SHIM_SRCS=(

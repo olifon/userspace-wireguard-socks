@@ -71,6 +71,22 @@
 #include "syscall.h"
 #include "dispatch.h"
 
+/* SYS_clone3 was added in Linux 5.3 (2019). Define it if the build
+ * headers pre-date that (e.g. older container toolchains, freestanding
+ * builds). The number is stable: 435 on both x86_64 and aarch64. */
+#ifndef SYS_clone3
+# if defined(__x86_64__) || defined(__aarch64__)
+#  define SYS_clone3 435
+# endif
+#endif
+
+#if defined(SYS_clone3) && (defined(__x86_64__) || defined(__aarch64__))
+/* Full trampoline: clears all signal handlers except SIGSYS in the
+ * child, restores GPR state, jumps to trap_rip.  Does not return in
+ * the child — see clone3_trampoline.c and clone3_asm.S. */
+extern long uwg_clone3_trampoline(long a1, long a2, ucontext_t *uc);
+#endif
+
 /* SA_RESTORER and the kernel_sigaction layout aren't always exported
  * via <signal.h>. Define explicitly. */
 #ifndef SA_RESTORER
@@ -198,6 +214,19 @@ void uwg_sigsys_handler(int sig, siginfo_t *si, void *uctx_void) {
 
     long args[6];
     uwg_uctx_load_args(uc, args);
+
+#if defined(SYS_clone3) && (defined(__x86_64__) || defined(__aarch64__))
+    /* CLONE_CLEAR_SIGHAND full trampoline — intercept before generic
+     * dispatch so the assembly gate receives the ucontext directly.
+     * Only active in docker mode (where SYS_clone3 is BPF-trapped).
+     * Parent returns child PID; child never reaches the line after
+     * uwg_clone3_trampoline (it jumps to trap_rip directly). */
+    if (nr == (long)SYS_clone3 && uwg_seccomp_docker_flag) {
+        long result = uwg_clone3_trampoline(args[0], args[1], uc);
+        uwg_uctx_set_result(uc, result);
+        return;
+    }
+#endif
 
     long result = uwg_dispatch(nr, args[0], args[1], args[2],
                                args[3], args[4], args[5]);
