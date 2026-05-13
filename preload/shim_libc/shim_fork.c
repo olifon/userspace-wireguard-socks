@@ -20,14 +20,16 @@
  * rt_sigaction(SIGSYS) trap) the kernel delivers SIGSYS with default
  * action and the child dies.
  *
- * Fix: override fork() via PLT. After each fork, in the child:
- *   1. unblock SIGSYS (defends against Problem 1 and glibc's
- *      rt_sigprocmask(SIG_BLOCK,~all) that precedes clone3).
- *   2. reinstall our SIGSYS handler via uwg_install_sigsys_handler()
- *      (defends against Problem 2 — the CLONE_CLEAR_SIGHAND reset).
- *      uwg_install_sigsys_handler() uses uwg_passthrough_syscall4 to
- *      bypass the conditional rt_sigaction(SIGSYS) BPF trap, so the
- *      install itself cannot trigger a fatal SIGSYS.
+ * Primary fix: uwg_core_init() registers a pthread_atfork child handler
+ * (uwg_sigsys_atfork_child) that reinstalls the SIGSYS handler INSIDE
+ * glibc's fork(), before __libc_signal_restore_set() unblocks SIGSYS.
+ * Because atfork child handlers run before the signal mask is restored,
+ * there is no window where SIGSYS is unblocked with SIG_DFL.
+ *
+ * Secondary fix (this file): after real_fork() returns, re-run the
+ * same reinstall as a safety net — handles forks not routed through
+ * pthread_atfork (e.g. raw SYS_clone calls intercepted by shim_syscall)
+ * and ensures SIGSYS is unblocked in case the parent had it masked.
  *
  * The sigaltstack set up in the parent thread is valid in the child
  * (COW copy of the parent's address space, TLS pointer preserved

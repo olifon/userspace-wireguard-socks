@@ -81,6 +81,25 @@ static const char *uwg_getenv(const char *name) {
     return NULL;
 }
 
+/* Atfork child handler — reinstall SIGSYS dispatcher after fork().
+ * Must be at file scope (C has no local functions) and declared before use.
+ * Defined as weak so the freestanding build (which doesn't link libc / this
+ * TU's pthread_atfork call) can omit it without a linker error. */
+#ifndef UWG_FREESTANDING
+static void uwg_sigsys_atfork_child(void) {
+    if (uwg_bypass_secret != 0)
+        (void)uwg_install_sigsys_handler();
+}
+
+/* Forward-declare pthread_atfork without pulling in all of <pthread.h>. */
+extern int pthread_atfork(void (*prepare)(void), void (*parent)(void),
+                          void (*child)(void));
+
+static int uwg_register_sigsys_atfork(void) {
+    return pthread_atfork(NULL, NULL, uwg_sigsys_atfork_child);
+}
+#endif /* !UWG_FREESTANDING */
+
 int uwg_core_init_thread(void) {
     if (uwg_get_thread_sigaltstack() != NULL) {
         return 0; /* already done */
@@ -180,6 +199,29 @@ int uwg_core_init(void) {
      * seccomp filters do not). */
     rc = uwg_install_sigsys_handler();
     if (rc < 0) return rc;
+
+    /* (4b) Atfork child handler to close the CLONE_CLEAR_SIGHAND window.
+     *
+     * glibc 2.38-2.39's fork() calls clone3(CLONE_CLEAR_SIGHAND) which
+     * resets ALL signal handlers to SIG_DFL in the child — including our
+     * SIGSYS handler. The signal mask (all-blocked from glibc's pre-clone3
+     * rt_sigprocmask(SIG_BLOCK, ~[])) is restored AFTER the user-side
+     * atfork child handlers run. So any BPF-trapped syscall fired during
+     * glibc's own child-cleanup OR in a user atfork handler will queue a
+     * SIGSYS; the queued signal delivers when the mask is restored — with
+     * SIG_DFL → process killed.
+     *
+     * Fix: register an atfork child handler that reinstalls the SIGSYS
+     * handler. pthread_atfork child handlers run BEFORE glibc restores
+     * the signal mask (see nptl/pthread_fork.c: call_function_static_weak
+     * fires before __libc_signal_restore_set). Because we register here
+     * (before any application code), our handler runs first, before
+     * Python's / Chromium's / etc. handlers. The passthrough syscall
+     * bypasses the BPF conditional rt_sigaction(SIGSYS) trap even while
+     * SIGSYS is blocked, so the install succeeds unconditionally. */
+#ifndef UWG_FREESTANDING
+    (void)uwg_register_sigsys_atfork();
+#endif
 
     /* (5) Seccomp filter — last; once this is in place we can't
      * undo it. UWGS_SUPERVISED=1 in the env tells the filter

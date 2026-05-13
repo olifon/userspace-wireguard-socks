@@ -588,13 +588,17 @@ func truncate(b []byte, n int) []byte {
 	return b[:n]
 }
 
-// TestSystrapElfPythonSubprocess exercises the posix_spawn PLT shim fix:
-// Python's subprocess module on glibc 2.28+ uses posix_spawn internally, which
-// calls clone3(CLONE_VM|CLONE_VFORK|CLONE_CLEAR_SIGHAND). CLONE_CLEAR_SIGHAND
-// resets all signal handlers (including our SIGSYS trap) to SIG_DFL in the
-// child. Before the shim, the child's execve seccomp-trap fired with no
-// handler and the child was killed. The shim intercepts posix_spawn at PLT
-// level and uses fork()+execve() instead.
+// TestSystrapElfPythonSubprocess exercises the fork+exec path from inside a
+// wrapped Python process. Python 3.12's subprocess.check_output(["uname", "-r"])
+// uses fork()+execve() for bare executable names (posix_spawn requires a
+// directory component). glibc 2.38-2.39's fork() calls
+// clone3(CLONE_CLEAR_SIGHAND) which resets all signal handlers (including our
+// SIGSYS handler) to SIG_DFL in the child, then runs atfork child handlers
+// (including Python's _PyOS_AfterFork_Child), and only then restores the
+// signal mask. Any BPF-trapped syscall in that window queues a SIGSYS;
+// when unblocked it fires with SIG_DFL and kills the child. Fixed by
+// registering a pthread_atfork child handler in uwg_core_init() that
+// reinstalls the SIGSYS handler before glibc unblocks SIGSYS.
 func TestSystrapElfPythonSubprocess(t *testing.T) {
 	requireSystrapDockerToolchain(t)
 	if _, err := exec.LookPath("python3"); err != nil {
