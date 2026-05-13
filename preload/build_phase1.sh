@@ -45,6 +45,7 @@ SHIM_SRCS=(
     preload/shim_libc/shim_execve.c
     preload/shim_libc/shim_sigprocmask.c
     preload/shim_libc/shim_fork.c
+    preload/shim_libc/shim_vfork.c
     preload/shim_libc/shim_posix_spawn.c
 )
 
