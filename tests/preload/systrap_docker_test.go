@@ -594,12 +594,18 @@ func truncate(b []byte, n int) []byte {
 // child inherits the BPF filter but its SIGSYS handler is reset to SIG_DFL by
 // execve. Key invariants:
 //
-//   - execve_docker.c does NOT block SIGSYS before exec (removing the old
-//     block fixed the SIGSYS→SIG_DFL→kill regression).
+//   - execve_docker.c blocks SIGSYS before the passthrough exec so BPF traps
+//     in the post-exec pre-constructor window queue rather than delivering to
+//     SIG_DFL (which would kill the child). For dynamic binaries the handler
+//     comes from the LD_PRELOAD constructor — not from ptloader — so there is
+//     a gap between exec and the constructor running. uwg_core_init() unblocks
+//     SIGSYS immediately after installing the handler, so queued traps deliver
+//     to our handler. This mirrors what uwg_docker_patch_exec does for static
+//     binaries.
 //   - The BPF rule for rt_sigaction(SIGSYS=31) uses SECCOMP_RET_ERRNO|0
-//     (return success without executing). This avoids the post-exec window
-//     where SECCOMP_RET_TRAP would fire SIGSYS before LD_PRELOAD reinstalls
-//     the handler. Go sees 0 (success) and does not panic. Our handler stays.
+//     (return success without executing). This prevents rt_sigaction(31) calls
+//     in the post-exec window from triggering force_sig. Go sees 0 (success)
+//     and does not panic.
 func TestSystrapElfPythonSubprocess(t *testing.T) {
 	requireSystrapDockerToolchain(t)
 	if _, err := exec.LookPath("python3"); err != nil {

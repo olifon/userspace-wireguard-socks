@@ -483,14 +483,28 @@ long uwg_execve_docker_dispatch(const char *path,
 passthrough:
     uwg_syscall2(SYS_munmap, mm, UWG_DOCKER_BUF_TOTAL);
     uwg_syscall1(SYS_close, fd);
-    /* Do NOT block SIGSYS here. Blocking SIGSYS before exec is dangerous:
-     * if the BPF filter fires SECCOMP_RET_TRAP for rt_sigaction(SIGSYS)
-     * while SIGSYS is blocked, force_sig_info_to_task resets the handler
-     * to SIG_DFL and force-delivers — killing the child. The SIGSYS
-     * handler is installed by ptloader (systrap-elf path) before ld.so
-     * runs, so it is always in place when any rt_sigaction(SIGSYS) TRAP
-     * fires. Leaving SIGSYS unblocked lets the TRAP deliver safely to
-     * our handler. */
+    /* Block SIGSYS before exec so BPF traps in the post-exec pre-constructor
+     * window queue rather than deliver to SIG_DFL (which would kill the
+     * child). For dynamic binaries the SIGSYS handler comes from our
+     * LD_PRELOAD constructor — not from ptloader — so there is a window
+     * between exec and the constructor running where the handler is SIG_DFL.
+     *
+     * Blocking is safe because:
+     *   - The execve itself uses the bypass secret (BPF ALLOWS it, no trap).
+     *   - rt_sigaction(SIGSYS=31) now uses SECCOMP_RET_ERRNO|0, so the old
+     *     concern about force_sig overriding the block for that call is gone.
+     *   - ld.so and our constructor do not call execve/execveat, so the
+     *     docker-mode execve BPF trap cannot fire with SIGSYS blocked and
+     *     force_sig the child during the startup window.
+     *   - uwg_core_init() unblocks SIGSYS immediately after installing the
+     *     handler, so queued traps deliver to our handler rather than SIG_DFL.
+     *
+     * This mirrors what uwg_docker_patch_exec() does for static binaries. */
+    {
+        uint64_t _sigsys_mask = (uint64_t)1 << (SIGSYS - 1);
+        uwg_syscall4(SYS_rt_sigprocmask, SIG_BLOCK,
+                     (long)&_sigsys_mask, 0L, 8L);
+    }
     return uwg_passthrough_syscall3(SYS_execve, (long)path,
                                      (long)argv, (long)envp);
 }
@@ -503,11 +517,18 @@ long uwg_execveat_docker_dispatch(int dirfd, const char *path,
      * to inspect the fd to handle this, and it's uncommon enough to
      * not be worth the complexity in the initial implementation. */
     if ((flags & AT_EMPTY_PATH) && (!path || !path[0])) {
+        /* Block SIGSYS for the same reason as the execve passthrough path:
+         * the new process may be dynamic and our constructor hasn't run yet.
+         * See the block comment in uwg_execve_docker_dispatch passthrough. */
+        uint64_t _sigsys_mask = (uint64_t)1 << (SIGSYS - 1);
+        uwg_syscall4(SYS_rt_sigprocmask, SIG_BLOCK, (long)&_sigsys_mask, 0L, 8L);
         return uwg_passthrough_syscall5(SYS_execveat, dirfd, (long)path,
                                          (long)argv, (long)envp, flags);
     }
     /* Relative path with non-FDCWD dirfd: passthrough. */
     if (dirfd != AT_FDCWD && path && path[0] != '/') {
+        uint64_t _sigsys_mask = (uint64_t)1 << (SIGSYS - 1);
+        uwg_syscall4(SYS_rt_sigprocmask, SIG_BLOCK, (long)&_sigsys_mask, 0L, 8L);
         return uwg_passthrough_syscall5(SYS_execveat, dirfd, (long)path,
                                          (long)argv, (long)envp, flags);
     }
