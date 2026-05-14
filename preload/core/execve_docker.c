@@ -298,7 +298,8 @@ static long uwg_docker_patch_exec(int orig_fd, long orig_size,
     cfg.original_e_phnum    = ehdr->e_phnum;
     cfg.original_e_phentsize = ehdr->e_phentsize;
     cfg.e_type_is_pie       = (ehdr->e_type == ET_DYN) ? 1 : 0;
-    cfg._pad0[0] = cfg._pad0[1] = cfg._pad0[2] = 0;
+    cfg.is_dynamic          = 0;
+    cfg._pad0[0] = cfg._pad0[1] = 0;
     cfg.e_entry_in_file     = ehdr->e_entry;
     cfg.phdr_base_vma       = phdr_base_vma;
     cfg.interp_fd           = ptl_fd;
@@ -434,20 +435,39 @@ static long uwg_docker_patch_exec_dynamic(int orig_fd, long orig_size,
                      uwg_ptloader_size, io_buf, UWG_DOCKER_IO_BUF);
     if (rc < 0) goto out_ptl;
 
-    /* Build and write cfg. Dynamic mode: is_dynamic=1, orig_interp filled. */
+    /* Build ptl_path: "/proc/self/fd/<ptl_fd>". */
+    char ptl_path[32];
+    int ptl_path_len = uwg_make_proc_fd_path(ptl_fd, ptl_path, sizeof(ptl_path));
+    if (ptl_path_len <= 0) { rc = -22; goto out_ptl; }
+
+    /* Compute phdr_base_vma: (p_vaddr - p_offset) of PT_LOAD containing
+     * the original e_phoff.  Needed by ptloader to rebuild correct AT_PHDR
+     * for binaries that lack PT_PHDR (rare for dynamic binaries, but safe
+     * to compute and store unconditionally). */
+    uint64_t phdr_base_vma = 0;
+    for (int pi = 0; pi < (int)ehdr->e_phnum; pi++) {
+        if (phdrs[pi].p_type != PT_LOAD) continue;
+        if (phdrs[pi].p_offset > ehdr->e_phoff) continue;
+        if (ehdr->e_phoff >= phdrs[pi].p_offset + phdrs[pi].p_filesz) continue;
+        phdr_base_vma = phdrs[pi].p_vaddr - phdrs[pi].p_offset;
+        break;
+    }
+
+    /* Build and write cfg. Dynamic mode: is_dynamic=1, orig_interp filled,
+     * original phdr location stored for ptloader AT_PHDR patching. */
     struct uwg_ptloader_cfg cfg;
-    cfg.magic               = UWG_PTLOADER_MAGIC;
-    cfg.original_e_phoff    = 0;
-    cfg.original_e_phnum    = 0;
-    cfg.original_e_phentsize = 0;
-    cfg.e_type_is_pie       = 0;
-    cfg.is_dynamic          = 1;
-    cfg._pad0[0]            = 0;
-    cfg._pad0[1]            = 0;
-    cfg.e_entry_in_file     = 0;
-    cfg.phdr_base_vma       = 0;
-    cfg.interp_fd           = ptl_fd;
-    cfg._pad1               = 0;
+    cfg.magic                = UWG_PTLOADER_MAGIC;
+    cfg.original_e_phoff     = ehdr->e_phoff;
+    cfg.original_e_phnum     = ehdr->e_phnum;
+    cfg.original_e_phentsize = ehdr->e_phentsize;
+    cfg.e_type_is_pie        = (ehdr->e_type == ET_DYN) ? 1 : 0;
+    cfg.is_dynamic           = 1;
+    cfg._pad0[0]             = 0;
+    cfg._pad0[1]             = 0;
+    cfg.e_entry_in_file      = ehdr->e_entry;
+    cfg.phdr_base_vma        = phdr_base_vma;
+    cfg.interp_fd            = ptl_fd;
+    cfg._pad1                = 0;
     {
         int n = uwg_docker_strlen(orig_interp_path);
         if (n >= (int)sizeof(cfg.orig_interp))
@@ -459,25 +479,7 @@ static long uwg_docker_patch_exec_dynamic(int orig_fd, long orig_size,
     rc = uwg_pwrite_exact(ptl_fd, uwg_ptloader_cfg_off, &cfg, sizeof(cfg));
     if (rc < 0) goto out_ptl;
 
-    /* Build ptl_path: "/proc/self/fd/<ptl_fd>". */
-    char ptl_path[32];
-    int ptl_path_len = uwg_make_proc_fd_path(ptl_fd, ptl_path, sizeof(ptl_path));
-    if (ptl_path_len <= 0) { rc = -22; goto out_ptl; }
-
-    /* Check that ptl_path fits in the existing PT_INTERP string slot.
-     * The original interp (e.g. /lib64/ld-linux-x86-64.so.2 = 27 chars)
-     * is always longer than /proc/self/fd/N (≤ 20 chars), so this path
-     * is taken in practice.  Fall back to passthrough if not. */
-    long interp_str_off  = (long)phdrs[interp_idx].p_offset;
-    long interp_str_size = (long)phdrs[interp_idx].p_filesz;
-    if (ptl_path_len + 1 > interp_str_size) {
-        /* Pathological: ptloader path longer than original interp slot.
-         * Give up and let the passthrough handle it (no interception). */
-        rc = -7;
-        goto out_ptl;
-    }
-
-    /* Create bin_fd: copy of the binary with the interp string replaced. */
+    /* Create bin_fd: copy of the original binary. O_CLOEXEC. */
     long bin_fd_l = uwg_syscall2(SYS_memfd_create, (long)"uwgbin", (long)MFD_CLOEXEC);
     if (bin_fd_l < 0) { rc = bin_fd_l; goto out_ptl; }
     int bin_fd = (int)bin_fd_l;
@@ -485,12 +487,53 @@ static long uwg_docker_patch_exec_dynamic(int orig_fd, long orig_size,
     rc = uwg_copy_fd(bin_fd, 0, orig_fd, 0, orig_size, io_buf, UWG_DOCKER_IO_BUF);
     if (rc < 0) goto out_bin;
 
-    /* Overwrite the PT_INTERP path string with the ptloader path. */
-    rc = uwg_pwrite_exact(bin_fd, interp_str_off, ptl_path, ptl_path_len + 1);
+    /* Append at EOF:
+     *   [orig_size]                         new phdr table (copy of originals,
+     *                                        PT_INTERP[interp_idx] replaced)
+     *   [orig_size + phnum * sizeof(phdr)]  ptl_path string (+ NUL)
+     *
+     * The original phdrs remain at their original file offset (within a
+     * PT_LOAD segment) so the kernel maps them normally and AT_PHDR via
+     * PT_PHDR points to the in-memory original phdrs (which contain the
+     * real ld.so path).  The kernel reads our new phdr table from EOF to
+     * find PT_INTERP = ptloader, but ld.so reads phdrs via AT_PHDR and
+     * sees the original PT_INTERP (real ld.so path).  No glibc crash. */
+    long phdrs_append_off = orig_size;
+    long path_str_off     = phdrs_append_off +
+                            (long)ehdr->e_phnum * (long)sizeof(Elf64_Phdr);
+
+    for (int i = 0; i < (int)ehdr->e_phnum; i++) {
+        Elf64_Phdr ph = phdrs[i];
+        if (i == interp_idx) {
+            /* Replace PT_INTERP entry: point to ptloader path appended at EOF.
+             * p_vaddr = 0: the string is not in a PT_LOAD, file-only.
+             * The kernel reads PT_INTERP via p_offset (not p_vaddr). */
+            ph.p_offset = (Elf64_Off)path_str_off;
+            ph.p_vaddr  = 0;
+            ph.p_paddr  = 0;
+            ph.p_filesz = (Elf64_Xword)(ptl_path_len + 1);
+            ph.p_memsz  = (Elf64_Xword)(ptl_path_len + 1);
+        }
+        rc = uwg_pwrite_exact(bin_fd,
+                              phdrs_append_off + (long)i * (long)sizeof(Elf64_Phdr),
+                              &ph, sizeof(ph));
+        if (rc < 0) goto out_bin;
+    }
+
+    /* Append ptl_path string. */
+    rc = uwg_pwrite_exact(bin_fd, path_str_off, ptl_path, ptl_path_len + 1);
     if (rc < 0) goto out_bin;
 
-    /* Build bin_path and exec. No SIGSYS blocking: ptloader installs the
-     * handler before ld.so loads any DT_NEEDED library. */
+    /* Patch ELF header: redirect e_phoff to new phdr table; e_phnum unchanged. */
+    Elf64_Ehdr new_ehdr;
+    rc = uwg_pread_exact(bin_fd, 0, &new_ehdr, sizeof(new_ehdr));
+    if (rc < 0) goto out_bin;
+    new_ehdr.e_phoff = (Elf64_Off)phdrs_append_off;
+    rc = uwg_pwrite_exact(bin_fd, 0, &new_ehdr, sizeof(new_ehdr));
+    if (rc < 0) goto out_bin;
+
+    /* Build bin_path and exec. No SIGSYS blocking needed: ptloader installs
+     * the SIGSYS handler before ld.so loads any DT_NEEDED library. */
     char bin_path[32];
     if (uwg_make_proc_fd_path(bin_fd, bin_path, sizeof(bin_path)) <= 0) {
         rc = -22; goto out_bin;

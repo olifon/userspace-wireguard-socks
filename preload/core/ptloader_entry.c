@@ -297,13 +297,27 @@ static unsigned long uwg_load_dyn_elf(const char *path, unsigned long *out_entry
             }
         }
 
-        /* Anonymous pages for BSS (p_memsz > p_filesz). */
+        /* BSS: p_memsz > p_filesz. Two sub-regions:
+         *  [bss_start, bss_pg): tail of the last file page — the file
+         *   may have non-zero bytes here (ELF section headers etc.);
+         *   MAP_PRIVATE doesn't zero them, so we must do it explicitly.
+         *  [bss_pg, bss_end): full anonymous pages — mmap(ANON). */
         if (ph.p_memsz > ph.p_filesz) {
             unsigned long bss_start = base + (unsigned long)ph.p_vaddr +
                                       (unsigned long)ph.p_filesz;
             unsigned long bss_end   = base + (unsigned long)ph.p_vaddr +
                                       (unsigned long)ph.p_memsz;
             unsigned long bss_pg    = (bss_start + 0xfffUL) & ~0xfffUL;
+
+            /* Zero-fill the in-page BSS tail.  The mapping already exists
+             * (covered by the file-backed mmap above) and is writable for
+             * RW segments. */
+            if (bss_pg > bss_start && (prot & PROT_WRITE)) {
+                char *tail = (char *)bss_start;
+                unsigned long n = bss_pg - bss_start;
+                for (unsigned long j = 0; j < n; j++) tail[j] = 0;
+            }
+
             if (bss_pg < bss_end) {
                 uwg_syscall6(SYS_mmap, (long)bss_pg, (long)(bss_end - bss_pg),
                               prot, MAP_PRIVATE | MAP_FIXED | MAP_ANONYMOUS,
@@ -362,20 +376,39 @@ static unsigned long uwg_ptloader_run(void *initial_sp) {
         if (uwg_ptloader_cfg_data.is_dynamic) {
             /* Dynamic mode: install SIGSYS handler NOW, before ld.so loads
              * any DT_NEEDED library.  Then map the real ld.so and jump to it.
-             * AT_PHDR/AT_PHNUM/AT_ENTRY are already correct (kernel set them
-             * from the on-disk phdrs which we didn't move).  Only AT_BASE
-             * needs updating to the ld.so's load address so it can
-             * self-relocate. */
+             *
+             * execve_docker.c appended a new phdr table at EOF (with PT_INTERP
+             * replaced by our ptloader path) and updated e_phoff to it.  The
+             * original phdrs remain at original_e_phoff in their PT_LOAD
+             * segment and are still mapped by the kernel.
+             *
+             * AT_PHDR: the kernel sets this via PT_PHDR (which was copied
+             * unchanged into the new table and still points to the original
+             * in-memory phdrs).  For binaries without PT_PHDR we patch below.
+             *
+             * AT_BASE: kernel sets this to our (ptloader's) load address.
+             * We overwrite it with ld.so's load address so ld.so can
+             * self-relocate.  ld.so reads AT_PHDR → sees original PT_INTERP
+             * (real ld.so path) → its link_map identity is correct. */
             uwg_ptloader_docker_init();
             uwg_core_init();
 
-            /* Unblock SIGSYS so queued BPF traps deliver to our handler
-             * rather than SIG_DFL (it may have been blocked by the parent). */
-            {
-                unsigned long sigsys_bit = (unsigned long)1 << (SIGSYS - 1);
-                uwg_syscall4(SYS_rt_sigprocmask, SIG_UNBLOCK,
-                             (long)&sigsys_bit, 0L, 8L);
+            /* Patch AT_PHDR to original phdrs — safety net for binaries that
+             * lack PT_PHDR (kernel leaves AT_PHDR=0 in that case because we
+             * moved e_phoff to EOF outside any PT_LOAD).  For binaries that
+             * have PT_PHDR this is a no-op (kernel already set it correctly). */
+            unsigned long load_bias = 0;
+            if (uwg_ptloader_cfg_data.e_type_is_pie && at_entry) {
+                load_bias = at_entry -
+                            uwg_ptloader_cfg_data.e_entry_in_file;
             }
+            unsigned long correct_phdr =
+                uwg_ptloader_cfg_data.phdr_base_vma +
+                uwg_ptloader_cfg_data.original_e_phoff +
+                load_bias;
+            if (at_phdr_ptr)  *at_phdr_ptr  = (long)correct_phdr;
+            if (at_phnum_ptr) *at_phnum_ptr =
+                (long)uwg_ptloader_cfg_data.original_e_phnum;
 
             unsigned long ldso_entry = 0;
             unsigned long ldso_base  = uwg_load_dyn_elf(
