@@ -577,8 +577,25 @@ static long uwg_docker_patch_exec_dynamic(int orig_fd, long orig_size,
     rc = uwg_pwrite_exact(bin_fd, 0, &new_ehdr, sizeof(new_ehdr));
     if (rc < 0) goto out_bin;
 
-    /* Build bin_path and exec. No SIGSYS blocking needed: ptloader installs
-     * the SIGSYS handler before ld.so loads any DT_NEEDED library. */
+    /* Build bin_path and exec.
+     *
+     * Block SIGSYS before the exec so any BPF trap that fires before the
+     * SIGSYS handler is installed queues rather than delivers to SIG_DFL.
+     *
+     * Two-layer handler installation:
+     *   1. ptloader (preferred): installs the SIGSYS handler before ld.so
+     *      loads any DT_NEEDED library, then unblocks SIGSYS.
+     *   2. LD_PRELOAD fallback: if the ptloader's uwg_core_init() returns
+     *      early for any reason (e.g. on some glibc versions), our
+     *      uwgpreload.so constructor still runs, installs the handler, and
+     *      unblocks SIGSYS — at which point queued traps deliver to it.
+     *
+     * This mirrors what uwg_docker_patch_exec() does for static binaries. */
+    {
+        uint64_t _sigsys_mask = (uint64_t)1 << (SIGSYS - 1);
+        uwg_syscall4(SYS_rt_sigprocmask, SIG_BLOCK,
+                     (long)&_sigsys_mask, 0L, 8L);
+    }
     char bin_path[32];
     if (uwg_make_proc_fd_path(bin_fd, bin_path, sizeof(bin_path)) <= 0) {
         rc = -22; goto out_bin;

@@ -594,14 +594,16 @@ func truncate(b []byte, n int) []byte {
 // child inherits the BPF filter but its SIGSYS handler is reset to SIG_DFL by
 // execve. Key invariants:
 //
-//   - execve_docker.c blocks SIGSYS before the passthrough exec so BPF traps
-//     in the post-exec pre-constructor window queue rather than delivering to
-//     SIG_DFL (which would kill the child). For dynamic binaries the handler
-//     comes from the LD_PRELOAD constructor — not from ptloader — so there is
-//     a gap between exec and the constructor running. uwg_core_init() unblocks
-//     SIGSYS immediately after installing the handler, so queued traps deliver
-//     to our handler. This mirrors what uwg_docker_patch_exec does for static
-//     binaries.
+//   - execve_docker.c blocks SIGSYS before both the ptloader-injection exec and
+//     the passthrough exec so BPF traps in the post-exec pre-handler window queue
+//     rather than delivering to SIG_DFL (which would kill the child).
+//   - For dynamic binaries two layers install the handler:
+//     1. ptloader (preferred): installs the SIGSYS handler before ld.so loads
+//        any DT_NEEDED library, then unblocks SIGSYS. Works even on glibc
+//        versions (2.39, Ubuntu 24.04) where libselinux is linked into uname.
+//     2. LD_PRELOAD fallback: if ptloader's uwg_core_init() returns early for
+//        any reason, uwgpreload.so's constructor installs the handler and
+//        unblocks SIGSYS — queued traps then deliver to our handler.
 //   - The BPF rule for rt_sigaction(SIGSYS=31) uses SECCOMP_RET_ERRNO|0
 //     (return success without executing). This prevents rt_sigaction(31) calls
 //     in the post-exec window from triggering force_sig. Go sees 0 (success)
