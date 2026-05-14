@@ -97,6 +97,10 @@ static int  uwg_ptloader_master_fd = -1;
 static long uwg_ptloader_cfg_off   = -1;
 /* Byte size of the ptloader binary. */
 static long uwg_ptloader_size      = 0;
+/* In-memory copy of ptloader binary. mmap'd at init time so injection
+ * survives fork+close_fds (e.g. Python subprocess): anonymous mmaps are
+ * not file-descriptors and are not closed by close_range/close_fds. */
+static void *uwg_ptloader_buf = NULL;
 
 /* fd of THIS process's ptloader memfd, set only by ptloader_entry.c
  * when the ptloader is running as PT_INTERP. Used to detect re-exec:
@@ -204,6 +208,26 @@ static long uwg_file_size(int fd) {
     return uwg_syscall3(SYS_lseek, fd, 0, SEEK_END);
 }
 
+/* Write the ptloader binary to dst_fd at offset 0.
+ * Prefers the in-memory buffer (survives fork+close_fds); falls back to
+ * the master fd if the buffer was not populated at init time. */
+static long uwg_write_ptloader(int dst_fd, char *io_buf) {
+    if (uwg_ptloader_buf) {
+        long done = 0;
+        const char *src = (const char *)uwg_ptloader_buf;
+        while (done < uwg_ptloader_size) {
+            long w = uwg_syscall4(SYS_pwrite64, dst_fd,
+                                   (long)(src + done),
+                                   uwg_ptloader_size - done, done);
+            if (w <= 0) return w ? w : -5;
+            done += w;
+        }
+        return 0;
+    }
+    return uwg_copy_fd(dst_fd, 0, uwg_ptloader_master_fd, 0,
+                       uwg_ptloader_size, io_buf, UWG_DOCKER_IO_BUF);
+}
+
 /* ------------------------------------------------------------------ */
 /* Init: read Go-wrapper env vars. Called from uwg_core_init().       */
 /* ------------------------------------------------------------------ */
@@ -243,6 +267,29 @@ void uwg_ptloader_docker_init(void) {
     uwg_ptloader_master_fd = (int)fd;
     uwg_ptloader_cfg_off   = off;
     uwg_ptloader_size      = sz;
+
+    /* Load ptloader into anonymous memory so injection survives fork+close_fds.
+     * Python's subprocess.Popen(close_fds=True) calls close_range(3,MAX,0) in
+     * the fork-child before execve — closing uwg_ptloader_master_fd.  Without
+     * this buffer the SIGSYS-handler copy would get EBADF, fall to passthrough,
+     * and exec the original binary unmodified: its LD_PRELOAD constructor runs
+     * AFTER libselinux's constructor (glibc ld.so initialises DT_NEEDED in
+     * reverse link-map order), so the first BPF trap fires before the SIGSYS
+     * handler is installed, killing the child with SIG_DFL. */
+    if (uwg_ptloader_buf) return; /* already loaded (e.g. called twice) */
+    long mm = uwg_syscall6(SYS_mmap, 0, sz,
+                            PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (mm < 0) return; /* best-effort; fd fallback used if buf stays NULL */
+    long done = 0;
+    char *dst = (char *)mm;
+    while (done < sz) {
+        long r = uwg_syscall4(SYS_pread64, (int)fd, (long)(dst + done),
+                               sz - done, done);
+        if (r <= 0) { uwg_syscall2(SYS_munmap, mm, sz); return; }
+        done += r;
+    }
+    uwg_ptloader_buf = (void *)mm;
 }
 
 /* ------------------------------------------------------------------ */
@@ -257,8 +304,8 @@ static long uwg_docker_patch_exec(int orig_fd, long orig_size,
                                    const char * const *argv,
                                    const char * const *envp,
                                    char *io_buf) {
-    if (uwg_ptloader_master_fd < 0 || uwg_ptloader_size <= 0 ||
-        uwg_ptloader_cfg_off < 0) {
+    if (uwg_ptloader_size <= 0 || uwg_ptloader_cfg_off < 0 ||
+        (uwg_ptloader_buf == NULL && uwg_ptloader_master_fd < 0)) {
         return -12; /* -ENOMEM: ptloader info not initialized */
     }
 
@@ -269,8 +316,7 @@ static long uwg_docker_patch_exec(int orig_fd, long orig_size,
     if (ptl_fd_l < 0) return ptl_fd_l;
     int ptl_fd = (int)ptl_fd_l;
 
-    rc = uwg_copy_fd(ptl_fd, 0, uwg_ptloader_master_fd, 0,
-                     uwg_ptloader_size, io_buf, UWG_DOCKER_IO_BUF);
+    rc = uwg_write_ptloader(ptl_fd, io_buf);
     if (rc < 0) goto out_ptl;
 
     /* Compute phdr_base_vma: the (p_vaddr - p_offset) of the PT_LOAD
@@ -419,8 +465,8 @@ static long uwg_docker_patch_exec_dynamic(int orig_fd, long orig_size,
                                            const char * const *argv,
                                            const char * const *envp,
                                            char *io_buf) {
-    if (uwg_ptloader_master_fd < 0 || uwg_ptloader_size <= 0 ||
-        uwg_ptloader_cfg_off < 0) {
+    if (uwg_ptloader_size <= 0 || uwg_ptloader_cfg_off < 0 ||
+        (uwg_ptloader_buf == NULL && uwg_ptloader_master_fd < 0)) {
         return -12;
     }
 
@@ -431,8 +477,7 @@ static long uwg_docker_patch_exec_dynamic(int orig_fd, long orig_size,
     if (ptl_fd_l < 0) return ptl_fd_l;
     int ptl_fd = (int)ptl_fd_l;
 
-    rc = uwg_copy_fd(ptl_fd, 0, uwg_ptloader_master_fd, 0,
-                     uwg_ptloader_size, io_buf, UWG_DOCKER_IO_BUF);
+    rc = uwg_write_ptloader(ptl_fd, io_buf);
     if (rc < 0) goto out_ptl;
 
     /* Build ptl_path: "/proc/self/fd/<ptl_fd>". */
