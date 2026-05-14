@@ -372,29 +372,38 @@ static int uwg_build_filter(struct uwg_filter_prog *p, uint64_t bypass_secret,
         }
     }
 
-    /* (4b) Conditional trap: rt_sigaction(SIGSYS, ...) only.
+    /* (4b) Conditional block: rt_sigaction(SIGSYS, ...) only.
      * After the unconditional trap loop, A still holds the syscall nr.
      * If nr == SYS_rt_sigaction and arg0 (the signum) == SIGSYS (31),
-     * deliver SIGSYS via SECCOMP_RET_TRAP so our handler intercepts it
-     * and returns 0, silently blocking competing handler installs.
+     * return errno=0 (success) WITHOUT executing the syscall.
      * Any other signum falls through to ALLOW.
      *
-     * SECCOMP_RET_TRAP is correct here. Our SIGSYS handler is always
-     * installed before this TRAP can fire:
-     *   - systrap-elf: ptloader runs as PT_INTERP and calls uwg_core_init()
-     *     before ld.so or the binary's _start.
-     *   - static binaries: same ptloader path.
-     * With the handler in place, the TRAP delivers to our handler which
-     * dispatches to uwg_rt_sigaction and returns 0. Because
-     * execve_docker.c no longer blocks SIGSYS before exec, SIGSYS is
-     * never blocked when the TRAP fires, so force_sig_info_to_task
-     * delivers normally to our handler rather than resetting to SIG_DFL.
+     * Using SECCOMP_RET_ERRNO | 0 (return-0-as-success) instead of
+     * SECCOMP_RET_TRAP is critical here. SECCOMP_RET_TRAP would deliver
+     * SIGSYS to the process; if the SIGSYS handler hasn't been reinstalled
+     * yet (the post-exec LD_PRELOAD-constructor window), the process dies
+     * with SIG_DFL. This window exists for every dynamic binary exec'd
+     * under systrap-elf: exec resets all handlers, then ld.so loads
+     * uwgpreload.so and runs our constructor, but that happens AFTER ld.so
+     * does its own setup. Any rt_sigaction(SIGSYS) call in that window
+     * (e.g. from glibc's fork-child path on glibc 2.39, or from
+     * subprocess.Popen's posix_spawn child on Ubuntu 24.04) fires TRAP,
+     * SIGSYS is SIG_DFL, process killed.
      *
-     * Go's runtime calls rt_sigaction(SIGSYS=31). With SECCOMP_RET_ERRNO
-     * that returned EPERM, causing Go to throw("sigaction failed") and
-     * panic (Go only ignores errors for signals 32, 33, 64 — not 31).
-     * With SECCOMP_RET_TRAP the SIGSYS delivers to our handler → 0 → Go
-     * happily continues.
+     * With SECCOMP_RET_ERRNO | 0: the kernel returns 0 (success) without
+     * executing rt_sigaction. Our handler stays installed. No SIGSYS
+     * delivered. No timing window. The caller (Go, Chrome, glibc child
+     * path) sees return=0 and continues.
+     *
+     * Go's runtime calls rt_sigaction(SIGSYS=31). With the old
+     * SECCOMP_RET_ERRNO|EPERM it got EPERM → panic("sigaction failed").
+     * Go only ignores errors for signals 32, 33, 64 — not 31. With
+     * errno=0 Go sees success and happily continues.
+     *
+     * The old_sa (3rd arg) is NOT filled by either approach: with
+     * SECCOMP_RET_ERRNO the kernel skips the call; callers that need the
+     * old handler should query it separately before installing. In
+     * practice all callers we care about (Go, Chrome sandbox) pass NULL.
      *
      * Our own uwg_install_sigsys_handler() uses uwg_passthrough_syscall4
      * which places bypass_secret in args[5]; the BPF rule above (step 2)
@@ -408,7 +417,7 @@ static int uwg_build_filter(struct uwg_filter_prog *p, uint64_t bypass_secret,
     uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, UWG_FILTER_ARG0_LO));
     uwg_emit(p, (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
                                              31 /* SIGSYS */, 0, 1));
-    uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP));
+    uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | 0));
 
     /* (5) default — let the kernel handle it */
     uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));

@@ -590,18 +590,16 @@ func truncate(b []byte, n int) []byte {
 
 // TestSystrapElfPythonSubprocess exercises the fork+exec path from inside a
 // wrapped Python process. Python 3.12's subprocess.check_output(["uname", "-r"])
-// uses fork()+execve() for bare executable names. The exec'd child (uname)
-// inherits the BPF filter but has its SIGSYS handler reset to SIG_DFL by
-// execve. The fix:
+// forks a child (via posix_spawn or fork+exec) that execs uname. The exec'd
+// child inherits the BPF filter but its SIGSYS handler is reset to SIG_DFL by
+// execve. Key invariants:
 //
-//   - systrap-elf injects uwgptloader as PT_INTERP so the SIGSYS handler is
-//     installed before ld.so runs, closing the post-exec startup window.
-//   - The BPF rule for rt_sigaction(SIGSYS) uses SECCOMP_RET_TRAP, which
-//     delivers to our handler (already installed by ptloader) and returns 0.
-//   - execve_docker.c does NOT block SIGSYS before exec. Blocking SIGSYS
-//     before exec was previously tried and caused failures: if SIGSYS is
-//     blocked when force_sig_info_to_task fires for the TRAP, the kernel
-//     resets the handler to SIG_DFL and force-delivers, killing the child.
+//   - execve_docker.c does NOT block SIGSYS before exec (removing the old
+//     block fixed the SIGSYS→SIG_DFL→kill regression).
+//   - The BPF rule for rt_sigaction(SIGSYS=31) uses SECCOMP_RET_ERRNO|0
+//     (return success without executing). This avoids the post-exec window
+//     where SECCOMP_RET_TRAP would fire SIGSYS before LD_PRELOAD reinstalls
+//     the handler. Go sees 0 (success) and does not panic. Our handler stays.
 func TestSystrapElfPythonSubprocess(t *testing.T) {
 	requireSystrapDockerToolchain(t)
 	if _, err := exec.LookPath("python3"); err != nil {

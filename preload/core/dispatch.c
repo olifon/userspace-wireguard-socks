@@ -140,10 +140,10 @@ long uwg_dispatch(long nr, long a1, long a2, long a3,
 
     /* --- handler-protection --- */
     case SYS_rt_sigaction:
-        /* Reject SIGSYS sigaction silently (return success). Other
-         * signums passthrough to the kernel. SIGSYS = 31 on Linux. */
+        /* BPF now uses SECCOMP_RET_ERRNO|0 for rt_sigaction(SIGSYS=31),
+         * so this case is only reached if the filter somehow lets it
+         * through (shouldn't happen in practice). Return 0 to be safe. */
         if ((int)a1 == 31) {
-            /* Application thinks it installed a handler; ours stays. */
             return 0;
         }
         return uwg_passthrough_syscall4(SYS_rt_sigaction, a1, a2, a3, a4);
