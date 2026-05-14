@@ -393,6 +393,118 @@ out_ptl:
 }
 
 /* ------------------------------------------------------------------ */
+/* Dynamic-binary injection: replace PT_INTERP with ptloader path.    */
+/*                                                                     */
+/* Problem: on glibc 2.39 (Ubuntu 24.04), some binaries (e.g. uname)  */
+/* link against libselinux.so.1. glibc's _dl_init initialises          */
+/* DT_NEEDED libs in reverse link-map order, so libselinux's           */
+/* constructor fires BEFORE uwgpreload.so's constructor.  libselinux   */
+/* calls socket(AF_NETLINK, ...) in its constructor, which hits the    */
+/* BPF SECCOMP_RET_TRAP filter → SIGSYS → SIG_DFL (handler not yet    */
+/* installed) → process killed.                                        */
+/*                                                                     */
+/* Fix: replace the binary's PT_INTERP path with the ptloader path.   */
+/* ptloader runs as PT_INTERP before ANY DT_NEEDED library is loaded,  */
+/* calls uwg_core_init() to install the SIGSYS handler, then maps the  */
+/* original ld.so and jumps to it.  By the time libselinux's           */
+/* constructor fires, the handler is already installed.                */
+/* ------------------------------------------------------------------ */
+
+static long uwg_docker_patch_exec_dynamic(int orig_fd, long orig_size,
+                                           const Elf64_Ehdr *ehdr,
+                                           const Elf64_Phdr *phdrs,
+                                           int interp_idx,
+                                           const char *orig_interp_path,
+                                           const char * const *argv,
+                                           const char * const *envp,
+                                           char *io_buf) {
+    if (uwg_ptloader_master_fd < 0 || uwg_ptloader_size <= 0 ||
+        uwg_ptloader_cfg_off < 0) {
+        return -12;
+    }
+
+    long rc;
+
+    /* Create ptl_fd: copy of ptloader. NOT O_CLOEXEC — must survive exec. */
+    long ptl_fd_l = uwg_syscall2(SYS_memfd_create, (long)"uwgptl", 0);
+    if (ptl_fd_l < 0) return ptl_fd_l;
+    int ptl_fd = (int)ptl_fd_l;
+
+    rc = uwg_copy_fd(ptl_fd, 0, uwg_ptloader_master_fd, 0,
+                     uwg_ptloader_size, io_buf, UWG_DOCKER_IO_BUF);
+    if (rc < 0) goto out_ptl;
+
+    /* Build and write cfg. Dynamic mode: is_dynamic=1, orig_interp filled. */
+    struct uwg_ptloader_cfg cfg;
+    cfg.magic               = UWG_PTLOADER_MAGIC;
+    cfg.original_e_phoff    = 0;
+    cfg.original_e_phnum    = 0;
+    cfg.original_e_phentsize = 0;
+    cfg.e_type_is_pie       = 0;
+    cfg.is_dynamic          = 1;
+    cfg._pad0[0]            = 0;
+    cfg._pad0[1]            = 0;
+    cfg.e_entry_in_file     = 0;
+    cfg.phdr_base_vma       = 0;
+    cfg.interp_fd           = ptl_fd;
+    cfg._pad1               = 0;
+    {
+        int n = uwg_docker_strlen(orig_interp_path);
+        if (n >= (int)sizeof(cfg.orig_interp))
+            n = (int)sizeof(cfg.orig_interp) - 1;
+        for (int i = 0; i < n; i++) cfg.orig_interp[i] = orig_interp_path[i];
+        cfg.orig_interp[n] = '\0';
+    }
+
+    rc = uwg_pwrite_exact(ptl_fd, uwg_ptloader_cfg_off, &cfg, sizeof(cfg));
+    if (rc < 0) goto out_ptl;
+
+    /* Build ptl_path: "/proc/self/fd/<ptl_fd>". */
+    char ptl_path[32];
+    int ptl_path_len = uwg_make_proc_fd_path(ptl_fd, ptl_path, sizeof(ptl_path));
+    if (ptl_path_len <= 0) { rc = -22; goto out_ptl; }
+
+    /* Check that ptl_path fits in the existing PT_INTERP string slot.
+     * The original interp (e.g. /lib64/ld-linux-x86-64.so.2 = 27 chars)
+     * is always longer than /proc/self/fd/N (≤ 20 chars), so this path
+     * is taken in practice.  Fall back to passthrough if not. */
+    long interp_str_off  = (long)phdrs[interp_idx].p_offset;
+    long interp_str_size = (long)phdrs[interp_idx].p_filesz;
+    if (ptl_path_len + 1 > interp_str_size) {
+        /* Pathological: ptloader path longer than original interp slot.
+         * Give up and let the passthrough handle it (no interception). */
+        rc = -7;
+        goto out_ptl;
+    }
+
+    /* Create bin_fd: copy of the binary with the interp string replaced. */
+    long bin_fd_l = uwg_syscall2(SYS_memfd_create, (long)"uwgbin", (long)MFD_CLOEXEC);
+    if (bin_fd_l < 0) { rc = bin_fd_l; goto out_ptl; }
+    int bin_fd = (int)bin_fd_l;
+
+    rc = uwg_copy_fd(bin_fd, 0, orig_fd, 0, orig_size, io_buf, UWG_DOCKER_IO_BUF);
+    if (rc < 0) goto out_bin;
+
+    /* Overwrite the PT_INTERP path string with the ptloader path. */
+    rc = uwg_pwrite_exact(bin_fd, interp_str_off, ptl_path, ptl_path_len + 1);
+    if (rc < 0) goto out_bin;
+
+    /* Build bin_path and exec. No SIGSYS blocking: ptloader installs the
+     * handler before ld.so loads any DT_NEEDED library. */
+    char bin_path[32];
+    if (uwg_make_proc_fd_path(bin_fd, bin_path, sizeof(bin_path)) <= 0) {
+        rc = -22; goto out_bin;
+    }
+    rc = uwg_passthrough_syscall3(SYS_execve, (long)bin_path,
+                                   (long)argv, (long)envp);
+out_bin:
+    uwg_syscall1(SYS_close, bin_fd);
+out_ptl:
+    uwg_syscall1(SYS_close, ptl_fd);
+    return rc;
+}
+
+/* ------------------------------------------------------------------ */
 /* Main dispatch entry points                                          */
 /* ------------------------------------------------------------------ */
 
@@ -447,22 +559,36 @@ long uwg_execve_docker_dispatch(const char *path,
     for (int i = 0; i < (int)ehdr.e_phnum; i++) {
         if (phdr_buf[i].p_type != PT_INTERP) continue;
 
-        /* PT_INTERP present: check for re-exec case. */
-        char interp_path[64];
+        /* Read PT_INTERP path string (up to 255 chars + NUL). */
+        char interp_path[256];
         long plen = (long)phdr_buf[i].p_filesz;
         if (plen <= 0 || plen >= (long)sizeof(interp_path))
             plen = (long)sizeof(interp_path) - 1;
         long r = uwg_syscall4(SYS_pread64, fd, (long)interp_path,
                                plen, (long)phdr_buf[i].p_offset);
-        if (r > 0) {
-            interp_path[r] = '\0';
-            if (uwg_is_my_ptloader_path(interp_path, uwg_ptloader_my_fd)) {
-                long flags = uwg_syscall3(SYS_fcntl,
-                                          uwg_ptloader_my_fd, F_GETFD, 0);
-                if (flags >= 0 && (flags & FD_CLOEXEC)) {
-                    uwg_syscall3(SYS_fcntl, uwg_ptloader_my_fd,
-                                 F_SETFD, flags & ~(long)FD_CLOEXEC);
-                }
+        if (r > 0) interp_path[r] = '\0';
+        else       interp_path[0] = '\0';
+
+        if (uwg_is_my_ptloader_path(interp_path, uwg_ptloader_my_fd)) {
+            /* Re-exec: binary already has our ptloader as interpreter.
+             * Clear CLOEXEC so the kernel can reopen it. */
+            long flags = uwg_syscall3(SYS_fcntl, uwg_ptloader_my_fd, F_GETFD, 0);
+            if (flags >= 0 && (flags & FD_CLOEXEC)) {
+                uwg_syscall3(SYS_fcntl, uwg_ptloader_my_fd,
+                             F_SETFD, flags & ~(long)FD_CLOEXEC);
+            }
+            goto passthrough;
+        }
+
+        /* Regular dynamic binary: inject ptloader as PT_INTERP so the SIGSYS
+         * handler is installed before any DT_NEEDED constructor fires. */
+        {
+            long orig_size = uwg_file_size(fd);
+            if (orig_size > (long)sizeof(Elf64_Ehdr)) {
+                rc = uwg_docker_patch_exec_dynamic(fd, orig_size, &ehdr, phdr_buf,
+                                                    i, interp_path,
+                                                    argv, envp, io_buf);
+                /* On success execve replaced this process; rc is error only. */
             }
         }
         goto passthrough;

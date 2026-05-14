@@ -22,8 +22,11 @@ import (
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/uwgshared"
 )
 
-// uwgPtloaderCfg mirrors struct uwg_ptloader_cfg in preload/core/ptloader_cfg.h.
-// Exactly 48 bytes; layout must match the C struct exactly.
+// uwgPtloaderCfg mirrors the first 48 bytes of struct uwg_ptloader_cfg in
+// preload/core/ptloader_cfg.h. Layout must match the C struct exactly.
+// The C struct has an additional orig_interp[256] at offset 48 used only in
+// dynamic mode (IsDynamic=1); the Go patcher only handles static targets so
+// it writes 48 bytes with IsDynamic=0 and orig_interp stays zero-initialised.
 //
 //	correct_AT_PHDR = PhrBaseVma + OriginalEPhoff + load_bias
 //	  where load_bias = AT_ENTRY - EEntryInFile  (PIE/ET_DYN)
@@ -34,7 +37,8 @@ type uwgPtloaderCfg struct {
 	OriginalEPhnum     uint16   // 16
 	OriginalEPhentsize uint16   // 18
 	ETypeIsPie         uint8    // 20
-	Pad0               [3]uint8 // 21
+	IsDynamic          uint8    // 21 — 0 for static targets (Go always writes 0)
+	Pad0               [2]uint8 // 22
 	EEntryInFile       uint64   // 24
 	PhdrBaseVma        uint64   // 32 — (p_vaddr−p_offset) of PT_LOAD containing e_phoff
 	InterpFd           int32    // 40
@@ -76,7 +80,8 @@ func writePtloaderCfg(fd int, offset uint64, cfg *uwgPtloaderCfg) error {
 	binary.LittleEndian.PutUint16(b[16:], cfg.OriginalEPhnum) // 16:18
 	binary.LittleEndian.PutUint16(b[18:], cfg.OriginalEPhentsize) // 18:20
 	b[20] = cfg.ETypeIsPie                                     // 20
-	copy(b[21:24], cfg.Pad0[:])                                // 21:24
+	b[21] = cfg.IsDynamic                                      // 21
+	copy(b[22:24], cfg.Pad0[:])                                // 22:24
 	binary.LittleEndian.PutUint64(b[24:], cfg.EEntryInFile)   // 24:32
 	binary.LittleEndian.PutUint64(b[32:], cfg.PhdrBaseVma)    // 32:40
 	binary.LittleEndian.PutUint32(b[40:], uint32(cfg.InterpFd)) // 40:44
