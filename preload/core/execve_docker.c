@@ -483,16 +483,14 @@ long uwg_execve_docker_dispatch(const char *path,
 passthrough:
     uwg_syscall2(SYS_munmap, mm, UWG_DOCKER_BUF_TOTAL);
     uwg_syscall1(SYS_close, fd);
-    /* Block SIGSYS before exec (same reasoning as the static-binary path
-     * above: queued SIGSYS is safe, SIG_DFL with SIGSYS unblocked kills).
-     * This also handles the PLT-shim callsite where SIGSYS was already
-     * unblocked in the calling process; blocking here is the safe default
-     * for all callers. uwg_core_init() unblocks after handler install. */
-    {
-        uint64_t _sigsys_mask = (uint64_t)1 << (SIGSYS - 1);
-        uwg_syscall4(SYS_rt_sigprocmask, SIG_BLOCK,
-                     (long)&_sigsys_mask, 0L, 8L);
-    }
+    /* Do NOT block SIGSYS here. Blocking SIGSYS before exec is dangerous:
+     * if the BPF filter fires SECCOMP_RET_TRAP for rt_sigaction(SIGSYS)
+     * while SIGSYS is blocked, force_sig_info_to_task resets the handler
+     * to SIG_DFL and force-delivers — killing the child. The SIGSYS
+     * handler is installed by ptloader (systrap-elf path) before ld.so
+     * runs, so it is always in place when any rt_sigaction(SIGSYS) TRAP
+     * fires. Leaving SIGSYS unblocked lets the TRAP deliver safely to
+     * our handler. */
     return uwg_passthrough_syscall3(SYS_execve, (long)path,
                                      (long)argv, (long)envp);
 }

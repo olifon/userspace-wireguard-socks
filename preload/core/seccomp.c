@@ -307,9 +307,19 @@ static int uwg_build_filter(struct uwg_filter_prog *p, uint64_t bypass_secret,
         uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRACE));
     }
 
-    /* (3b) execve / execveat / clone3 → RET_TRAP (docker mode, mutually
-     * exclusive with supervised mode). No ptrace tracer needed; the
-     * in-process SIGSYS handler intercepts and dispatches. */
+    /* (3b) execve / execveat → RET_TRAP (docker mode, mutually exclusive
+     * with supervised mode). No ptrace tracer needed; the in-process
+     * SIGSYS handler intercepts and dispatches.
+     *
+     * rt_sigprocmask and clone3 are NOT in this trap list for dynamic
+     * binaries: glibc ld.so calls rt_sigprocmask during startup before
+     * our LD_PRELOAD constructor runs (and before ptloader installs the
+     * handler), so trapping them here would fire SIGSYS with SIG_DFL →
+     * process killed. For static binaries (ptloader path), rt_sigprocmask
+     * and clone3 interception is handled by the ptloader's own BPF layer
+     * installed after the SIGSYS handler is in place. Dynamic binaries
+     * are covered by shim_sigprocmask.c (PLT shim) for the SIG_BLOCK
+     * case and by shim_posix_spawn.c (fork+exec) for the clone3 case. */
     if (uwg_seccomp_docker_flag) {
         for (size_t i = 0; i < UWG_N_TRAPPED_DOCKER; i++) {
             uwg_emit(p, (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
@@ -317,18 +327,6 @@ static int uwg_build_filter(struct uwg_filter_prog *p, uint64_t bypass_secret,
                                                      0, 1));
             uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP));
         }
-
-        /* Note: rt_sigprocmask is NOT added to the BPF trap list here.
-         * glibc's ld.so calls rt_sigprocmask(SIG_SETMASK/SIG_BLOCK) during
-         * its startup (before LD_PRELOAD constructors run), so trapping it
-         * would cause the post-exec window to fire SIGSYS with no handler →
-         * SIG_DFL → process killed. Dynamic binaries are covered by the PLT
-         * shim in shim_sigprocmask.c and shim_vfork.c (clone3 bypass avoids
-         * the blocking call entirely). For static-libc callers, the
-         * uwgptloader injected via systrap-elf installs the SIGSYS handler
-         * before static binary init runs, so they are handled through a
-         * separate filter installed by uwgptloader that does not have the
-         * same post-exec window problem. */
     }
 
     /* (4) trapped syscalls → SECCOMP_RET_TRAP */
@@ -376,15 +374,31 @@ static int uwg_build_filter(struct uwg_filter_prog *p, uint64_t bypass_secret,
 
     /* (4b) Conditional trap: rt_sigaction(SIGSYS, ...) only.
      * After the unconditional trap loop, A still holds the syscall nr.
-     * If nr == SYS_rt_sigaction, load arg0 (the signum) and trap when
-     * it equals SIGSYS (= 31). Any other signum falls through to ALLOW.
+     * If nr == SYS_rt_sigaction and arg0 (the signum) == SIGSYS (31),
+     * deliver SIGSYS via SECCOMP_RET_TRAP so our handler intercepts it
+     * and returns 0, silently blocking competing handler installs.
+     * Any other signum falls through to ALLOW.
      *
-     * This protects our SIGSYS handler from being clobbered by Go's
-     * runtime / chromium-sandbox layers (their M-startup or sandbox-
-     * init code installs a SIGSYS handler) while leaving glibc-init's
-     * rt_sigaction calls for SIGCHLD / SIGINT / etc. unaffected — those
-     * happen post-execve before our LD_PRELOAD constructor reinstalls
-     * the SIGSYS handler, so trapping them would terminate the child.
+     * SECCOMP_RET_TRAP is correct here. Our SIGSYS handler is always
+     * installed before this TRAP can fire:
+     *   - systrap-elf: ptloader runs as PT_INTERP and calls uwg_core_init()
+     *     before ld.so or the binary's _start.
+     *   - static binaries: same ptloader path.
+     * With the handler in place, the TRAP delivers to our handler which
+     * dispatches to uwg_rt_sigaction and returns 0. Because
+     * execve_docker.c no longer blocks SIGSYS before exec, SIGSYS is
+     * never blocked when the TRAP fires, so force_sig_info_to_task
+     * delivers normally to our handler rather than resetting to SIG_DFL.
+     *
+     * Go's runtime calls rt_sigaction(SIGSYS=31). With SECCOMP_RET_ERRNO
+     * that returned EPERM, causing Go to throw("sigaction failed") and
+     * panic (Go only ignores errors for signals 32, 33, 64 — not 31).
+     * With SECCOMP_RET_TRAP the SIGSYS delivers to our handler → 0 → Go
+     * happily continues.
+     *
+     * Our own uwg_install_sigsys_handler() uses uwg_passthrough_syscall4
+     * which places bypass_secret in args[5]; the BPF rule above (step 2)
+     * returns ALLOW for that call before reaching this branch.
      *
      * SIGSYS is 31 on every Linux arch we support (asm-generic/signal.h);
      * no need for arch-specific constants. The signum fits in the lo

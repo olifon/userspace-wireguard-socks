@@ -591,15 +591,17 @@ func truncate(b []byte, n int) []byte {
 // TestSystrapElfPythonSubprocess exercises the fork+exec path from inside a
 // wrapped Python process. Python 3.12's subprocess.check_output(["uname", "-r"])
 // uses fork()+execve() for bare executable names. The exec'd child (uname)
-// inherits the active BPF filter but has its SIGSYS handler reset to SIG_DFL
-// by the kernel on execve. The previous execve_docker.c code called
-// SIG_UNBLOCK on SIGSYS before the passthrough execve, so uname started with
-// SIGSYS unblocked + SIG_DFL + BPF active: any trapped syscall during the
-// ld.so startup window killed the child. Fixed by switching to SIG_BLOCK
-// before the passthrough execve (so BPF traps queue instead of firing with
-// SIG_DFL) and unblocking in uwg_core_init() after the handler is installed.
-// The pthread_atfork child handler (also in uwg_core_init) closes the
-// CLONE_CLEAR_SIGHAND window in the fork child itself.
+// inherits the BPF filter but has its SIGSYS handler reset to SIG_DFL by
+// execve. The fix:
+//
+//   - systrap-elf injects uwgptloader as PT_INTERP so the SIGSYS handler is
+//     installed before ld.so runs, closing the post-exec startup window.
+//   - The BPF rule for rt_sigaction(SIGSYS) uses SECCOMP_RET_TRAP, which
+//     delivers to our handler (already installed by ptloader) and returns 0.
+//   - execve_docker.c does NOT block SIGSYS before exec. Blocking SIGSYS
+//     before exec was previously tried and caused failures: if SIGSYS is
+//     blocked when force_sig_info_to_task fires for the TRAP, the kernel
+//     resets the handler to SIG_DFL and force-delivers, killing the child.
 func TestSystrapElfPythonSubprocess(t *testing.T) {
 	requireSystrapDockerToolchain(t)
 	if _, err := exec.LookPath("python3"); err != nil {

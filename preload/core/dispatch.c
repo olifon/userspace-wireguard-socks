@@ -103,21 +103,15 @@ long uwg_dispatch(long nr, long a1, long a2, long a3,
     /* --- clone3 CLONE_CLEAR_SIGHAND interception (docker mode) --- */
 #ifdef SYS_clone3
     case SYS_clone3: {
-        /* Reached only via the syscall(2) PLT shim (shim_syscall.c) —
-         * clone3 is NOT in the docker-mode BPF trap list.
+        /* Reached only via the syscall(2) PLT shim (shim_syscall.c) for
+         * dynamic binaries — clone3 is NOT in the docker-mode BPF trap
+         * list because glibc's fork() calls rt_sigprocmask(SIG_BLOCK,~all)
+         * before clone3, and rt_sigprocmask cannot safely be trapped in the
+         * main filter (ld.so calls it before our handler is installed).
          *
-         * Reason for removal from trap list: on glibc 2.38-2.39 fork()
-         * calls rt_sigprocmask(SIG_BLOCK, ~all) via inline asm BEFORE
-         * clone3. If clone3 were trapped, SIGSYS would be blocked at the
-         * trap point → force_sig_info_to_task resets handler to SIG_DFL
-         * → process killed. Removing clone3 from the trap lets glibc's
-         * fork pass through; glibc's own SIG_SETMASK(prev) restores the
-         * unblocked state after clone3 returns.
-         *
-         * CLONE_CLEAR_SIGHAND stripping still works for code that calls
-         * clone3 via syscall() (e.g. custom spawn code, test helpers):
-         * this shim_syscall path reaches here, strips the flag, and
-         * passthroughs with bypass_secret so the BPF filter ALLOWs it.
+         * For static binaries (ptloader path), the ptloader installs its
+         * own BPF layer after the SIGSYS handler is in place, allowing
+         * rt_sigprocmask and clone3 to be trapped in that layer.
          *
          * a1 = struct clone_args *, a2 = size_t (must be ≥ sizeof flags).
          * We modify flags in-place before the passthrough. */
