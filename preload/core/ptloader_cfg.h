@@ -46,7 +46,10 @@ struct uwg_ptloader_cfg {
     uint64_t phdr_base_vma;        /* 32:40 (p_vaddr-p_offset) of PT_LOAD holding e_phoff */
     int32_t  interp_fd;            /* 40:44 fd# of this ptloader memfd       */
     int32_t  _pad1;                /* 44:48 */
-    char     orig_interp[256];     /* 48:304 original ld.so path (dynamic mode) */
+    char     orig_interp[256];     /* 48:304  original ld.so path (dynamic mode) */
+    char     orig_exec_path[256];  /* 304:560 original execve pathname — used to
+                                    * patch AT_EXECFN so ld.so resolves $ORIGIN
+                                    * correctly when exec'd via a memfd path */
 };
 
 #endif /* UWG_PTLOADER_CFG_H */

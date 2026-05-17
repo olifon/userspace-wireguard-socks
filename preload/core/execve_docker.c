@@ -444,6 +444,201 @@ out_ptl:
 }
 
 /* ------------------------------------------------------------------ */
+/* RPATH $ORIGIN expansion → LD_LIBRARY_PATH injection                */
+/*                                                                     */
+/* When a dynamic binary is exec'd via a memfd path (systrap-elf       */
+/* mode), glibc's _dl_get_origin() calls readlink("/proc/self/exe")    */
+/* which returns "/memfd:uwgbin (deleted)".  dirname of that is "/"   */
+/* not the binary's real directory, so any RPATH component like        */
+/* "$ORIGIN/../lib" (Java, Chromium, etc.) resolves under "/" rather   */
+/* than under the real binary location.                                */
+/*                                                                     */
+/* Fix: read the binary's DT_RPATH / DT_RUNPATH, resolve $ORIGIN via  */
+/* readlinkat on /proc/self/fd/<orig_fd> (which gives the canonical    */
+/* path before the binary is replaced by the memfd copy), expand each  */
+/* $ORIGIN occurrence, and prepend the result to LD_LIBRARY_PATH.      */
+/* glibc searches LD_LIBRARY_PATH before DT_RUNPATH and after DT_RPATH */
+/* so the expanded paths win in both cases.                            */
+/*                                                                     */
+/* Returns the original envp unchanged when no $ORIGIN expansion is    */
+/* needed (fast path).  All working storage lives in the 64 KiB io_buf */
+/* which is free after the binary-copy step and stays live until exec  */
+/* replaces the process image.  No heap allocation; no mmap.          */
+/* ------------------------------------------------------------------ */
+
+static const char * const *
+uwg_expand_rpath_env(int orig_fd, const Elf64_Ehdr *ehdr,
+                     const Elf64_Phdr *phdrs, const char *exec_path,
+                     const char * const *envp, char *io_buf)
+{
+    /* io_buf layout (offsets within the 64 KiB buffer):
+     *   [0 .. dyn_sz)   temporary PT_DYNAMIC entries (freed after scan)
+     *   [0 .. 511]      RPATH string from file (reused after scan)
+     *   [512 .. 1535]   $ORIGIN-expanded RPATH  (1024 bytes max)
+     *   [1536 .. 3535]  "LD_LIBRARY_PATH=..." entry string (2000 bytes max)
+     *   [3536 ..]       new_envp[] pointer array                          */
+
+    /* 1. Resolve canonical path via readlinkat(/proc/self/fd/<orig_fd>). */
+    char proc_fd_buf[40];
+    char canon[512]; /* canonical binary path, then reused as dirname */
+    int  origin_len = 0; /* length of dirname = index of last '/' */
+
+    if (uwg_make_proc_fd_path(orig_fd, proc_fd_buf, sizeof(proc_fd_buf)) <= 0)
+        return envp;
+    {
+        long rlen = uwg_syscall4(SYS_readlinkat, AT_FDCWD,
+                                 (long)proc_fd_buf,
+                                 (long)canon, (long)(sizeof(canon) - 1));
+        if (rlen > 0) {
+            canon[rlen] = '\0';
+        } else {
+            /* Fallback: exec_path may be a symlink but is better than nothing. */
+            int n = uwg_docker_strlen(exec_path);
+            if (n >= (int)sizeof(canon)) n = (int)sizeof(canon) - 1;
+            for (int i = 0; i < n; i++) canon[i] = exec_path[i];
+            canon[n] = '\0';
+        }
+        for (int i = 0; canon[i]; i++) {
+            if (canon[i] == '/') origin_len = i;
+        }
+        /* canon[0..origin_len-1] = dirname (chars before last '/') */
+    }
+
+    /* 2. Find PT_DYNAMIC. */
+    int dyn_idx = -1;
+    for (int pi = 0; pi < (int)ehdr->e_phnum; pi++) {
+        if (phdrs[pi].p_type == PT_DYNAMIC) { dyn_idx = pi; break; }
+    }
+    if (dyn_idx < 0) return envp;
+
+    /* 3. Read dynamic section into io_buf (temp). */
+    long dyn_off = (long)phdrs[dyn_idx].p_offset;
+    long dyn_sz  = (long)phdrs[dyn_idx].p_filesz;
+    if (dyn_sz <= 0) return envp;
+    if (dyn_sz > UWG_DOCKER_IO_BUF) dyn_sz = UWG_DOCKER_IO_BUF;
+    if (uwg_pread_exact(orig_fd, dyn_off, io_buf, dyn_sz) < 0) return envp;
+
+    /* 4. Find DT_STRTAB vaddr and DT_RUNPATH / DT_RPATH offset. */
+    Elf64_Dyn *dynp         = (Elf64_Dyn *)io_buf;
+    long       n_dyn        = dyn_sz / (long)sizeof(Elf64_Dyn);
+    uint64_t   dt_strtab_va = 0;
+    uint64_t   dt_rpath_idx = 0;
+    int        has_rpath    = 0;
+
+    for (long di = 0; di < n_dyn; di++) {
+        Elf64_Sxword tag = dynp[di].d_tag;
+        if (tag == DT_NULL) break;
+        if (tag == DT_STRTAB)
+            dt_strtab_va = dynp[di].d_un.d_val;
+        if (tag == DT_RUNPATH)
+            { dt_rpath_idx = dynp[di].d_un.d_val; has_rpath = 1; }
+        if (tag == DT_RPATH && !has_rpath)
+            { dt_rpath_idx = dynp[di].d_un.d_val; has_rpath = 1; }
+    }
+    if (!has_rpath || !dt_strtab_va) return envp;
+
+    /* 5. Convert DT_STRTAB virtual address to file offset via PT_LOAD. */
+    long strtab_foff = -1;
+    for (int pi = 0; pi < (int)ehdr->e_phnum; pi++) {
+        if (phdrs[pi].p_type != PT_LOAD) continue;
+        if (dt_strtab_va < phdrs[pi].p_vaddr) continue;
+        if (dt_strtab_va >= phdrs[pi].p_vaddr + phdrs[pi].p_memsz) continue;
+        strtab_foff = (long)(dt_strtab_va - phdrs[pi].p_vaddr
+                             + phdrs[pi].p_offset);
+        break;
+    }
+    if (strtab_foff < 0) return envp;
+
+    /* 6. Read RPATH string into io_buf[0..511] (overwrites dynamic data,
+     *    which is no longer needed after step 4). */
+    char *rpath_in  = io_buf;       /* [0..511]    raw RPATH string */
+    char *rpath_out = io_buf + 512; /* [512..1535] $ORIGIN-expanded */
+    {
+        long foff = strtab_foff + (long)dt_rpath_idx;
+        long nr   = uwg_syscall4(SYS_pread64, orig_fd, (long)rpath_in, 511, foff);
+        if (nr <= 0) return envp;
+        if (nr > 511) nr = 511;
+        rpath_in[nr] = '\0';
+    }
+
+    /* 7. Quick check: bail early if $ORIGIN not present (most binaries). */
+    {
+        int found = 0;
+        for (int i = 0; rpath_in[i]; i++) {
+            if (rpath_in[i]   == '$' && rpath_in[i+1] == 'O' &&
+                rpath_in[i+2] == 'R' && rpath_in[i+3] == 'I' &&
+                rpath_in[i+4] == 'G' && rpath_in[i+5] == 'I' &&
+                rpath_in[i+6] == 'N')
+                { found = 1; break; }
+        }
+        if (!found) return envp;
+    }
+
+    /* 8. Expand $ORIGIN occurrences in rpath_in → rpath_out. */
+    {
+        int out = 0;
+        for (int i = 0; rpath_in[i] && out < 1023; ) {
+            if (rpath_in[i]   == '$' && rpath_in[i+1] == 'O' &&
+                rpath_in[i+2] == 'R' && rpath_in[i+3] == 'I' &&
+                rpath_in[i+4] == 'G' && rpath_in[i+5] == 'I' &&
+                rpath_in[i+6] == 'N') {
+                if (origin_len > 0) {
+                    for (int j = 0; j < origin_len && out < 1023; j++)
+                        rpath_out[out++] = canon[j];
+                } else {
+                    if (out < 1023) rpath_out[out++] = '/';
+                }
+                i += 7; /* skip "$ORIGIN" */
+            } else {
+                rpath_out[out++] = rpath_in[i++];
+            }
+        }
+        rpath_out[out] = '\0';
+    }
+
+    /* 9. Build "LD_LIBRARY_PATH=<rpath_out>[:<existing>]" in io_buf[1536..3535]. */
+    char *llp_str = io_buf + 1536;
+    int   llp_len = 0;
+    {
+        const char pfx[] = "LD_LIBRARY_PATH=";
+        for (int i = 0; pfx[i] && llp_len < 1999; i++) llp_str[llp_len++] = pfx[i];
+        for (int i = 0; rpath_out[i] && llp_len < 1999; i++) llp_str[llp_len++] = rpath_out[i];
+    }
+
+    int n_env   = 0;
+    int llp_idx = -1;
+    if (envp) {
+        for (; envp[n_env]; n_env++) {
+            if (llp_idx < 0) {
+                const char *e = envp[n_env];
+                const char  k[] = "LD_LIBRARY_PATH";
+                int j = 0;
+                while (j < 15 && e[j] == k[j]) j++;
+                if (j == 15 && e[j] == '=') llp_idx = n_env;
+            }
+        }
+    }
+    if (llp_idx >= 0 && llp_len < 1999) {
+        llp_str[llp_len++] = ':';
+        const char *ev = envp[llp_idx] + 16; /* skip "LD_LIBRARY_PATH=" */
+        for (int i = 0; ev[i] && llp_len < 1999; i++) llp_str[llp_len++] = ev[i];
+    }
+    llp_str[llp_len] = '\0';
+
+    /* 10. Build new_envp[] in io_buf[3536..].
+     *     3536 = 8*442 (8-byte aligned).  Capacity: (64K-3536)/8 = 7750 ptrs. */
+    const char **new_envp = (const char **)(io_buf + 3536);
+    int idx = 0;
+    for (int i = 0; i < n_env; i++) {
+        new_envp[idx++] = (i == llp_idx) ? llp_str : envp[i];
+    }
+    if (llp_idx < 0) new_envp[idx++] = llp_str;
+    new_envp[idx] = NULL;
+
+    return (const char * const *)new_envp;
+}
+
+/* ------------------------------------------------------------------ */
 /* Dynamic-binary injection: replace PT_INTERP with ptloader path.    */
 /*                                                                     */
 /* Problem: on glibc 2.39 (Ubuntu 24.04), some binaries (e.g. uname)  */
@@ -466,6 +661,7 @@ static long uwg_docker_patch_exec_dynamic(int orig_fd, long orig_size,
                                            const Elf64_Phdr *phdrs,
                                            int interp_idx,
                                            const char *orig_interp_path,
+                                           const char *exec_path,
                                            const char * const *argv,
                                            const char * const *envp,
                                            char *io_buf) {
@@ -524,6 +720,17 @@ static long uwg_docker_patch_exec_dynamic(int orig_fd, long orig_size,
         for (int i = 0; i < n; i++) cfg.orig_interp[i] = orig_interp_path[i];
         cfg.orig_interp[n] = '\0';
     }
+    {
+        /* Store the original execve pathname so the ptloader can patch
+         * AT_EXECFN, restoring $ORIGIN resolution for RPATH entries like
+         * Java's "$ORIGIN/../lib" that would otherwise resolve to /proc/self/fd
+         * (the memfd path passed to the kernel). */
+        int n = uwg_docker_strlen(exec_path);
+        if (n >= (int)sizeof(cfg.orig_exec_path))
+            n = (int)sizeof(cfg.orig_exec_path) - 1;
+        for (int i = 0; i < n; i++) cfg.orig_exec_path[i] = exec_path[i];
+        cfg.orig_exec_path[n] = '\0';
+    }
 
     rc = uwg_pwrite_exact(ptl_fd, uwg_ptloader_cfg_off, &cfg, sizeof(cfg));
     if (rc < 0) goto out_ptl;
@@ -535,6 +742,11 @@ static long uwg_docker_patch_exec_dynamic(int orig_fd, long orig_size,
 
     rc = uwg_copy_fd(bin_fd, 0, orig_fd, 0, orig_size, io_buf, UWG_DOCKER_IO_BUF);
     if (rc < 0) goto out_bin;
+
+    /* Expand $ORIGIN in the binary's RPATH and inject LD_LIBRARY_PATH so
+     * glibc can find shared libraries despite /proc/self/exe pointing to
+     * the memfd path rather than the real binary directory. */
+    envp = uwg_expand_rpath_env(orig_fd, ehdr, phdrs, exec_path, envp, io_buf);
 
     /* Append at EOF:
      *   [orig_size]                         new phdr table (copy of originals,
@@ -822,7 +1034,7 @@ long uwg_execve_docker_dispatch(const char *path,
             long orig_size = uwg_file_size(fd);
             if (orig_size > (long)sizeof(Elf64_Ehdr)) {
                 rc = uwg_docker_patch_exec_dynamic(fd, orig_size, &ehdr, phdr_buf,
-                                                    i, interp_path,
+                                                    i, interp_path, path,
                                                     argv, envp, io_buf);
             }
         }

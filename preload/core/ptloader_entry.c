@@ -110,6 +110,9 @@
 #ifndef SIGSYS
 #  define SIGSYS 31
 #endif
+#ifndef AT_EXECFN
+#  define AT_EXECFN 31
+#endif
 
 /* The .uwgcfg section: Go patcher scans the ptloader binary for
  * UWG_PTLOADER_MAGIC to locate this struct, then writes the per-exec
@@ -348,16 +351,18 @@ static unsigned long uwg_ptloader_run(void *initial_sp) {
     long *av = (long *)ep;
 
     unsigned long at_entry = 0;
-    long         *at_base_ptr  = NULL;
-    long         *at_phdr_ptr  = NULL;
-    long         *at_phnum_ptr = NULL;
+    long         *at_base_ptr    = NULL;
+    long         *at_phdr_ptr    = NULL;
+    long         *at_phnum_ptr   = NULL;
+    long         *at_execfn_ptr  = NULL;
 
     for (long *a = av; a[0] != AT_NULL; a += 2) {
         switch (a[0]) {
-        case AT_ENTRY: at_entry       = (unsigned long)a[1]; break;
-        case AT_BASE:  at_base_ptr    = &a[1]; break;
-        case AT_PHDR:  at_phdr_ptr    = &a[1]; break;
-        case AT_PHNUM: at_phnum_ptr   = &a[1]; break;
+        case AT_ENTRY:  at_entry       = (unsigned long)a[1]; break;
+        case AT_BASE:   at_base_ptr    = &a[1]; break;
+        case AT_PHDR:   at_phdr_ptr    = &a[1]; break;
+        case AT_PHNUM:  at_phnum_ptr   = &a[1]; break;
+        case AT_EXECFN: at_execfn_ptr  = &a[1]; break;
         }
     }
 
@@ -422,6 +427,14 @@ static unsigned long uwg_ptloader_run(void *initial_sp) {
 
             /* Patch AT_BASE to ld.so's load base so ld.so can self-relocate. */
             if (at_base_ptr) *at_base_ptr = (long)ldso_base;
+
+            /* Patch AT_EXECFN to the original execve path so ld.so resolves
+             * $ORIGIN correctly. Without this, AT_EXECFN is the memfd path
+             * (/proc/self/fd/N) and $ORIGIN resolves to /proc/self/fd, which
+             * doesn't contain the binary's RPATH-relative libraries (e.g.
+             * Java's libjli.so at "$ORIGIN/../lib"). */
+            if (at_execfn_ptr && uwg_ptloader_cfg_data.orig_exec_path[0])
+                *at_execfn_ptr = (long)uwg_ptloader_cfg_data.orig_exec_path;
 
             return ldso_entry;
         }
