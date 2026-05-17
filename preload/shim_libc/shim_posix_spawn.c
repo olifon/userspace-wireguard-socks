@@ -22,6 +22,16 @@
  *
  * glibc internal struct layouts are stable across Ubuntu 18.04+ (glibc 2.17+),
  * which is our target baseline for the embedded uwgpreload.so.
+ *
+ * Symbol versioning: glibc exports both posix_spawn@GLIBC_2.2.5 (legacy) and
+ * posix_spawn@@GLIBC_2.15 (current default).  Binaries compiled on Ubuntu
+ * 20.04+ record a GLIBC_2.15 version requirement.  The dynamic linker will
+ * NOT satisfy a versioned import with an unversioned LD_PRELOAD export, so
+ * we must export both versioned forms.  We use single @ (non-default), which
+ * does not require a linker version script, and avoids the multiple-definition
+ * conflict that arises when a default-version @@ symbol collides with the
+ * unversioned function name in the same TU.  The single-@ non-default marker
+ * is sufficient: ld.so uses it to satisfy versioned requirements from binaries.
  */
 
 #ifndef UWG_FREESTANDING
@@ -245,19 +255,22 @@ static int uwg_do_posix_spawn(pid_t *pid_out, const char *path,
     if (child < 0) return (int)(-(int)child);
 
     if (child == 0) {
-        /* Child: SIGSYS handler inherited, no CLONE_CLEAR_SIGHAND.
-         * Unblock SIGSYS defensively — the parent's mask is inherited;
-         * if the parent had SIGSYS blocked for any reason, unblock it
-         * so BPF traps route to our handler rather than SIG_DFL. */
         unsigned long sigsys_bit = (unsigned long)1 << (SIGSYS - 1);
-        uwg_syscall4(SYS_rt_sigprocmask, SIG_UNBLOCK,
-                     (long)&sigsys_bit, 0L, 8L);
-
+        uwg_passthrough_syscall4(SYS_rt_sigprocmask, SIG_UNBLOCK,
+                                 (long)&sigsys_bit, 0L, 8L);
         uwg_apply_spawnattr(sa);
         uwg_apply_file_actions(fa);
         /* execve() → shim_execve.c::execve() → uwg_execve_docker_dispatch()
-         * → bypass exec (BPF filter sees bypass secret in arg6 → ALLOW). */
-        execve(path, argv, envp);
+         * → bypass exec (BPF filter sees bypass secret in arg6 → ALLOW).
+         *
+         * When envp is NULL (Python passes env=None), substitute environ to
+         * match glibc's posix_spawn behaviour (__posix_spawn passes __environ
+         * when envp is NULL).  Without this, uwg_inject_uwgs_env(NULL) builds
+         * a bare 3-var env that strips LD_PRELOAD and leaves the patched
+         * binary unable to bootstrap its SIGSYS handler. */
+        extern char **environ;
+        char * const *actual_envp = envp != NULL ? envp : environ;
+        execve(path, argv, actual_envp);
         uwg_syscall1(SYS_exit_group, 127);
         __builtin_unreachable();
     }
@@ -266,7 +279,8 @@ static int uwg_do_posix_spawn(pid_t *pid_out, const char *path,
 }
 
 /* ------------------------------------------------------------------ */
-/* Public overrides                                                     */
+/* Public overrides — two versioned exports each to cover both ABI     */
+/* versions that glibc ships (GLIBC_2.2.5 legacy, GLIBC_2.15 current) */
 /* ------------------------------------------------------------------ */
 
 typedef int (*posix_spawn_fn)(pid_t *, const char *,
@@ -274,32 +288,69 @@ typedef int (*posix_spawn_fn)(pid_t *, const char *,
                                const posix_spawnattr_t *,
                                char *const [], char *const []);
 
-int posix_spawn(pid_t *pid, const char *path,
-                const posix_spawn_file_actions_t *fa,
-                const posix_spawnattr_t *sa,
-                char *const argv[], char *const envp[]) {
+/* posix_spawn — GLIBC_2.15 (Python 3.14+ on Ubuntu 20.04+) */
+int __uwg_posix_spawn_215(pid_t *pid, const char *path,
+                           const posix_spawn_file_actions_t *fa,
+                           const posix_spawnattr_t *sa,
+                           char *const argv[], char *const envp[]) {
     if (uwg_seccomp_docker_flag)
         return uwg_do_posix_spawn(pid, path, fa, sa, argv, envp);
-
     static posix_spawn_fn real_fn;
     if (!real_fn)
         real_fn = (posix_spawn_fn)dlsym(RTLD_NEXT, "posix_spawn");
     if (!real_fn) return ENOSYS;
     return real_fn(pid, path, fa, sa, argv, envp);
 }
+__asm__(".symver __uwg_posix_spawn_215, posix_spawn@GLIBC_2.15");
 
-int posix_spawnp(pid_t *pid, const char *file,
-                 const posix_spawn_file_actions_t *fa,
-                 const posix_spawnattr_t *sa,
-                 char *const argv[], char *const envp[]) {
+/* posix_spawn — GLIBC_2.2.5 (older binaries) */
+int __uwg_posix_spawn_225(pid_t *pid, const char *path,
+                           const posix_spawn_file_actions_t *fa,
+                           const posix_spawnattr_t *sa,
+                           char *const argv[], char *const envp[]) {
     if (uwg_seccomp_docker_flag)
-        return uwg_do_posix_spawn(pid, file, fa, sa, argv, envp);
-
+        return uwg_do_posix_spawn(pid, path, fa, sa, argv, envp);
     static posix_spawn_fn real_fn;
     if (!real_fn)
-        real_fn = (posix_spawn_fn)dlsym(RTLD_NEXT, "posix_spawnp");
+        real_fn = (posix_spawn_fn)dlsym(RTLD_NEXT, "posix_spawn");
+    if (!real_fn) return ENOSYS;
+    return real_fn(pid, path, fa, sa, argv, envp);
+}
+__asm__(".symver __uwg_posix_spawn_225, posix_spawn@GLIBC_2.2.5");
+
+typedef int (*posix_spawnp_fn)(pid_t *, const char *,
+                                const posix_spawn_file_actions_t *,
+                                const posix_spawnattr_t *,
+                                char *const [], char *const []);
+
+/* posix_spawnp — GLIBC_2.15 */
+int __uwg_posix_spawnp_215(pid_t *pid, const char *file,
+                            const posix_spawn_file_actions_t *fa,
+                            const posix_spawnattr_t *sa,
+                            char *const argv[], char *const envp[]) {
+    if (uwg_seccomp_docker_flag)
+        return uwg_do_posix_spawn(pid, file, fa, sa, argv, envp);
+    static posix_spawnp_fn real_fn;
+    if (!real_fn)
+        real_fn = (posix_spawnp_fn)dlsym(RTLD_NEXT, "posix_spawnp");
     if (!real_fn) return ENOSYS;
     return real_fn(pid, file, fa, sa, argv, envp);
 }
+__asm__(".symver __uwg_posix_spawnp_215, posix_spawnp@GLIBC_2.15");
+
+/* posix_spawnp — GLIBC_2.2.5 */
+int __uwg_posix_spawnp_225(pid_t *pid, const char *file,
+                            const posix_spawn_file_actions_t *fa,
+                            const posix_spawnattr_t *sa,
+                            char *const argv[], char *const envp[]) {
+    if (uwg_seccomp_docker_flag)
+        return uwg_do_posix_spawn(pid, file, fa, sa, argv, envp);
+    static posix_spawnp_fn real_fn;
+    if (!real_fn)
+        real_fn = (posix_spawnp_fn)dlsym(RTLD_NEXT, "posix_spawnp");
+    if (!real_fn) return ENOSYS;
+    return real_fn(pid, file, fa, sa, argv, envp);
+}
+__asm__(".symver __uwg_posix_spawnp_225, posix_spawnp@GLIBC_2.2.5");
 
 #endif /* !UWG_FREESTANDING */

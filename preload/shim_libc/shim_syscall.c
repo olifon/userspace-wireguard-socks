@@ -47,6 +47,17 @@ long syscall(long nr, ...) {
     va_end(ap);
 
     long rc = uwg_dispatch(nr, a1, a2, a3, a4, a5, a6);
+    /* Zero the bypass-secret register before returning. uwg_dispatch calls
+     * uwg_passthrough_syscall4 for most syscalls (default branch), which
+     * puts bypass_secret in r9 (x86-64) / x5 (aarch64). The kernel syscall
+     * ABI preserves that register. If caller-site code then issues a raw
+     * execve syscall with that register still set, the layer-1 BPF bypass
+     * check fires and exec proceeds without ptloader injection. */
+#if defined(__x86_64__)
+    __asm__ __volatile__("xor %%r9, %%r9" ::: "r9");
+#elif defined(__aarch64__)
+    __asm__ __volatile__("mov x5, #0" ::: "x5");
+#endif
     /* uwg_dispatch follows the freestanding convention: rc < 0 is
      * a -errno, rc >= 0 is the value. libc's syscall(2) wrapper has
      * the same convention as the per-symbol wrappers it would have

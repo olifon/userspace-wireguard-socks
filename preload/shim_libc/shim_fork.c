@@ -72,12 +72,14 @@ int fork(void) {
     }
     int pid = real_fork();
     if (pid == 0 && uwg_bypass_secret != 0) {
-        /* Step 1: unblock SIGSYS. rt_sigprocmask is not in the BPF
-         * trap list so this raw syscall goes straight to the kernel.
-         * Safe to call even with SIGSYS currently blocked. */
+        /* Step 1: unblock SIGSYS. Use passthrough (bypass secret in arg6)
+         * so the layer-2 BPF trap is bypassed and the kernel unblocks
+         * SIGSYS directly. Using uwg_syscall4 here would route through
+         * the layer-2 TRAP, which requires the handler to already be
+         * installed and working — a circular dependency. */
         unsigned long sigsys_bit = (unsigned long)1 << (SIGSYS - 1);
-        uwg_syscall4(SYS_rt_sigprocmask, SIG_UNBLOCK,
-                     (long)&sigsys_bit, 0L, 8L);
+        uwg_passthrough_syscall4(SYS_rt_sigprocmask, SIG_UNBLOCK,
+                                 (long)&sigsys_bit, 0L, 8L);
 
         /* Step 2: reinstall the SIGSYS handler. glibc 2.38-2.39 calls
          * clone3(CLONE_CLEAR_SIGHAND) inside fork(), which resets all
@@ -89,6 +91,15 @@ int fork(void) {
          * (bypass-secret in arg6) so the BPF filter's conditional
          * rt_sigaction(SIGSYS) trap does not intercept this call. */
         (void)uwg_install_sigsys_handler();
+        /* Zero r9 before returning: passthrough calls leave bypass_secret
+         * in r9 (the kernel syscall ABI preserves r9). If r9=bypass_secret
+         * when glibc's __execve fires next, the layer-1 BPF bypass check
+         * allows exec without ptloader injection → no handler in child. */
+#if defined(__x86_64__)
+        __asm__ __volatile__("xor %%r9, %%r9" ::: "r9");
+#elif defined(__aarch64__)
+        __asm__ __volatile__("mov x5, #0" ::: "x5");
+#endif
     }
     return pid;
 }

@@ -419,17 +419,21 @@ static long uwg_docker_patch_exec(int orig_fd, long orig_size,
      * across execve; keeping SIGSYS blocked until uwg_core_init() installs
      * the handler ensures any BPF trap in the ld.so startup window queues
      * rather than firing with SIG_DFL and killing the child. Unblocking is
-     * done in uwg_core_init() immediately after handler installation. */
+     * done in uwg_core_init() immediately after handler installation.
+     *
+     * Use passthrough_syscall4 (bypass secret in arg6) so the layer-2 BPF
+     * filter allows this call rather than intercepting it and stripping SIGSYS
+     * from the block mask. */
     {
         uint64_t _sigsys_mask = (uint64_t)1 << (SIGSYS - 1);
-        uwg_syscall4(SYS_rt_sigprocmask, SIG_BLOCK,
-                     (long)&_sigsys_mask, 0L, 8L);
+        uwg_passthrough_syscall4(SYS_rt_sigprocmask, SIG_BLOCK,
+                                  (long)&_sigsys_mask, 0L, 8L);
     }
 
     /* Bypass-secret in arg6 so the seccomp filter ALLOWs this execve
      * without re-trapping it through the SIGSYS handler. */
-    rc = uwg_passthrough_syscall3(SYS_execve, (long)bin_path,
-                                   (long)argv, (long)envp);
+    rc = uwg_passthrough_execve_syscall3(SYS_execve, (long)bin_path,
+                                          (long)argv, (long)envp);
     /* On execve success this point is never reached. */
 
 out_bin:
@@ -593,20 +597,143 @@ static long uwg_docker_patch_exec_dynamic(int orig_fd, long orig_size,
      * This mirrors what uwg_docker_patch_exec() does for static binaries. */
     {
         uint64_t _sigsys_mask = (uint64_t)1 << (SIGSYS - 1);
-        uwg_syscall4(SYS_rt_sigprocmask, SIG_BLOCK,
-                     (long)&_sigsys_mask, 0L, 8L);
+        uwg_passthrough_syscall4(SYS_rt_sigprocmask, SIG_BLOCK,
+                                  (long)&_sigsys_mask, 0L, 8L);
     }
     char bin_path[32];
     if (uwg_make_proc_fd_path(bin_fd, bin_path, sizeof(bin_path)) <= 0) {
         rc = -22; goto out_bin;
     }
-    rc = uwg_passthrough_syscall3(SYS_execve, (long)bin_path,
-                                   (long)argv, (long)envp);
+    rc = uwg_passthrough_execve_syscall3(SYS_execve, (long)bin_path,
+                                          (long)argv, (long)envp);
 out_bin:
     uwg_syscall1(SYS_close, bin_fd);
 out_ptl:
     uwg_syscall1(SYS_close, ptl_fd);
     return rc;
+}
+
+/* ------------------------------------------------------------------ */
+/* Env-var injection helpers                                           */
+/* ------------------------------------------------------------------ */
+
+/* Check if envp contains an entry with the given key (klen chars)
+ * followed immediately by '='. Async-signal-safe. */
+static int uwg_env_has_key(const char * const *envp,
+                            const char *key, int klen) {
+    if (!envp) return 0;
+    for (int i = 0; envp[i]; i++) {
+        const char *e = envp[i];
+        int j = 0;
+        while (j < klen && e[j] == key[j]) j++;
+        if (j == klen && e[j] == '=') return 1;
+    }
+    return 0;
+}
+
+/* Write v as a decimal string into buf, NUL-terminated.
+ * buf must be at least 21 bytes (max uint64_t = 20 digits + NUL). */
+static void uwg_u64dec(uint64_t v, char *buf) {
+    if (v == 0) { buf[0] = '0'; buf[1] = '\0'; return; }
+    char tmp[20];
+    int len = 0;
+    while (v > 0) { tmp[len++] = (char)('0' + (v % 10)); v /= 10; }
+    int i;
+    for (i = 0; i < len; i++) buf[i] = tmp[len - 1 - i];
+    buf[i] = '\0';
+}
+
+/* Copy a NUL-terminated string src into dst. Returns number of bytes
+ * written including the NUL. Async-signal-safe. */
+static int uwg_strcopy(char *dst, const char *src) {
+    int i = 0;
+    while (src[i]) { dst[i] = src[i]; i++; }
+    dst[i] = '\0';
+    return i + 1;
+}
+
+/*
+ * Ensure UWGS_TRACE_SECRET, UWGS_SYSTRAP_DOCKER, and
+ * UWGS_SECCOMP_INSTALLED are present in the environment passed to
+ * exec'd children.
+ *
+ * When an application calls execve with a custom envp that strips UWGS_*
+ * vars (e.g. exec("/bin/uname", argv, minimal_env)), ptloader's
+ * uwg_core_init() cannot find UWGS_TRACE_SECRET and returns early without
+ * installing the SIGSYS handler — then any BPF-trapped syscall kills the
+ * child.
+ *
+ * This mirrors what systrap-supervised's ptrace patcher does: it always
+ * re-injects the UWGS_* vars via PTRACE_POKEDATA on the exec'd child's
+ * envp. We do the equivalent in the SIGSYS handler by building an
+ * augmented envp backed by an anonymous mmap (freed automatically when
+ * exec replaces the process image).
+ *
+ * Returns the augmented envp (mmap-backed), or the original envp if all
+ * vars are already present or if mmap fails (best-effort fallback).
+ */
+static const char * const *uwg_inject_uwgs_env(const char * const *envp) {
+    /* "UWGS_TRACE_SECRET" = 17 chars */
+    int has_secret    = uwg_env_has_key(envp, "UWGS_TRACE_SECRET",    17);
+    /* "UWGS_SYSTRAP_DOCKER" = 19 chars */
+    int has_docker    = uwg_env_has_key(envp, "UWGS_SYSTRAP_DOCKER",  19);
+    /* "UWGS_SECCOMP_INSTALLED" = 22 chars */
+    int has_installed = uwg_env_has_key(envp, "UWGS_SECCOMP_INSTALLED", 22);
+
+    if (has_secret && has_docker && has_installed) return envp;
+
+    /* Don't inject a zero secret — it would cause the early-return in
+     * uwg_core_init() anyway, and a zero bypass_secret is a misconfigured
+     * launcher. */
+    if (uwg_bypass_secret == 0) return envp;
+
+    /* Count existing entries. */
+    int n = 0;
+    if (envp) { while (envp[n]) n++; }
+
+    int n_add = (!has_secret) + (!has_docker) + (!has_installed);
+    /* Pointer array: (n + n_add + 1) entries.
+     * String data budget per entry:
+     *   UWGS_TRACE_SECRET=<decimal u64>\0 → 18 + 20 + 1 = 39 bytes max
+     *   UWGS_SYSTRAP_DOCKER=1\0           → 22 bytes
+     *   UWGS_SECCOMP_INSTALLED=1\0        → 25 bytes
+     * Use 40 bytes per added entry to cover the largest case. */
+    long arr_sz = (long)(n + n_add + 1) * (long)sizeof(char *);
+    long str_sz = (long)n_add * 40L;
+    long total  = arr_sz + str_sz;
+    long mm = uwg_syscall6(SYS_mmap, 0, total,
+                           PROT_READ | PROT_WRITE,
+                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (mm < 0) return envp; /* best-effort: proceed with original env */
+
+    const char **new_envp = (const char **)mm;
+    char *strs = (char *)(mm + arr_sz);
+    int idx = 0;
+
+    /* Copy original pointers. */
+    for (int i = 0; i < n; i++) new_envp[idx++] = envp[i];
+
+    /* Append missing vars. */
+    if (!has_secret) {
+        char *s = strs; strs += 40;
+        /* "UWGS_TRACE_SECRET=<decimal>\0" — must use decimal to match
+         * parse_u64() in init.c which only accepts '0'..'9'. */
+        int plen = uwg_strcopy(s, "UWGS_TRACE_SECRET=") - 1; /* 18, excl NUL */
+        uwg_u64dec(uwg_bypass_secret, s + plen);
+        new_envp[idx++] = s;
+    }
+    if (!has_docker) {
+        char *s = strs; strs += 22;
+        uwg_strcopy(s, "UWGS_SYSTRAP_DOCKER=1");
+        new_envp[idx++] = s;
+    }
+    if (!has_installed) {
+        char *s = strs; strs += 25;
+        uwg_strcopy(s, "UWGS_SECCOMP_INSTALLED=1");
+        new_envp[idx++] = s;
+    }
+    new_envp[idx] = NULL;
+    return (const char * const *)new_envp;
 }
 
 /* ------------------------------------------------------------------ */
@@ -617,6 +744,10 @@ long uwg_execve_docker_dispatch(const char *path,
                                  const char * const *argv,
                                  const char * const *envp) {
     if (!path) return -14; /* -EFAULT */
+
+    /* Guarantee UWGS_* vars survive even if the caller passed a stripped
+     * envp. The augmented envp is mmap-backed and freed by exec(). */
+    envp = uwg_inject_uwgs_env(envp);
 
     long fd_l = uwg_syscall4(SYS_openat, AT_FDCWD, (long)path,
                               O_RDONLY | O_CLOEXEC, 0);
@@ -693,7 +824,6 @@ long uwg_execve_docker_dispatch(const char *path,
                 rc = uwg_docker_patch_exec_dynamic(fd, orig_size, &ehdr, phdr_buf,
                                                     i, interp_path,
                                                     argv, envp, io_buf);
-                /* On success execve replaced this process; rc is error only. */
             }
         }
         goto passthrough;
@@ -733,35 +863,35 @@ passthrough:
      * This mirrors what uwg_docker_patch_exec() does for static binaries. */
     {
         uint64_t _sigsys_mask = (uint64_t)1 << (SIGSYS - 1);
-        uwg_syscall4(SYS_rt_sigprocmask, SIG_BLOCK,
-                     (long)&_sigsys_mask, 0L, 8L);
+        uwg_passthrough_syscall4(SYS_rt_sigprocmask, SIG_BLOCK,
+                                  (long)&_sigsys_mask, 0L, 8L);
     }
-    return uwg_passthrough_syscall3(SYS_execve, (long)path,
-                                     (long)argv, (long)envp);
+    return uwg_passthrough_execve_syscall3(SYS_execve, (long)path,
+                                            (long)argv, (long)envp);
 }
 
 long uwg_execveat_docker_dispatch(int dirfd, const char *path,
                                    const char * const *argv,
                                    const char * const *envp,
                                    int flags) {
-    /* AT_EMPTY_PATH: target is dirfd itself. Passthrough — we'd need
-     * to inspect the fd to handle this, and it's uncommon enough to
-     * not be worth the complexity in the initial implementation. */
+    envp = uwg_inject_uwgs_env(envp);
+
+    /* AT_EMPTY_PATH: target is dirfd itself (e.g. fexecve from Python subprocess).
+     * Open the binary via /proc/self/fd/<dirfd> so uwg_execve_docker_dispatch can
+     * inject the ptloader. Without injection the post-exec pre-constructor window
+     * has no SIGSYS handler; any BPF-trapped syscall (e.g. libselinux socket() in
+     * its .so constructor) hits force_sig_info with no handler installed → killed. */
     if ((flags & AT_EMPTY_PATH) && (!path || !path[0])) {
-        /* Block SIGSYS for the same reason as the execve passthrough path:
-         * the new process may be dynamic and our constructor hasn't run yet.
-         * See the block comment in uwg_execve_docker_dispatch passthrough. */
-        uint64_t _sigsys_mask = (uint64_t)1 << (SIGSYS - 1);
-        uwg_syscall4(SYS_rt_sigprocmask, SIG_BLOCK, (long)&_sigsys_mask, 0L, 8L);
-        return uwg_passthrough_syscall5(SYS_execveat, dirfd, (long)path,
-                                         (long)argv, (long)envp, flags);
+        char fdpath[32];
+        uwg_make_proc_fd_path(dirfd, fdpath, sizeof(fdpath));
+        return uwg_execve_docker_dispatch(fdpath, argv, envp);
     }
     /* Relative path with non-FDCWD dirfd: passthrough. */
     if (dirfd != AT_FDCWD && path && path[0] != '/') {
         uint64_t _sigsys_mask = (uint64_t)1 << (SIGSYS - 1);
-        uwg_syscall4(SYS_rt_sigprocmask, SIG_BLOCK, (long)&_sigsys_mask, 0L, 8L);
-        return uwg_passthrough_syscall5(SYS_execveat, dirfd, (long)path,
-                                         (long)argv, (long)envp, flags);
+        uwg_passthrough_syscall4(SYS_rt_sigprocmask, SIG_BLOCK, (long)&_sigsys_mask, 0L, 8L);
+        return uwg_passthrough_execve_syscall5(SYS_execveat, dirfd, (long)path,
+                                               (long)argv, (long)envp, flags);
     }
     return uwg_execve_docker_dispatch(path, argv, envp);
 }

@@ -82,13 +82,14 @@ long uwg_dispatch(long nr, long a1, long a2, long a3,
 
     /* --- execve interception (systrap-docker mode) --- */
 #ifdef SYS_execve
-    case SYS_execve:
+    case SYS_execve: {
         if (uwg_seccomp_docker_flag) {
             return uwg_execve_docker_dispatch((const char *)a1,
                                               (const char * const *)a2,
                                               (const char * const *)a3);
         }
         return uwg_passthrough_syscall3(SYS_execve, a1, a2, a3);
+    }
 #endif
 #ifdef SYS_execveat
     case SYS_execveat:
@@ -103,15 +104,13 @@ long uwg_dispatch(long nr, long a1, long a2, long a3,
     /* --- clone3 CLONE_CLEAR_SIGHAND interception (docker mode) --- */
 #ifdef SYS_clone3
     case SYS_clone3: {
-        /* Reached only via the syscall(2) PLT shim (shim_syscall.c) for
-         * dynamic binaries — clone3 is NOT in the docker-mode BPF trap
-         * list because glibc's fork() calls rt_sigprocmask(SIG_BLOCK,~all)
-         * before clone3, and rt_sigprocmask cannot safely be trapped in the
-         * main filter (ld.so calls it before our handler is installed).
-         *
-         * For static binaries (ptloader path), the ptloader installs its
-         * own BPF layer after the SIGSYS handler is in place, allowing
-         * rt_sigprocmask and clone3 to be trapped in that layer.
+        /* Reached via two paths:
+         *   1. syscall(2) PLT shim (shim_syscall.c → uwg_dispatch).
+         *   2. BPF SECCOMP_RET_TRAP from the layer-2 filter
+         *      (uwg_install_seccomp_filter_layer2) — but only the
+         *      sigsys.c clone3 trampoline branch handles the full
+         *      ucontext-aware child path; this dispatch.c case handles
+         *      the PLT-shim path where no ucontext is available.
          *
          * a1 = struct clone_args *, a2 = size_t (must be ≥ sizeof flags).
          * We modify flags in-place before the passthrough. */

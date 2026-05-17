@@ -122,6 +122,10 @@ int uwg_core_init_thread(void);
 
 /* Helpers exposed for tests — see seccomp.c for definitions. */
 int uwg_install_seccomp_filter(uint64_t bypass_secret);
+/* Layer-2 filter: adds rt_sigprocmask + clone3 to the trap list.
+ * Must be called AFTER the SIGSYS handler is installed. Only safe in
+ * systrap-elf (docker) mode — see seccomp.c for the full explanation. */
+int uwg_install_seccomp_filter_layer2(uint64_t bypass_secret);
 int uwg_install_sigsys_handler(void);
 const int *uwg_seccomp_trapped_list(size_t *n);
 const int *uwg_seccomp_traced_list(size_t *n);

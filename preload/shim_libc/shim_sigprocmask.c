@@ -41,21 +41,27 @@ static void uwg_strip_sigsys_from_set(sigset_t *s) {
 }
 
 int sigprocmask(int how, const sigset_t *set, sigset_t *oldset) {
+    long rc;
     if (set != NULL && uwg_bypass_secret != 0 &&
             (how == SIG_BLOCK || how == SIG_SETMASK)) {
         sigset_t filtered = *set;
         uwg_strip_sigsys_from_set(&filtered);
-        long rc = uwg_syscall4(SYS_rt_sigprocmask, (long)how,
-                               (long)&filtered, (long)oldset, 8L);
-        if (rc < 0) {
-            extern int *__errno_location(void);
-            *__errno_location() = (int)-rc;
-            return -1;
-        }
-        return 0;
+        rc = uwg_passthrough_syscall4(SYS_rt_sigprocmask, (long)how,
+                                      (long)&filtered, (long)oldset, 8L);
+    } else {
+        rc = uwg_passthrough_syscall4(SYS_rt_sigprocmask, (long)how,
+                                      (long)set, (long)oldset, 8L);
     }
-    long rc = uwg_syscall4(SYS_rt_sigprocmask, (long)how,
-                           (long)set, (long)oldset, 8L);
+    /* Zero the bypass-secret register before returning. uwg_passthrough_syscall4
+     * puts bypass_secret in r9 (x86-64) / x5 (aarch64); the kernel syscall ABI
+     * preserves that register. If caller-site code then issues a raw execve
+     * syscall with that register still set, the layer-1 BPF bypass check fires
+     * and exec proceeds without ptloader injection. */
+#if defined(__x86_64__)
+    __asm__ __volatile__("xor %%r9, %%r9" ::: "r9");
+#elif defined(__aarch64__)
+    __asm__ __volatile__("mov x5, #0" ::: "x5");
+#endif
     if (rc < 0) {
         extern int *__errno_location(void);
         *__errno_location() = (int)-rc;

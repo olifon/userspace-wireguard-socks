@@ -215,6 +215,52 @@ void uwg_sigsys_handler(int sig, siginfo_t *si, void *uctx_void) {
     long args[6];
     uwg_uctx_load_args(uc, args);
 
+    /* rt_sigprocmask: must modify uc_sigmask in-place rather than calling
+     * the kernel syscall. The kernel's sigreturn restores current->blocked
+     * from uc_sigmask after the handler returns, which would undo any mask
+     * change made via a passthrough syscall inside the handler. Modifying
+     * uc_sigmask directly ensures sigreturn installs the requested mask.
+     * Always strip SIGSYS from SIG_BLOCK/SIG_SETMASK operations so the
+     * trap-delivery signal can never be accidentally blocked. */
+    if (nr == (long)SYS_rt_sigprocmask) {
+        int how = (int)args[0];
+        const unsigned long *set = (const unsigned long *)args[1];
+        unsigned long *oldset_p = (unsigned long *)args[2];
+        if (args[3] != 8) {
+            uwg_uctx_set_result(uc, -22L); /* -EINVAL */
+            return;
+        }
+        unsigned long sigsys_bit = (unsigned long)1 << (SIGSYS - 1);
+        /* Strip the auto-blocked SIGSYS bit before computing the new mask.
+         * The kernel adds SIGSYS to uc_sigmask on handler entry (no
+         * SA_NODEFER). If cur retains that bit, a SIG_BLOCK ~[] in the
+         * caller (e.g. glibc's posix_spawn vfork child) would OR it back
+         * into new_mask, causing SIGSYS to be blocked after sigreturn.
+         * force_sig_info would then see SIGSYS blocked on the next BPF
+         * trap, reset the handler to SIG_DFL, and kill the process. */
+        unsigned long cur = ((unsigned long *)&uc->uc_sigmask)[0] & ~sigsys_bit;
+        if (oldset_p)
+            oldset_p[0] = cur;
+        unsigned long new_mask = cur;
+        if (set) {
+            if (how == 0 /* SIG_BLOCK */)
+                new_mask = cur | (set[0] & ~sigsys_bit);
+            else if (how == 1 /* SIG_UNBLOCK */)
+                new_mask = cur & ~set[0];
+            else if (how == 2 /* SIG_SETMASK */)
+                new_mask = set[0] & ~sigsys_bit;
+            else {
+                uwg_uctx_set_result(uc, -22L); /* -EINVAL */
+                return;
+            }
+        }
+        /* Always write back — even for the query-only (set==NULL) case
+         * the clean cur must be stored so sigreturn never re-blocks SIGSYS. */
+        ((unsigned long *)&uc->uc_sigmask)[0] = new_mask;
+        uwg_uctx_set_result(uc, 0L);
+        return;
+    }
+
 #if defined(SYS_clone3) && (defined(__x86_64__) || defined(__aarch64__))
     /* CLONE_CLEAR_SIGHAND full trampoline — intercept before generic
      * dispatch so the assembly gate receives the ucontext directly.
@@ -223,6 +269,12 @@ void uwg_sigsys_handler(int sig, siginfo_t *si, void *uctx_void) {
      * uwg_clone3_trampoline (it jumps to trap_rip directly). */
     if (nr == (long)SYS_clone3 && uwg_seccomp_docker_flag) {
         long result = uwg_clone3_trampoline(args[0], args[1], uc);
+        /* Strip auto-blocked SIGSYS from uc_sigmask (kernel sets
+         * uc_sigmask = old_blocked | SIGSYS on handler entry). Without
+         * this, sigreturn restores task->blocked with SIGSYS set, so
+         * the next BPF trap fires with SIGSYS blocked — force_sig_info
+         * resets the handler to SIG_DFL and delivers, killing the process. */
+        ((unsigned long *)&uc->uc_sigmask)[0] &= ~((unsigned long)1 << (SIGSYS - 1));
         uwg_uctx_set_result(uc, result);
         return;
     }
@@ -238,6 +290,15 @@ void uwg_sigsys_handler(int sig, siginfo_t *si, void *uctx_void) {
         atomic_fetch_add_explicit(&uwg_sigsys_unhandled, 1,
                                   memory_order_relaxed);
     }
+
+    /* Strip auto-blocked SIGSYS from uc_sigmask so sigreturn never
+     * restores task->blocked with SIGSYS set. The kernel adds SIGSYS
+     * to uc_sigmask on handler entry (no SA_NODEFER). Without this,
+     * any handler return — including a failed execve inside the handler
+     * — leaves SIGSYS blocked. The next BPF trap then fires with SIGSYS
+     * blocked: force_sig_info resets the handler to SIG_DFL and delivers,
+     * killing the process before the handler can run. */
+    ((unsigned long *)&uc->uc_sigmask)[0] &= ~((unsigned long)1 << (SIGSYS - 1));
 
     uwg_uctx_set_result(uc, result);
     /* Return — kernel runs sigreturn, restores all registers

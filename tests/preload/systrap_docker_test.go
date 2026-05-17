@@ -975,3 +975,94 @@ int main(int argc, char **argv) {
 		t.Fatalf("vfork chain: expected 'vfork-parent-ok' in output; got %q", out)
 	}
 }
+
+// TestSystrapElfVforkDup2CloseRange is an isolation test: it builds a C
+// parent that replicates Python subprocess's vfork child setup: dup2 of
+// stdout + an errpipe, close_range(3, MAX_INT, 0) to close all fds ≥ 3,
+// then exec of a binary (uname -r). If this passes, the issue is
+// Python-specific (e.g. _Py_RestoreSignals); if it fails, the root cause
+// is in dup2+close_range disrupting ptloader injection.
+func TestSystrapElfVforkDup2CloseRange(t *testing.T) {
+	requireSystrapDockerToolchain(t)
+	art, _ := buildSystrapDockerArtifacts(t)
+	_, httpSock := setupWrapperNetwork(t)
+
+	repo := filepath.Clean(filepath.Join("..", ".."))
+	tmp := t.TempDir()
+
+	parentSrc := filepath.Join(tmp, "vfork_dup2_parent.c")
+	if err := os.WriteFile(parentSrc, []byte(`
+#define _GNU_SOURCE
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/wait.h>
+
+/* Avoid using the library close_range so we can compile without
+ * a glibc that defines it; use syscall directly. */
+#include <sys/syscall.h>
+#ifndef SYS_close_range
+#  define SYS_close_range 436
+#endif
+
+int main(void) {
+    /* Build a pipe pair to capture child stdout, like Python's PIPE. */
+    int stdout_pipe[2], err_pipe[2];
+    if (pipe(stdout_pipe) < 0 || pipe(err_pipe) < 0) {
+        perror("pipe"); return 1;
+    }
+
+    pid_t pid = vfork();
+    if (pid < 0) { perror("vfork"); return 1; }
+
+    if (pid == 0) {
+        /* Replicate Python child_exec setup. */
+        dup2(stdout_pipe[1], STDOUT_FILENO);
+        dup2(err_pipe[1],   STDERR_FILENO);
+        /* close_range(3, UINT_MAX, 0) — closes all fds >= 3 */
+        syscall(SYS_close_range, 3, ~0U, 0);
+        /* exec uname -r; PATH-resolved by execvp */
+        char *argv[] = { "uname", "-r", NULL };
+        execvp("uname", argv);
+        _exit(127);
+    }
+
+    /* Parent: close write ends, read child stdout. */
+    close(stdout_pipe[1]);
+    close(err_pipe[1]);
+
+    char buf[256] = {0};
+    ssize_t n = read(stdout_pipe[0], buf, sizeof(buf) - 1);
+    close(stdout_pipe[0]);
+    close(err_pipe[0]);
+
+    int status = 0;
+    waitpid(pid, &status, 0);
+
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        fprintf(stderr, "child failed: status=0x%x\n", status);
+        return 1;
+    }
+    if (n > 0) {
+        /* Strip trailing newline. */
+        if (buf[n-1] == '\n') buf[n-1] = '\0';
+        printf("vfork-dup2-ok: uname=%s\n", buf);
+    }
+    return 0;
+}
+`), 0o644); err != nil {
+		t.Fatalf("write vfork_dup2_parent.c: %v", err)
+	}
+	parent := filepath.Join(tmp, "vfork_dup2_parent")
+	run(t, repo, "gcc", "-O2", "-Wall", "-o", parent, parentSrc)
+
+	out := runWrappedTargetWithOptions(t, art, httpSock,
+		"systrap-elf", parent, nil,
+		wrapperRunOptions{timeout: 30 * time.Second})
+
+	if !strings.Contains(string(out), "vfork-dup2-ok") {
+		t.Fatalf("expected 'vfork-dup2-ok' in output; got %q", out)
+	}
+}

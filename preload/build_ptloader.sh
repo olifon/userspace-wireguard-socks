@@ -69,6 +69,8 @@ CORE_SRCS=(
     preload/core/sigreturn_trampoline.c
     preload/core/freestanding_runtime.c
     preload/core/execve_docker.c
+    preload/core/clone3_trampoline.c
+    preload/core/clone3_asm.S
     preload/core/ptloader_entry.c
 )
 

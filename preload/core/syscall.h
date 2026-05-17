@@ -237,6 +237,26 @@ static inline long uwg_syscall6(long nr, long a1, long a2, long a3, long a4, lon
 
 extern uint64_t uwg_bypass_secret;
 
+/*
+ * Execve-specific bypass secret.
+ *
+ * glibc's execve(2) does not zero r9/x5 (arg6) before the syscall
+ * instruction.  After any uwg_passthrough_syscall*() call, arg6 holds
+ * uwg_bypass_secret.  If glibc's execve is called next without clobbering
+ * arg6, the BPF bypass-secret check fires and the execve goes to the kernel
+ * unintercepted — no ptloader injection, no SIGSYS handler in the child.
+ *
+ * Fix: the docker-mode execve/execveat BPF rules use a *separate* secret
+ * derived from bypass_secret ^ UWG_EXECVE_BYPASS_TWEAK.  The general
+ * bypass_secret in arg6 after passthrough calls does NOT match this
+ * execve-specific secret, so the BPF trap fires and the SIGSYS handler
+ * injects the ptloader.  Only uwg_passthrough_execve_syscall* (used by
+ * execve_docker.c after injection) places the execve bypass in arg6,
+ * allowing the final re-issued exec to proceed.
+ */
+#define UWG_EXECVE_BYPASS_TWEAK ((uint64_t)0xC0DE4A1B2C3D4E5FU)
+extern uint64_t uwg_execve_bypass_secret;
+
 static inline long uwg_passthrough_syscall0(long nr) {
     /* arg6 is the 6th positional; for 0-arg syscalls this still works
      * because the kernel ignores trailing args it doesn't expect. */
@@ -276,6 +296,19 @@ static inline long uwg_passthrough_syscall5(long nr, long a1, long a2, long a3, 
  */
 static inline long uwg_passthrough_syscall6(long nr, long a1, long a2, long a3, long a4, long a5, long a6) {
     return uwg_syscall6(nr, a1, a2, a3, a4, a5, a6);
+}
+
+/*
+ * Execve-specific passthrough: places uwg_execve_bypass_secret in arg6.
+ * Used by execve_docker.c when re-issuing the exec after ptloader
+ * injection so the BPF docker-execve trap (which checks execve_bypass_secret,
+ * not the general bypass_secret) lets the call through.
+ */
+static inline long uwg_passthrough_execve_syscall3(long nr, long a1, long a2, long a3) {
+    return uwg_syscall6(nr, a1, a2, a3, 0, 0, (long)uwg_execve_bypass_secret);
+}
+static inline long uwg_passthrough_execve_syscall5(long nr, long a1, long a2, long a3, long a4, long a5) {
+    return uwg_syscall6(nr, a1, a2, a3, a4, a5, (long)uwg_execve_bypass_secret);
 }
 
 #endif /* UWG_PRELOAD_CORE_SYSCALL_H */

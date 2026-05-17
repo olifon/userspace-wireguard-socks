@@ -211,21 +211,9 @@ int uwg_seccomp_docker_flag = 0;
  * Mutually exclusive with the supervised-trace list (a given process
  * runs either supervised or docker, not both).
  *
- * NOTE: clone3 is intentionally NOT in this list.
- *
- * On glibc 2.38-2.39, __libc_fork() calls
- *   INTERNAL_SYSCALL_CALL(rt_sigprocmask, SIG_BLOCK, ~all, &prev)
- * via inline assembly BEFORE calling clone3, blocking SIGSYS. If
- * clone3 were in the BPF trap list, force_sig_info_to_task would see
- * SIGSYS blocked, reset our handler to SIG_DFL, and kill the process.
- * Removing clone3 from the trap lets glibc's fork() pass through; the
- * child's signal mask is restored (SIGSYS unblocked) by glibc's own
- * SIG_SETMASK(prev) call after clone3 returns.
- *
- * CLONE_CLEAR_SIGHAND stripping is handled without the BPF trap by:
- *   1. PLT shim for posix_spawn / posix_spawnp → fork()+exec (no clone3).
- *   2. PLT shim for syscall() → dispatch.c case SYS_clone3 → strips the
- *      flag and passthroughs with bypass_secret (BPF ALLOWs it). */
+ * NOTE: clone3 is NOT in this main filter. See uwg_install_seccomp_filter_layer2()
+ * for the BPF-trap approach (installed after handler, docker mode only).
+ * This docker list only traps execve/execveat. */
 static const int uwg_trapped_docker_syscalls[] = {
 #ifdef SYS_execve
     SYS_execve,
@@ -279,14 +267,68 @@ static int uwg_build_filter(struct uwg_filter_prog *p, uint64_t bypass_secret,
     uwg_emit(p, (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, UWG_AUDIT_ARCH, 1, 0));
     uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS));
 
-    /* (2) bypass-secret check on args[5].
-     * cBPF can only load 32 bits at a time, so we check lo and hi
-     * halves of the 64-bit arg separately. The jumps are arranged so
-     * that any mismatch falls through to the next rule; an exact match
-     * returns ALLOW immediately. */
+    /* Bypass-secret halves for the general bypass check (applies to all
+     * syscalls that are not execve/execveat in docker mode). */
     uint32_t lo = (uint32_t)(bypass_secret & 0xFFFFFFFFu);
     uint32_t hi = (uint32_t)((bypass_secret >> 32) & 0xFFFFFFFFu);
 
+    /* Execve-specific bypass secret: different from the general secret so
+     * that glibc's execve — which does not zero arg6 before the syscall
+     * instruction — cannot accidentally match a leftover bypass_secret in
+     * arg6 and slip past the docker-mode execve trap.  Only
+     * uwg_passthrough_execve_syscall* puts this value in arg6. */
+    uint64_t exec_bypass = bypass_secret ^ UWG_EXECVE_BYPASS_TWEAK;
+    uint32_t exec_lo = (uint32_t)(exec_bypass & 0xFFFFFFFFu);
+    uint32_t exec_hi = (uint32_t)((exec_bypass >> 32) & 0xFFFFFFFFu);
+
+    /* (2) Load syscall number first — required so the docker-execve block
+     * below can check nr before deciding whether to apply the execve-bypass
+     * or the general bypass. */
+    uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, UWG_FILTER_NR_OFFSET));
+
+    /* (2b) execve / execveat → ALLOW (with execve_bypass) or RET_TRAP.
+     *
+     * Docker mode only; mutually exclusive with supervised mode.  The
+     * in-process SIGSYS handler intercepts trapped execves and injects
+     * the ptloader before handing off to the real ld.so.
+     *
+     * Each docker syscall gets a 7-instruction block:
+     *   JEQ A==nr, jt=0 (fall to exec_bypass check), jf=6 (skip block)
+     *   LD arg5_lo
+     *   JEQ lo==exec_lo, jt=0, jf=3  (mismatch → RET_TRAP)
+     *   LD arg5_hi
+     *   JEQ hi==exec_hi, jt=0, jf=1  (mismatch → RET_TRAP)
+     *   RET ALLOW  ← only uwg_passthrough_execve_syscall* reaches here
+     *   RET TRAP   ← all other callers (including glibc execve after a
+     *                passthrough call that left bypass_secret in arg6)
+     *
+     * rt_sigprocmask and clone3 are NOT in this main trap list because
+     * the main filter is inherited by exec'd children before the SIGSYS
+     * handler is reinstalled.  They are trapped by the layer-2 filter
+     * which is installed only after the SIGSYS handler is running. */
+    if (uwg_seccomp_docker_flag) {
+        for (size_t i = 0; i < UWG_N_TRAPPED_DOCKER; i++) {
+            /* JEQ A==nr: if false, skip the 6-instruction exec_bypass block. */
+            uwg_emit(p, (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
+                                                     uwg_trapped_docker_syscalls[i],
+                                                     0, 6));
+            uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, UWG_FILTER_ARG5_LO));
+            uwg_emit(p, (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, exec_lo, 0, 3));
+            uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, UWG_FILTER_ARG5_HI));
+            uwg_emit(p, (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, exec_hi, 0, 1));
+            uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
+            uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP));
+        }
+    }
+
+    /* (3) General bypass-secret check on args[5] — applies to all remaining
+     * syscalls (execve/execveat in docker mode have already been handled above).
+     * cBPF can only load 32 bits at a time, so we check lo and hi halves of
+     * the 64-bit arg separately.  An exact match returns ALLOW immediately;
+     * a mismatch falls through to the trap list.
+     *
+     * After this block A = arg5_hi (the last BPF load); reload nr before
+     * the trace/trap lists. */
     uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, UWG_FILTER_ARG5_LO));
     /* if lo != expected → skip the hi check + ALLOW return (3 insns) */
     uwg_emit(p, (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, lo, 0, 3));
@@ -295,38 +337,16 @@ static int uwg_build_filter(struct uwg_filter_prog *p, uint64_t bypass_secret,
     uwg_emit(p, (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, hi, 0, 1));
     uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
 
-    /* From here on we test the syscall nr. Load it once. */
+    /* Reload nr — the bypass check above loaded arg5 into A. */
     uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, UWG_FILTER_NR_OFFSET));
 
-    /* (3) execve / execveat → RET_TRACE (only when supervised)
+    /* (4) execve / execveat → RET_TRACE (only when supervised)
      * We emit one JEQ per syscall; a match returns RET_TRACE
      * immediately, otherwise falls through to the trap list. */
     for (size_t i = 0; i < n_traced; i++) {
         uwg_emit(p, (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
                                                  traced[i], 0, 1));
         uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRACE));
-    }
-
-    /* (3b) execve / execveat → RET_TRAP (docker mode, mutually exclusive
-     * with supervised mode). No ptrace tracer needed; the in-process
-     * SIGSYS handler intercepts and dispatches.
-     *
-     * rt_sigprocmask and clone3 are NOT in this trap list for dynamic
-     * binaries: glibc ld.so calls rt_sigprocmask during startup before
-     * our LD_PRELOAD constructor runs (and before ptloader installs the
-     * handler), so trapping them here would fire SIGSYS with SIG_DFL →
-     * process killed. For static binaries (ptloader path), rt_sigprocmask
-     * and clone3 interception is handled by the ptloader's own BPF layer
-     * installed after the SIGSYS handler is in place. Dynamic binaries
-     * are covered by shim_sigprocmask.c (PLT shim) for the SIG_BLOCK
-     * case and by shim_posix_spawn.c (fork+exec) for the clone3 case. */
-    if (uwg_seccomp_docker_flag) {
-        for (size_t i = 0; i < UWG_N_TRAPPED_DOCKER; i++) {
-            uwg_emit(p, (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
-                                                     uwg_trapped_docker_syscalls[i],
-                                                     0, 1));
-            uwg_emit(p, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP));
-        }
     }
 
     /* (4) trapped syscalls → SECCOMP_RET_TRAP */
@@ -478,6 +498,88 @@ int uwg_install_seccomp_filter(uint64_t bypass_secret) {
         return (int)sc_rc;
     }
     return 0;
+}
+
+/*
+ * Layer-2 filter — stacked AFTER the SIGSYS handler is installed (systrap-elf
+ * / docker mode only). Adds rt_sigprocmask and clone3 to the trap list.
+ *
+ * The main filter cannot include these because it is inherited by exec'd
+ * children before the handler is reinstalled:
+ *   - rt_sigprocmask: ld.so calls it during startup; with SIG_DFL the SIGSYS
+ *     trap would kill the child.
+ *   - clone3: glibc's __libc_fork() calls rt_sigprocmask(SIG_BLOCK,~all)
+ *     BEFORE clone3 (via inline asm, bypassing our PLT shim and the main
+ *     filter). If clone3 were in the main filter, force_sig_info_to_task
+ *     would see SIGSYS blocked and reset our handler to SIG_DFL.
+ *
+ * Safe in systrap-elf (docker) mode because ALL exec'd ELF children get
+ * ptloader as their PT_INTERP. ptloader installs the SIGSYS handler BEFORE
+ * ld.so, so:
+ *   - ld.so's rt_sigprocmask calls deliver to our handler → handler strips
+ *     SIGSYS from the blocked set → SIGSYS is never blocked.
+ *   - glibc's pre-clone3 rt_sigprocmask(SIG_BLOCK,~all) → same stripping.
+ *   - clone3(CLONE_CLEAR_SIGHAND) → handler fires via clone3_trampoline →
+ *     strips CLONE_CLEAR_SIGHAND, does the passthrough, clears other handlers
+ *     in the child.
+ *
+ * With this filter in place, clone3_asm.S and the sigsys.c clone3 trampoline
+ * are live code for the BPF-trap path (in addition to the PLT-shim path they
+ * already served). dispatch.c case SYS_rt_sigprocmask is also live for the
+ * BPF-trap path.
+ */
+int uwg_install_seccomp_filter_layer2(uint64_t bypass_secret) {
+    if (bypass_secret == 0) return -22;
+
+    struct uwg_filter_prog prog;
+    prog.n = 0;
+
+    uint32_t lo = (uint32_t)(bypass_secret & 0xFFFFFFFFu);
+    uint32_t hi = (uint32_t)((bypass_secret >> 32) & 0xFFFFFFFFu);
+
+    /* (1) bypass-secret: args[5] == secret → ALLOW (same as main filter). */
+    uwg_emit(&prog, (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, UWG_FILTER_ARG5_LO));
+    uwg_emit(&prog, (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, lo, 0, 3));
+    uwg_emit(&prog, (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, UWG_FILTER_ARG5_HI));
+    uwg_emit(&prog, (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, hi, 0, 1));
+    uwg_emit(&prog, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
+
+    /* (2) load syscall nr. */
+    uwg_emit(&prog, (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, UWG_FILTER_NR_OFFSET));
+
+    /* (3) rt_sigprocmask → TRAP.
+     * handler (dispatch.c case SYS_rt_sigprocmask) strips SIGSYS from any
+     * SIG_BLOCK/SIG_SETMASK set, ensuring SIGSYS is never blocked. */
+    uwg_emit(&prog, (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
+                                                  SYS_rt_sigprocmask, 0, 1));
+    uwg_emit(&prog, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP));
+
+    /* (4) clone3 → TRAP.
+     * handler (sigsys.c → clone3_trampoline → clone3_asm.S) strips
+     * CLONE_CLEAR_SIGHAND. Safe because step (3) ensures SIGSYS is never
+     * blocked when clone3 runs, so force_sig_info_to_task delivers normally
+     * instead of resetting our handler to SIG_DFL. */
+#ifdef SYS_clone3
+    uwg_emit(&prog, (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
+                                                  SYS_clone3, 0, 1));
+    uwg_emit(&prog, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP));
+#endif
+
+    /* (5) default → ALLOW. */
+    uwg_emit(&prog, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
+
+    long pr_rc = uwg_syscall5(SYS_prctl, PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+    if (pr_rc < 0) return (int)pr_rc;
+
+    struct sock_fprog fprog = {
+        .len  = (unsigned short)prog.n,
+        .filter = prog.insns,
+    };
+    long sc_rc = uwg_syscall3(SYS_seccomp,
+                               SECCOMP_SET_MODE_FILTER,
+                               SECCOMP_FILTER_FLAG_TSYNC,
+                               (long)&fprog);
+    return (sc_rc < 0) ? (int)sc_rc : 0;
 }
 
 /* Test helper: returns the trapped-syscall list for unit testing. */

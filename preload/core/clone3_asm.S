@@ -53,9 +53,26 @@
 #  define SYS_futex 98
 # endif
 #endif
+#ifndef SYS_rt_sigprocmask
+# if defined(__x86_64__)
+#  define SYS_rt_sigprocmask 14
+# elif defined(__aarch64__)
+#  define SYS_rt_sigprocmask 135
+# endif
+#endif
+#ifndef SYS_sigaltstack
+# if defined(__x86_64__)
+#  define SYS_sigaltstack 131
+# elif defined(__aarch64__)
+#  define SYS_sigaltstack 132
+# endif
+#endif
 /* SIGSYS = 31 on Linux (all architectures). */
 #ifndef SIGSYS
 # define SIGSYS 31
+#endif
+#ifndef SIG_UNBLOCK
+# define SIG_UNBLOCK 1
 #endif
 
 #define FUTEX_WAIT 0
@@ -85,9 +102,13 @@
 #define X64_OFF_R14   0x50
 #define X64_OFF_R15   0x58
 /* uwg_clone3_save_ext coordination fields */
-#define X64_OFF_TRAP_RIP  0x60
-#define X64_OFF_CHILD_RSP 0x68
-#define X64_OFF_FUTEX_PTR 0x70
+#define X64_OFF_TRAP_RIP      0x60
+#define X64_OFF_CHILD_RSP     0x68
+#define X64_OFF_FUTEX_PTR     0x70
+/* Extended fields: sigaltstack setup and handler-clear flag */
+#define X64_OFF_SS_PTR        0x78
+#define X64_OFF_CLEAR_SH      0x80
+/* Inline stack_t at 0x88 (ss_sp=0x88, ss_flags=0x90, _pad=0x94, ss_size=0x98) */
 
     .text
     .globl uwg_clone3_asm_gate
@@ -149,11 +170,35 @@ uwg_clone3_asm_gate:
      * r12 = trap_rip   r13 = child_rsp   r14 = futex_ptr
      * r15 = save_area_ext_ptr   r9 = bypass_secret
      * ==============================================================
-     *
-     * Clear signal handlers 1..64 except SIGSYS (31) via passthrough
-     * rt_sigaction.  r9 (bypass_secret) survives every syscall.
-     * rbp = &uwg_clone3_dfl_action,  rbx = signal counter.
      */
+
+    /* Step 0: install child sigaltstack if ss_ptr is non-zero.
+     * Handles CLONE_VM+no_CLONE_VFORK (thread creation): Linux clears the
+     * child's sigaltstack at clone3. Use raw syscall instruction — no stack
+     * push — so this is safe before child_rsp is established.
+     * r15 still points to save_area_ext; reads ss_ptr field. */
+    movq  X64_OFF_SS_PTR(%r15), %rdi
+    testq %rdi, %rdi
+    jz    .Lx64_no_ss_setup
+    xorl  %esi, %esi              /* old_ss = NULL */
+    xorl  %edx, %edx
+    xorl  %r10d, %r10d
+    xorl  %r8d, %r8d
+    movl  $SYS_sigaltstack, %eax
+    syscall                       /* clobbers rcx, r11; r12..r15, r9 preserved */
+.Lx64_no_ss_setup:
+
+    /* Step 0b: conditionally run the handler-clear loop.
+     * clear_sighandlers=1 for CLONE_CLEAR_SIGHAND (fork-like); 0 for threads
+     * (CLONE_SIGHAND shares the sigaction table — clearing from child would
+     * reset handlers in the parent). */
+    movq  X64_OFF_CLEAR_SH(%r15), %rbx
+    testq %rbx, %rbx
+    jz    .Lx64_clr_done
+
+    /* Clear signal handlers 1..64 except SIGSYS (31) via passthrough
+     * rt_sigaction.  r9 (bypass_secret) survives every syscall.
+     * rbp = &uwg_clone3_dfl_action,  rbx = signal counter. */
     movq  uwg_clone3_dfl_action@GOTPCREL(%rip), %rbp
     movl  $1, %ebx
 
@@ -177,7 +222,8 @@ uwg_clone3_asm_gate:
     cmpl  $65, %ebx
     jne   .Lx64_clr
 
-    /* All handlers cleared except SIGSYS.  Now: set RSP, signal futex,
+.Lx64_clr_done:
+    /* All handlers cleared (or skipped for threads). Set RSP, signal futex,
      * restore GPRs, jump to trap_rip. */
 
     /* Step 1: RSP = child_rsp */
@@ -199,7 +245,26 @@ uwg_clone3_asm_gate:
     /* r11 clobbered — trap_rip is safe in r12 */
 
 .Lx64_child_nofutex:
-    /* Step 3: r11 = trap_rip AFTER the last syscall that clobbers r11 */
+    /* Unblock SIGSYS: the child inherits parent's task->blocked from inside
+     * the SIGSYS handler, where SIGSYS is auto-added (SA_NODEFER absent).
+     * If left blocked, force_sig_info resets the SIGSYS handler to SIG_DFL
+     * on the child's first BPF-trapped syscall (e.g. the execve docker trap
+     * or glibc's sigprocmask restore), killing the child.
+     * Reload bypass_secret from GOT — the futex path zeros r9. */
+    movq  uwg_bypass_secret@GOTPCREL(%rip), %rax
+    movq  (%rax), %r9
+    subq  $8, %rsp
+    movq  $(1 << 30), (%rsp)    /* SIGSYS bit: 1 << (SIGSYS-1) = 1 << 30 */
+    movl  $SIG_UNBLOCK, %edi
+    movq  %rsp, %rsi
+    xorl  %edx, %edx
+    movl  $8, %r10d
+    xorl  %r8d, %r8d
+    movl  $SYS_rt_sigprocmask, %eax
+    syscall                      /* clobbers rcx, r11 — trap_rip stays in r12 */
+    addq  $8, %rsp
+
+    /* Step 3: r11 = trap_rip.  Loaded AFTER all syscalls that clobber r11. */
     movq  %r12, %r11
 
     /* Step 4: restore all saved GPRs from save_area (r15 = base).
@@ -275,9 +340,13 @@ uwg_clone3_asm_gate:
  * GPR area: 29 registers × 8 = 232 = 0xE8 bytes.
  * Must match clone3_trampoline.c exactly.
  */
-#define A64_OFF_TRAP_PC   0xE8
-#define A64_OFF_CHILD_SP  0xF0
-#define A64_OFF_FUTEX_PTR 0xF8
+#define A64_OFF_TRAP_PC       0xE8
+#define A64_OFF_CHILD_SP      0xF0
+#define A64_OFF_FUTEX_PTR     0xF8
+/* Extended fields: sigaltstack setup and handler-clear flag */
+#define A64_OFF_SS_PTR        0x100
+#define A64_OFF_CLEAR_SH      0x108
+/* Inline stack_t at 0x110 (ss_sp=0x110, ss_flags=0x118, _pad=0x11C, ss_size=0x120) */
 
 /*
  * Individual GPR offsets (for restore in child path).
@@ -377,11 +446,32 @@ uwg_clone3_asm_gate:
      * x19 = trap_pc   x20 = child_sp   x21 = futex_ptr
      * x22 = save_area_ext_ptr   x5 = bypass_secret
      * ==============================================================
-     *
-     * Clear signal handlers 1..64 except SIGSYS (31) via passthrough
-     * rt_sigaction.  x5 (bypass_secret) survives each svc #0.
-     * x24 = &uwg_clone3_dfl_action,  x23 = signal counter.
      */
+
+    /* Step 0: install child sigaltstack if ss_ptr is non-zero.
+     * CLONE_VM+no_CLONE_VFORK (thread creation): Linux clears the child's
+     * sigaltstack at clone3. Call SYS_sigaltstack using registers only —
+     * no stack push — before child_sp is established. */
+    ldr   x0, [x22, #A64_OFF_SS_PTR]
+    cbz   x0, .La64_no_ss_setup
+    mov   x1, xzr             /* old_ss = NULL */
+    mov   x2, xzr
+    mov   x3, xzr
+    mov   x4, xzr
+    /* x5 = bypass_secret (preserved; sigaltstack passes through BPF anyway) */
+    mov   x8, #SYS_sigaltstack
+    svc   #0                  /* x0 = result (ignored); x5, x22 preserved */
+.La64_no_ss_setup:
+
+    /* Step 0b: conditionally run the handler-clear loop.
+     * clear_sighandlers=1 for CLONE_CLEAR_SIGHAND; 0 for threads
+     * (CLONE_SIGHAND shares sigaction table — clearing from child resets parent). */
+    ldr   x23, [x22, #A64_OFF_CLEAR_SH]
+    cbz   x23, .La64_clr_done
+
+    /* Clear signal handlers 1..64 except SIGSYS (31) via passthrough
+     * rt_sigaction.  x5 (bypass_secret) survives each svc #0.
+     * x24 = &uwg_clone3_dfl_action,  x23 = signal counter. */
     adrp  x24, :got:uwg_clone3_dfl_action
     ldr   x24, [x24, :got_lo12:uwg_clone3_dfl_action]   /* x24 = &dfl_action[0] */
     mov   x23, #1
@@ -406,7 +496,8 @@ uwg_clone3_asm_gate:
     cmp   x23, #65
     b.ne  .La64_clr
 
-    /* All handlers cleared except SIGSYS. */
+.La64_clr_done:
+    /* All handlers cleared (or skipped for threads). */
 
     /* Step 1: SP = child_sp (x20 bookmark, still valid) */
     mov   sp, x20
@@ -426,8 +517,28 @@ uwg_clone3_asm_gate:
     svc   #0
 
 .La64_child_nofutex:
+    /* Unblock SIGSYS: child inherits parent's task->blocked from inside the
+     * SIGSYS handler, where SIGSYS is auto-added (SA_NODEFER absent).
+     * If left blocked, force_sig_info resets the handler to SIG_DFL on the
+     * first BPF-trapped syscall in the child, killing it.
+     * Reload bypass_secret from GOT — futex path zeros x5. */
+    adrp  x0, :got:uwg_bypass_secret
+    ldr   x0, [x0, :got_lo12:uwg_bypass_secret]
+    ldr   x5, [x0]
+    sub   sp, sp, #16
+    mov   x1, #(1 << 30)        /* SIGSYS bit: 1 << (SIGSYS-1) = 1 << 30 */
+    str   x1, [sp]
+    mov   x0, #SIG_UNBLOCK
+    mov   x1, sp
+    mov   x2, xzr
+    mov   x3, #8
+    mov   x4, xzr
+    mov   x8, #SYS_rt_sigprocmask
+    svc   #0                    /* clobbers x0 only; x5, x22 preserved */
+    add   sp, sp, #16
+
     /* Step 3: x8 = trap_pc (jump register, not in save_area).
-     * Load AFTER futex so the futex svc cannot interfere.
+     * Load AFTER all svcs that set x8.
      * x22 still points to save_area (not yet overwritten by restore). */
     ldr   x8, [x22, #A64_OFF_TRAP_PC]
 

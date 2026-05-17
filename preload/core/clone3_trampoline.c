@@ -2,20 +2,31 @@
  * Copyright (c) 2026 Reindert Pelsma
  * SPDX-License-Identifier: ISC
  *
- * clone3 CLONE_CLEAR_SIGHAND trampoline — C setup layer.
+ * clone3 trampoline — C setup layer.
  *
- * When the SIGSYS handler catches SYS_clone3 in docker mode, instead of
- * simply stripping CLONE_CLEAR_SIGHAND (which leaves all parent signal
- * handlers inherited in the child), this path:
+ * When the SIGSYS handler catches SYS_clone3 in docker mode, this path
+ * handles two distinct cases:
  *
+ * Case 1 — CLONE_CLEAR_SIGHAND (fork-like, e.g. glibc 2.38+ fork()):
  *   1. Strips CLONE_CLEAR_SIGHAND so the child inherits our SIGSYS handler.
  *   2. Passes the actual clone3 to the kernel via the assembly gate.
- *   3. In the child (via the assembly gate): clears all signal handlers
- *      EXCEPT SIGSYS using passthrough rt_sigaction, signals the parent's
- *      futex if needed, restores the exact trap-point register state, and
- *      jumps to the instruction after the original clone3 in the caller's
- *      code — indistinguishable from an unintercepted clone3 minus the
- *      SIGSYS handler being preserved.
+ *   3. Assembly gate child path: clears all handlers EXCEPT SIGSYS, signals
+ *      the parent futex if needed, restores registers, jumps to trap_rip.
+ *
+ * Case 2 — CLONE_VM without CLONE_VFORK (thread creation, e.g. pthread_create):
+ *   sigaltstack is per-thread. Linux clears (disables) the child's alternate
+ *   signal stack when CLONE_VM is set and CLONE_VFORK is not. Without a
+ *   sigaltstack, SA_ONSTACK SIGSYS delivery falls back to the thread's tiny
+ *   stack and can overflow or fail if the stack is exhausted. Fix: pre-mmap
+ *   a 64 KB sigaltstack in the parent, embed it in the save area, and have
+ *   the assembly gate call SYS_sigaltstack in the child path — before
+ *   touching any stack — so the child thread immediately has a valid alt
+ *   stack for SIGSYS delivery.
+ *
+ * For threads (CLONE_SIGHAND set), the handler-clear loop MUST NOT run:
+ * with CLONE_SIGHAND the sigaction table is shared, so rt_sigaction from the
+ * child would reset handlers in the parent too. The clear_sighandlers flag
+ * controls this: true only for CLONE_CLEAR_SIGHAND (fork-like) clones.
  *
  * The save_area is on the parent's SIGSYS signal stack (sigaltstack).
  * Parent waits for child to finish reading it (via futex) when CLONE_VM
@@ -30,11 +41,16 @@
 #endif
 
 #include <stdint.h>
+#include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/ucontext.h>
 
 #include "syscall.h"
 #include "dispatch.h"
+
+#ifndef UWG_SIGALTSTACK_SIZE
+# define UWG_SIGALTSTACK_SIZE (64 * 1024)
+#endif
 
 /* Guard: only meaningful on architectures where clone3 exists. */
 #if defined(SYS_clone3) && (defined(__x86_64__) || defined(__aarch64__))
@@ -59,6 +75,9 @@ struct uwg_ca {
 #endif
 #ifndef CLONE_VM
 # define CLONE_VM 0x00000100
+#endif
+#ifndef CLONE_SIGHAND
+# define CLONE_SIGHAND 0x00000800
 #endif
 
 /*
@@ -107,23 +126,41 @@ const char uwg_clone3_dfl_action[32] = {0};
  * Assembly gate — see clone3_asm.S. C interface:
  *   clone_args_ptr  : pointer to the (already modified) clone_args
  *   clone_args_size : sizeof the clone_args struct (passed through to kernel)
- *   save_area_ptr   : pointer to uwg_clone3_save on the signal stack
+ *   save_area_ptr   : pointer to uwg_clone3_save_ext on the signal stack
  *
- * R12/X19 = trap_rip/trap_pc  (loaded from save_area.trap_rip)
- * R13/X20 = child_rsp/child_sp (loaded from save_area.child_rsp)
- * R14/X21 = futex_ptr          (loaded from save_area.futex_ptr)
- * R15/X22 = save_area_ptr      (rdx/x2 directly)
+ * R12/X19 = trap_rip/trap_pc      (loaded from save_area.trap_rip)
+ * R13/X20 = child_rsp/child_sp    (loaded from save_area.child_rsp)
+ * R14/X21 = futex_ptr             (loaded from save_area.futex_ptr)
+ * R15/X22 = save_area_ext_ptr     (rdx/x2 directly)
  *
- * The extra fields (trap_rip, child_rsp, futex_ptr) are appended after
- * the GPR fields in the save_area struct and accessed by the assembly.
+ * Additional fields read by assembly in child path only:
+ *   save_area.ss_ptr            — pointer to inline stack_t (or 0)
+ *   save_area.clear_sighandlers — 1 = run rt_sigaction clear loop
  */
 
-/* Extended save area: the GPR struct + three coordination fields. */
+/* Extended save area: GPR struct + coordination fields + optional sigaltstack.
+ *
+ * Field offsets (must match clone3_asm.S exactly):
+ *   x86_64: regs=0x00..0x5F (0x60), trap_rip=0x60, child_rsp=0x68,
+ *           futex_ptr=0x70, ss_ptr=0x78, clear_sighandlers=0x80,
+ *           ss_sp=0x88, ss_flags=0x90, _ss_pad=0x94, ss_size=0x98
+ *   aarch64: regs=0x00..0xE7 (0xE8), trap_rip=0xE8, child_rsp=0xF0,
+ *            futex_ptr=0xF8, ss_ptr=0x100, clear_sighandlers=0x108,
+ *            ss_sp=0x110, ss_flags=0x118, _ss_pad=0x11C, ss_size=0x120
+ */
 struct uwg_clone3_save_ext {
     struct uwg_clone3_save regs;
-    uint64_t trap_rip;    /* jump target for child */
-    uint64_t child_rsp;   /* RSP/SP to set in child */
-    uint64_t futex_ptr;   /* &futex_word, or 0 if no wait needed */
+    uint64_t trap_rip;          /* jump target for child */
+    uint64_t child_rsp;         /* RSP/SP to set in child */
+    uint64_t futex_ptr;         /* &futex_word, or 0 if no wait needed */
+    /* Sigaltstack setup for CLONE_VM+no_CLONE_VFORK children: */
+    uint64_t ss_ptr;            /* pointer to ss_sp below, or 0 (inherit) */
+    uint64_t clear_sighandlers; /* 1 = run handler-clear loop, 0 = skip */
+    /* Inline stack_t layout (valid when ss_ptr != 0; ss_ptr points here): */
+    uint64_t ss_sp;             /* sigaltstack base address */
+    uint32_t ss_flags;          /* always 0 */
+    uint32_t _ss_pad;           /* ABI alignment padding */
+    uint64_t ss_size;           /* sigaltstack size in bytes */
 };
 
 /* Declared in clone3_asm.S */
@@ -142,18 +179,22 @@ long uwg_clone3_trampoline(long a1, long a2, ucontext_t *uc)
     struct uwg_ca *ca = (struct uwg_ca *)a1;
     long size = a2;
 
-    /* Caller (kernel) guarantees a2 >= sizeof(flags). Only access fields
-     * within the provided size. */
     if (!ca || size < (long)sizeof(uint64_t))
         goto fallback;
 
-    /* Only intercept if the flag is actually set. */
-    if (!(ca->flags & CLONE_CLEAR_SIGHAND))
+    /* Determine what we need to fix up for this clone3 call. */
+    int need_clr = !!(ca->flags & CLONE_CLEAR_SIGHAND);
+    /* CLONE_VM without CLONE_VFORK = thread creation: kernel clears child's
+     * sigaltstack. CLONE_VFORK = parent blocked by kernel, child inherits. */
+    int need_ss  = !!(ca->flags & CLONE_VM) && !(ca->flags & CLONE_VFORK);
+
+    if (!need_clr && !need_ss)
         goto fallback;
 
-    /* Strip the flag: child will inherit our SIGSYS handler. The assembly
-     * gate then clears all other handlers in the child explicitly. */
-    ca->flags &= ~(uint64_t)CLONE_CLEAR_SIGHAND;
+    /* Strip CLONE_CLEAR_SIGHAND so the child inherits our SIGSYS handler.
+     * The assembly gate then clears all other handlers in the child. */
+    if (need_clr)
+        ca->flags &= ~(uint64_t)CLONE_CLEAR_SIGHAND;
 
     /* Build the extended save area on the signal stack (local variable —
      * signal stack is large enough for this struct). */
@@ -236,11 +277,35 @@ long uwg_clone3_trampoline(long a1, long a2, ucontext_t *uc)
     int need_futex = (ca->flags & CLONE_VM) && !(ca->flags & CLONE_VFORK);
     ext.futex_ptr = need_futex ? (uint64_t)&futex_word : 0;
 
+    /* Sigaltstack for child thread: when CLONE_VM is set without CLONE_VFORK,
+     * Linux clears the child's sigaltstack at clone3 time. Allocate 64 KB now
+     * (in the parent, safe to call mmap from SIGSYS handler) and embed the
+     * stack_t in the save area. The assembly gate calls SYS_sigaltstack in the
+     * child path using registers only — no stack push — so the call is safe
+     * even before child_rsp is established. */
+    if (need_ss) {
+        long mm = uwg_syscall6(SYS_mmap, 0, UWG_SIGALTSTACK_SIZE,
+                               PROT_READ | PROT_WRITE,
+                               MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (mm < 0) goto fallback;
+        ext.ss_sp    = (uint64_t)mm;
+        ext.ss_flags = 0;
+        ext._ss_pad  = 0;
+        ext.ss_size  = UWG_SIGALTSTACK_SIZE;
+        ext.ss_ptr   = (uint64_t)&ext.ss_sp; /* points into ext on signal stack */
+    } else {
+        ext.ss_ptr = 0;
+    }
+
+    /* Only run the signal-handler clear loop for CLONE_CLEAR_SIGHAND.
+     * With CLONE_SIGHAND (threads), the sigaction table is SHARED: running
+     * rt_sigaction from the child would reset handlers in the parent too. */
+    ext.clear_sighandlers = need_clr ? 1 : 0;
+
     return uwg_clone3_asm_gate(a1, a2, (long)&ext);
 
 fallback:
-    /* Caller didn't set CLONE_CLEAR_SIGHAND or struct too small — original
-     * simple path: just pass through. */
+    /* Nothing to intercept — pass through directly. */
     return uwg_passthrough_syscall2(SYS_clone3, a1, a2);
 }
 

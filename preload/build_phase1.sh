@@ -62,6 +62,7 @@ fi
 CC="${CC:-gcc}"
 $CC $CFLAGS_BASE $CFLAGS_WARN \
     "${CORE_SRCS[@]}" "${SHIM_SRCS[@]}" \
+    -Wl,--version-script=preload/shim_libc/posix_spawn_versions.map \
     -o "$OUT" -ldl
 
 echo "built $OUT ($(stat -c '%s' "$OUT") bytes)"

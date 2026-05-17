@@ -29,6 +29,14 @@
  * syscall.h, declared extern there). */
 uint64_t uwg_bypass_secret;
 
+/* Execve-specific bypass secret: bypass_secret ^ UWG_EXECVE_BYPASS_TWEAK.
+ * The BPF docker-mode execve/execveat rules check this value rather than
+ * the general bypass_secret.  This prevents glibc's execve — which does
+ * not zero arg6 before the syscall instruction — from accidentally
+ * matching the general bypass after uwg_passthrough_syscall* leaves
+ * bypass_secret in arg6. */
+uint64_t uwg_execve_bypass_secret;
+
 /* Per-thread alternate signal stack — must be allocated and
  * registered before SIGSYS can fire on this thread. The .so build
  * calls uwg_core_init_thread() from the libc shim's first hooked
@@ -140,6 +148,7 @@ int uwg_core_init(void) {
     /* (1) bypass secret */
     const char *secret_env = uwg_getenv("UWGS_TRACE_SECRET");
     uwg_bypass_secret = parse_u64(secret_env);
+    uwg_tracef("init1 pid=%ld bsec=%lx", uwg_syscall0(SYS_getpid), (long)uwg_bypass_secret);
 
     /* UWGS_DISABLE_SYSTRAP=1 (preferred name, set by transport=preload)
      * or its legacy alias UWGS_DISABLE_SECCOMP=1 forces libc-only
@@ -174,6 +183,8 @@ int uwg_core_init(void) {
     if (shared_secret != 0) {
         uwg_bypass_secret = shared_secret;
     }
+    uwg_execve_bypass_secret = uwg_bypass_secret ^ UWG_EXECVE_BYPASS_TWEAK;
+    uwg_tracef("init2 pid=%ld bsec=%lx shared=%lx", uwg_syscall0(SYS_getpid), (long)uwg_bypass_secret, (long)shared_secret);
 
     /* (2b) initialize fdproxy path lookup (env read at init time so
      * the SIGSYS handler doesn't have to walk environ later). */
@@ -211,8 +222,11 @@ int uwg_core_init(void) {
      * top-level wrapped process or the fork-child path), it is a no-op. */
     {
         unsigned long sigsys_bit = (unsigned long)1 << (SIGSYS - 1);
-        uwg_syscall4(SYS_rt_sigprocmask, SIG_UNBLOCK,
-                     (long)&sigsys_bit, 0L, 8L);
+        uwg_tracef("step4a pid=%ld bsec=%lx bsec_addr=%lx",
+                   uwg_syscall0(SYS_getpid), (long)uwg_bypass_secret,
+                   (long)&uwg_bypass_secret);
+        uwg_passthrough_syscall4(SYS_rt_sigprocmask, SIG_UNBLOCK,
+                                  (long)&sigsys_bit, 0L, 8L);
     }
 
     /* (4b) Atfork child handler to close the CLONE_CLEAR_SIGHAND window.
@@ -255,26 +269,38 @@ int uwg_core_init(void) {
         uwg_ptloader_docker_init();
     }
 
-    /* Skip duplicate filter install across execve: the kernel inherits
-     * seccomp filters across execve, so when the child's preload
-     * constructor runs the parent's filter is already in place.
-     * Stacking a second identical filter works (kernel allows N
-     * filters) but burns cycles on every syscall. UWGS_SECCOMP_INSTALLED=1
-     * in the inherited env tells us to skip filter install only —
-     * the SIGSYS handler was already reinstalled above (step 4). */
+    /* Skip duplicate main-filter install across execve: the kernel inherits
+     * seccomp filters, so when the child's preload constructor runs the
+     * parent's filter is already in place. UWGS_SECCOMP_INSTALLED=1 tells
+     * us to skip main-filter re-install — the handler was already reinstalled
+     * above (step 4).
+     *
+     * Layer-2 filter (rt_sigprocmask + clone3 traps) is always re-stacked in
+     * docker mode even when UWGS_SECCOMP_INSTALLED=1: it is small (12
+     * instructions) and re-stacking is harmless. This ensures the layer-2
+     * traps are present regardless of whether the parent had them (e.g.
+     * pre-layer2 parent binaries) and covers the ptloader-as-PT_INTERP path
+     * where the inherited filter may be from an older uwgwrapper launch. */
     const char *already = uwg_getenv("UWGS_SECCOMP_INSTALLED");
     if (already && *already == '1') {
+        if (uwg_seccomp_docker_flag) {
+            (void)uwg_install_seccomp_filter_layer2(uwg_bypass_secret);
+        }
         return 0;
     }
 
     rc = uwg_install_seccomp_filter(uwg_bypass_secret);
     if (rc < 0) return rc;
 
+    if (uwg_seccomp_docker_flag) {
+        (void)uwg_install_seccomp_filter_layer2(uwg_bypass_secret);
+    }
+
 #ifndef UWG_FREESTANDING
     /* Mark the filter as installed in the environment so children
-     * inheriting our env via execve can skip the duplicate install.
-     * setenv is libc-only; the freestanding/static build can't easily
-     * mutate environ, but it doesn't typically execve into Phase-1
+     * inheriting our env via execve can skip the duplicate main-filter
+     * install. setenv is libc-only; the freestanding/static build can't
+     * easily mutate environ, but it doesn't typically execve into Phase-1
      * preload children either, so the missed-dedupe cost is moot. */
     extern int setenv(const char *, const char *, int);
     (void)setenv("UWGS_SECCOMP_INSTALLED", "1", 1);
