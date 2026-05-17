@@ -258,23 +258,25 @@ func TestUWGWrapperReuseAcrossTransports(t *testing.T) {
 			defer killProcessGroup(bCmd)
 
 			// SO_REUSEPORT load-balances incoming UDP datagrams across
-			// 64 listening sockets per wrapper; we need at least one
-			// reply from each wrapper (udp-a + udp-b). The kernel's
-			// hash distribution can starve one wrapper for many
-			// attempts (beta.49 saw 40 attempts all land on udp-a
-			// under -race scheduling on linux-amd64). Bump to 200
-			// attempts — at ~50/50 expected the probability of all
-			// 200 landing on one side is essentially zero.
+			// both wrappers; we need at least one reply from each
+			// (udp-a + udp-b). Under -race on heavy arm64 CI runners
+			// the fdproxy SO_REUSEPORT registration for udp-a may lag
+			// behind the READY signal by up to a few seconds (the fdSock
+			// message is async and the handler goroutine can be starved
+			// by race-detector overhead). Use a 30s time-bounded loop
+			// rather than a fixed iteration count so we wait long enough
+			// for both registrations to be processed.
 			seenUDP := map[string]bool{}
 			addr := fmt.Sprintf("127.0.0.1:%d", udpPort)
-			for i := 0; i < 200 && !(seenUDP["udp-a"] && seenUDP["udp-b"]); i++ {
-				reply, ok := tryRoundTripHostUDP(addr, "ping", 5*time.Second)
+			deadline := time.Now().Add(30 * time.Second)
+			for time.Now().Before(deadline) && !(seenUDP["udp-a"] && seenUDP["udp-b"]) {
+				reply, ok := tryRoundTripHostUDP(addr, "ping", 500*time.Millisecond)
 				if ok {
 					seenUDP[reply] = true
 				}
 			}
 			if !seenUDP["udp-a"] || !seenUDP["udp-b"] {
-				t.Fatalf("UDP reuse replies did not reach both listeners: %v", seenUDP)
+				t.Fatalf("UDP reuse replies did not reach both listeners within 30s: %v", seenUDP)
 			}
 			killProcessGroup(aCmd)
 			killProcessGroup(bCmd)

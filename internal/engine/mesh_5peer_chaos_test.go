@@ -125,7 +125,12 @@ func TestMeshChaosResume_LossyDirectPath(t *testing.T) {
 	}
 
 	// Stand up an HTTP blob server on B.
-	blobBytes := 4 * 1024 * 1024 // 4 MiB
+	// 1 MiB keeps all 5 lossy transfers well under WireGuard's
+	// REKEY_AFTER_TIME (180s): at 400 KB/s, 5 × 1 MiB ≈ 12s total.
+	// A 4 MiB blob made the session age hit REKEY_AFTER_TIME during
+	// transfer 4 on slow CI runners, stalling the tunnel mid-transfer
+	// until the 180s connection deadline fired.
+	blobBytes := 1 * 1024 * 1024 // 1 MiB
 	stopFn := startBlobServerOn(t, engB, "100.64.98.2:18080", 0 /*srcIdx*/, 1 /*dstIdx*/, blobBytes)
 	defer stopFn()
 
@@ -161,7 +166,7 @@ func TestMeshChaosResume_LossyDirectPath(t *testing.T) {
 	totalFw := fwAB + fwBA
 	totalDrop := dropAB + dropBA
 	throughput := float64(5*blobBytes) / elapsed.Seconds() / (1 << 20) // MiB/s
-	t.Logf("lossy direct path: 5 × 4 MiB = 20 MiB through symmetric 5%%-loss + 20ms-jitter proxies in %v (%.1f MiB/s); A→B forwarded=%d dropped=%d delayed=%d; B→A forwarded=%d dropped=%d delayed=%d; combined drop ratio=%.2f%%",
+	t.Logf("lossy direct path: 5 × 1 MiB = 5 MiB through symmetric 5%%-loss + 20ms-jitter proxies in %v (%.1f MiB/s); A→B forwarded=%d dropped=%d delayed=%d; B→A forwarded=%d dropped=%d delayed=%d; combined drop ratio=%.2f%%",
 		elapsed, throughput,
 		fwAB, dropAB, delayAB,
 		fwBA, dropBA, delayBA,
