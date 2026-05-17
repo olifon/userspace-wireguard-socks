@@ -49,8 +49,6 @@ uint64_t uwg_execve_bypass_secret;
  * call into a uwg_* op. */
 #include "freestanding_runtime.h"
 
-#define UWG_SIGALTSTACK_SIZE (64 * 1024)
-
 /*
  * Parse a uint64 from a NUL-terminated string. Async-signal-safe
  * replacement for strtoull. Returns 0 on parse failure (which the

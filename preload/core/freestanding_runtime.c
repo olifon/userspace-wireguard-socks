@@ -69,7 +69,8 @@ void *uwg_get_thread_sigaltstack(void) {
             return (void *)atomic_load_explicit(&uwg_thread_table[idx].stack,
                                                 memory_order_acquire);
         }
-        if (slot_tid == 0) return NULL; /* empty slot terminates lookup */
+        if (slot_tid == 0) return NULL; /* never-written slot: chain ends */
+        /* slot_tid == UWG_TID_TOMBSTONE: deleted slot, skip and keep probing */
     }
     return NULL;
 }
@@ -79,18 +80,63 @@ void uwg_set_thread_sigaltstack(void *stack) {
     uint32_t start = uwg_thread_hash(tid);
     for (size_t step = 0; step < UWG_THREAD_SLOTS; step++) {
         size_t idx = (start + step) % UWG_THREAD_SLOTS;
-        int32_t expected = 0;
-        /* CAS to claim the empty slot for this TID. */
-        if (atomic_compare_exchange_strong_explicit(
-                &uwg_thread_table[idx].tid, &expected, tid,
-                memory_order_acq_rel, memory_order_acquire) ||
-            expected == tid) {
+        int32_t slot_tid = atomic_load_explicit(&uwg_thread_table[idx].tid,
+                                                memory_order_acquire);
+        if (slot_tid == tid) {
+            /* Already our slot — refresh the stack pointer. */
             atomic_store_explicit(&uwg_thread_table[idx].stack,
                                   (uintptr_t)stack, memory_order_release);
             return;
         }
+        if (slot_tid != 0 && slot_tid != UWG_TID_TOMBSTONE) {
+            /* Occupied by another live TID, probe further. */
+            continue;
+        }
+        /* Empty (0) or tombstone — try to claim this slot. */
+        int32_t expected = slot_tid;
+        if (atomic_compare_exchange_strong_explicit(
+                &uwg_thread_table[idx].tid, &expected, tid,
+                memory_order_acq_rel, memory_order_acquire)) {
+            atomic_store_explicit(&uwg_thread_table[idx].stack,
+                                  (uintptr_t)stack, memory_order_release);
+            return;
+        }
+        /* CAS lost: expected now holds the actual current value.
+         * If another thread won the slot for our own TID (impossible
+         * barring TID reuse race), update the stack and return. */
+        if (expected == tid) {
+            atomic_store_explicit(&uwg_thread_table[idx].stack,
+                                  (uintptr_t)stack, memory_order_release);
+            return;
+        }
+        /* Another TID claimed this slot between our load and CAS; continue. */
     }
     /* Table full — silently drop. The thread still runs; the
      * sigaltstack just falls back to the kernel-default stack on
      * SIGSYS, which works as long as the stack has enough room. */
+}
+
+void uwg_clear_thread_sigaltstack(void) {
+    int32_t tid = uwg_current_tid_local();
+    uint32_t start = uwg_thread_hash(tid);
+    for (size_t step = 0; step < UWG_THREAD_SLOTS; step++) {
+        size_t idx = (start + step) % UWG_THREAD_SLOTS;
+        int32_t slot_tid = atomic_load_explicit(&uwg_thread_table[idx].tid,
+                                                memory_order_acquire);
+        if (slot_tid == tid) {
+            /* Zero stack pointer before writing tombstone tid so a concurrent
+             * lookup never sees a non-zero stack under a tombstone. */
+            atomic_store_explicit(&uwg_thread_table[idx].stack, 0,
+                                  memory_order_release);
+            /* Write tombstone (UWG_TID_TOMBSTONE) instead of 0: zeroing a
+             * slot mid-chain breaks linear-probing lookup for other TIDs
+             * whose probe chains pass through this slot.  Tombstone lets
+             * uwg_get_thread_sigaltstack skip the slot and keep probing. */
+            atomic_store_explicit(&uwg_thread_table[idx].tid,
+                                  UWG_TID_TOMBSTONE, memory_order_release);
+            return;
+        }
+        if (slot_tid == 0) return; /* never-written: chain ends here */
+        /* slot_tid == UWG_TID_TOMBSTONE: skip, keep probing */
+    }
 }

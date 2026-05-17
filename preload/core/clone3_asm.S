@@ -109,6 +109,7 @@
 #define X64_OFF_SS_PTR        0x78
 #define X64_OFF_CLEAR_SH      0x80
 /* Inline stack_t at 0x88 (ss_sp=0x88, ss_flags=0x90, _pad=0x94, ss_size=0x98) */
+#define X64_OFF_SS_SP         0x88
 
     .text
     .globl uwg_clone3_asm_gate
@@ -186,6 +187,18 @@ uwg_clone3_asm_gate:
     xorl  %r8d, %r8d
     movl  $SYS_sigaltstack, %eax
     syscall                       /* clobbers rcx, r11; r12..r15, r9 preserved */
+
+    /* Step 0c: register the mmap'd sigaltstack in uwg_thread_table so
+     * the SYS_exit/SYS_exit_group handler can look it up and munmap it
+     * when this thread exits.  uwg_set_thread_sigaltstack calls gettid()
+     * internally to key the entry by child TID.  r12..r15, rbx, rbp
+     * survive the call (callee-saved ABI); r9 (bypass_secret) is
+     * caller-saved and must be reloaded from GOT afterward. */
+    movq  X64_OFF_SS_SP(%r15), %rdi   /* rdi = mmap base = ext.ss_sp */
+    call  uwg_set_thread_sigaltstack
+    movq  uwg_bypass_secret@GOTPCREL(%rip), %r9
+    movq  (%r9), %r9                   /* reload bypass_secret */
+
 .Lx64_no_ss_setup:
 
     /* Step 0b: conditionally run the handler-clear loop.
@@ -347,6 +360,7 @@ uwg_clone3_asm_gate:
 #define A64_OFF_SS_PTR        0x100
 #define A64_OFF_CLEAR_SH      0x108
 /* Inline stack_t at 0x110 (ss_sp=0x110, ss_flags=0x118, _pad=0x11C, ss_size=0x120) */
+#define A64_OFF_SS_SP         0x110
 
 /*
  * Individual GPR offsets (for restore in child path).
@@ -461,6 +475,18 @@ uwg_clone3_asm_gate:
     /* x5 = bypass_secret (preserved; sigaltstack passes through BPF anyway) */
     mov   x8, #SYS_sigaltstack
     svc   #0                  /* x0 = result (ignored); x5, x22 preserved */
+
+    /* Step 0c: register the mmap'd sigaltstack in uwg_thread_table so
+     * the SYS_exit/SYS_exit_group handler can look it up and munmap it
+     * when this thread exits.  uwg_set_thread_sigaltstack keys the entry
+     * by child TID (via gettid()).  x19-x24 (callee-saved) survive the
+     * bl; x5 (bypass_secret) is caller-saved and must be reloaded. */
+    ldr   x0, [x22, #A64_OFF_SS_SP]          /* x0 = mmap base = ext.ss_sp */
+    bl    uwg_set_thread_sigaltstack
+    adrp  x5, :got:uwg_bypass_secret
+    ldr   x5, [x5, :got_lo12:uwg_bypass_secret]
+    ldr   x5, [x5]                            /* reload bypass_secret */
+
 .La64_no_ss_setup:
 
     /* Step 0b: conditionally run the handler-clear loop.
@@ -611,5 +637,150 @@ uwg_clone3_asm_gate:
 #endif /* __x86_64__ / __aarch64__ */
 
 #endif /* SYS_clone3 */
+
+/* ================================================================
+ * uwg_munmap_and_exit — munmap the mmap'd sigaltstack then call
+ * SYS_exit or SYS_exit_group with bypass_secret in arg6.
+ *
+ * C signature:
+ *   void uwg_munmap_and_exit(void *ss_base, long exit_nr, long exit_status)
+ *       __attribute__((noreturn));
+ *
+ * The function is called from the SIGSYS handler running on the
+ * sigaltstack.  After munmap(ss_base, UWG_SIGALTSTACK_SIZE) the
+ * stack memory is gone — no stack reads or writes are permitted
+ * after that point.  All subsequent operations use registers only.
+ *
+ * The exit syscall is issued with bypass_secret in arg6 (r9 / x5)
+ * so the layer-2 BPF filter's bypass check ALLOWs it before the
+ * SYS_exit trap fires; otherwise force_sig_info_to_task would see
+ * SIGSYS blocked (we are inside the handler), reset the handler to
+ * SIG_DFL, and kill the entire process.
+ *
+ * Both SYS_exit (thread exit) and SYS_exit_group (process exit) are
+ * handled via the exit_nr parameter — no stack branch needed.
+ * ================================================================ */
+
+/* Sigaltstack size constant mirroring freestanding_runtime.h */
+#define UWG_SIGALTSTACK_SIZE 65536
+
+/* Fallback syscall numbers for older / freestanding sysroots */
+#ifndef SYS_munmap
+# if defined(__x86_64__)
+#  define SYS_munmap 11
+# elif defined(__aarch64__)
+#  define SYS_munmap 215
+# endif
+#endif
+#ifndef SYS_exit
+# if defined(__x86_64__)
+#  define SYS_exit 60
+# elif defined(__aarch64__)
+#  define SYS_exit 93
+# endif
+#endif
+#ifndef SYS_exit_group
+# if defined(__x86_64__)
+#  define SYS_exit_group 231
+# elif defined(__aarch64__)
+#  define SYS_exit_group 94
+# endif
+#endif
+
+#if defined(__x86_64__)
+
+    .text
+    .globl uwg_munmap_and_exit
+    .type  uwg_munmap_and_exit, @function
+uwg_munmap_and_exit:
+    /*
+     * Entry (System V AMD64 ABI):
+     *   rdi = ss_base     (sigaltstack base to unmap)
+     *   rsi = exit_nr     (SYS_exit or SYS_exit_group)
+     *   rdx = exit_status
+     *
+     * x86_64 `syscall` clobbers rcx and r11; all other regs survive.
+     * We save exit_nr and exit_status in rbx/r12 (callee-saved, no
+     * stack write needed after `call` pushes return addr before us).
+     *
+     * Step 1: munmap(ss_base, UWG_SIGALTSTACK_SIZE).
+     *   rdi already = ss_base; set rsi = size. No bypass needed —
+     *   SYS_munmap is not in either BPF trap list.
+     * After the syscall, rsp points into unmapped memory. From here,
+     * no instruction may access the stack — registers only.
+     *
+     * Step 2: load bypass_secret from GOT (rip-relative, no stack).
+     *
+     * Step 3: exit_nr(exit_status) with bypass_secret in r9.
+     */
+    movq  %rsi, %rbx                              /* save exit_nr   (callee-saved) */
+    movq  %rdx, %r12                              /* save exit_status (callee-saved) */
+    movl  $UWG_SIGALTSTACK_SIZE, %esi             /* rsi = size */
+    movl  $SYS_munmap, %eax
+    xorl  %edx, %edx
+    xorl  %r10d, %r10d
+    xorl  %r8d, %r8d
+    xorl  %r9d, %r9d
+    syscall                                        /* stack now gone */
+
+    movq  uwg_bypass_secret@GOTPCREL(%rip), %r9   /* r9 = &bypass_secret (no stack) */
+    movq  (%r9), %r9                               /* r9 = bypass_secret value */
+    movq  %rbx, %rax                               /* rax = exit_nr */
+    movq  %r12, %rdi                               /* rdi = exit_status */
+    xorl  %esi, %esi
+    xorl  %edx, %edx
+    xorl  %r10d, %r10d
+    xorl  %r8d, %r8d
+    syscall                                        /* thread/process exits */
+    hlt                                            /* unreachable */
+    .size uwg_munmap_and_exit, . - uwg_munmap_and_exit
+
+#elif defined(__aarch64__)
+
+    .text
+    .globl uwg_munmap_and_exit
+    .type  uwg_munmap_and_exit, %function
+uwg_munmap_and_exit:
+    /*
+     * Entry (AAPCS64):
+     *   x0 = ss_base
+     *   x1 = exit_nr     (SYS_exit or SYS_exit_group)
+     *   x2 = exit_status
+     *
+     * aarch64 `bl` stores LR in x30, not on the stack — no stack
+     * write on call entry.  `svc #0` only clobbers x0 (return val).
+     *
+     * We use callee-saved x19/x20 WITHOUT stp'ing them to the stack:
+     * the function never returns, so restoration is unnecessary, and
+     * the push would write to the sigaltstack before munmap.
+     *
+     * Step 1: munmap(x0=ss_base, x1=UWG_SIGALTSTACK_SIZE).
+     * Step 2: load bypass_secret via GOT (adrp + ldr, no stack).
+     * Step 3: x1=exit_nr, x0=exit_status, x5=bypass_secret → svc.
+     */
+    mov   x19, x1                                 /* x19 = exit_nr   (callee-saved) */
+    mov   x20, x2                                 /* x20 = exit_status (callee-saved) */
+    mov   x1, #UWG_SIGALTSTACK_SIZE               /* x1 = size */
+    mov   x2, xzr
+    mov   x3, xzr
+    mov   x4, xzr
+    mov   x5, xzr
+    mov   x8, #SYS_munmap
+    svc   #0                                      /* stack now gone */
+
+    adrp  x5, :got:uwg_bypass_secret             /* x5 = page of GOT entry (no stack) */
+    ldr   x5, [x5, :got_lo12:uwg_bypass_secret]  /* x5 = address of bypass_secret */
+    ldr   x5, [x5]                                /* x5 = bypass_secret value */
+    mov   x8, x19                                 /* x8 = exit_nr (syscall nr) */
+    mov   x0, x20                                 /* x0 = exit_status */
+    mov   x1, xzr
+    mov   x2, xzr
+    mov   x3, xzr
+    mov   x4, xzr
+    svc   #0                                      /* thread/process exits */
+    brk   #0                                      /* unreachable */
+    .size uwg_munmap_and_exit, . - uwg_munmap_and_exit
+
+#endif /* __x86_64__ / __aarch64__ */
 
     .section .note.GNU-stack, "", @progbits

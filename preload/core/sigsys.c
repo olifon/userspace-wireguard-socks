@@ -70,6 +70,7 @@
 
 #include "syscall.h"
 #include "dispatch.h"
+#include "freestanding_runtime.h"
 
 /* SYS_clone3 was added in Linux 5.3 (2019). Define it if the build
  * headers pre-date that (e.g. older container toolchains, freestanding
@@ -78,6 +79,32 @@
 # if defined(__x86_64__) || defined(__aarch64__)
 #  define SYS_clone3 435
 # endif
+#endif
+
+/* Fallback defines for SYS_exit / SYS_exit_group — always present in
+ * practice, but guard for older freestanding sysroots. */
+#ifndef SYS_exit
+# if defined(__x86_64__)
+#  define SYS_exit 60
+# elif defined(__aarch64__)
+#  define SYS_exit 93
+# endif
+#endif
+#ifndef SYS_exit_group
+# if defined(__x86_64__)
+#  define SYS_exit_group 231
+# elif defined(__aarch64__)
+#  define SYS_exit_group 94
+# endif
+#endif
+
+/* Assembly gate: munmaps the sigaltstack then issues the real exit syscall
+ * with bypass_secret in arg6.  Called from the SIGSYS handler while running
+ * on the sigaltstack — must be pure assembly after the munmap because the
+ * stack is gone.  Defined in clone3_asm.S for x86_64 and aarch64. */
+#if defined(__x86_64__) || defined(__aarch64__)
+extern void uwg_munmap_and_exit(void *ss_base, long exit_nr, long exit_status)
+    __attribute__((noreturn));
 #endif
 
 #if defined(SYS_clone3) && (defined(__x86_64__) || defined(__aarch64__))
@@ -260,6 +287,38 @@ void uwg_sigsys_handler(int sig, siginfo_t *si, void *uctx_void) {
         uwg_uctx_set_result(uc, 0L);
         return;
     }
+
+#if defined(SYS_exit) && defined(SYS_exit_group) && \
+    (defined(__x86_64__) || defined(__aarch64__))
+    /* SYS_exit / SYS_exit_group: munmap the thread's pre-allocated 64 KiB
+     * sigaltstack before exiting, preventing VMA table growth.  Only active
+     * in docker/elf mode where the layer-2 filter traps these syscalls.
+     *
+     * Thread kills (SIGKILL, pthread_cancel) do not go through this path —
+     * we accept that leak (thread kill is inherently unsafe for userspace).
+     *
+     * The assembly gate uwg_munmap_and_exit handles the munmap+exit sequence
+     * without touching the stack after munmap: this handler runs on the
+     * sigaltstack, which becomes the region to unmap.  After munmap the
+     * gate reloads bypass_secret from the GOT (no stack) and issues the
+     * real exit syscall with bypass_secret in arg6, bypassing the layer-2
+     * SYS_exit trap so the thread actually exits rather than re-trapping. */
+    if ((nr == (long)SYS_exit || nr == (long)SYS_exit_group) &&
+        uwg_seccomp_docker_flag) {
+        void *ss_base = uwg_get_thread_sigaltstack();
+        uwg_clear_thread_sigaltstack();
+        if (ss_base) {
+            uwg_munmap_and_exit(ss_base, nr, args[0]);
+            __builtin_unreachable();
+        }
+        /* No registered sigaltstack (rare: table full or thread created
+         * outside our clone3 path).  Still must exit — use passthrough so
+         * bypass_secret in arg6 prevents the layer-2 filter from re-trapping
+         * this very syscall. */
+        uwg_passthrough_syscall1(nr, args[0]);
+        __builtin_unreachable();
+    }
+#endif
 
 #if defined(SYS_clone3) && (defined(__x86_64__) || defined(__aarch64__))
     /* CLONE_CLEAR_SIGHAND full trampoline — intercept before generic

@@ -581,6 +581,99 @@ func TestSystrapDockerAutoStaticSeccompOnly(t *testing.T) {
 	}
 }
 
+// TestSystrapElfSigaltstackLeak verifies that the SYS_exit/SYS_exit_group
+// SIGSYS handler munmaps the pre-allocated sigaltstack when threads exit,
+// preventing VMA table growth.
+//
+// Each thread created under systrap-elf gets a 64 KiB mmap'd sigaltstack
+// (allocated by clone3_trampoline.c and registered via uwg_set_thread_sigaltstack).
+// Without the fix, each thread's exit leaves the VMA entry in the kernel's
+// mm_struct red-black tree, growing the process VMA table permanently.  With
+// the fix, SYS_exit is trapped by the layer-2 BPF filter, the SIGSYS handler
+// calls uwg_munmap_and_exit which munmaps the stack then exits the thread.
+//
+// The test spawns 10 pthread threads, counts /proc/self/maps lines before and
+// after they all exit, and asserts the delta is small (≤5).
+func TestSystrapElfSigaltstackLeak(t *testing.T) {
+	requireSystrapDockerToolchain(t)
+	art, _ := buildSystrapDockerArtifacts(t)
+	_, httpSock := setupWrapperNetwork(t)
+
+	repo := filepath.Clean(filepath.Join("..", ".."))
+	tmp := t.TempDir()
+
+	src := filepath.Join(tmp, "vma_count.c")
+	if err := os.WriteFile(src, []byte(`
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <pthread.h>
+#include <unistd.h>
+
+static int count_vmas(void) {
+    FILE *f = fopen("/proc/self/maps", "r");
+    if (!f) return -1;
+    int n = 0;
+    char buf[256];
+    while (fgets(buf, sizeof(buf), f)) {
+        /* Count lines starting with an address range. */
+        if ((buf[0] >= '0' && buf[0] <= '9') ||
+            (buf[0] >= 'a' && buf[0] <= 'f')) n++;
+    }
+    fclose(f);
+    return n;
+}
+
+static void *thread_fn(void *arg) { (void)arg; return NULL; }
+
+int main(void) {
+    int before = count_vmas();
+#define N 10
+    pthread_t threads[N];
+    for (int i = 0; i < N; i++)
+        pthread_create(&threads[i], NULL, thread_fn, NULL);
+    for (int i = 0; i < N; i++)
+        pthread_join(threads[i], NULL);
+    /* Short pause to let any asynchronous cleanup settle. */
+    usleep(20000);
+    int after = count_vmas();
+    printf("vma-before=%d vma-after=%d delta=%d\n", before, after, after - before);
+    return 0;
+}
+`), 0o644); err != nil {
+		t.Fatalf("write vma_count.c: %v", err)
+	}
+	binary := filepath.Join(tmp, "vma_count")
+	run(t, repo, "gcc", "-O2", "-Wall", "-o", binary, src, "-lpthread")
+
+	out := runWrappedTargetWithOptions(t, art, httpSock,
+		"systrap-elf", binary, nil,
+		wrapperRunOptions{timeout: 30 * time.Second})
+
+	t.Logf("=== sigaltstack VMA leak output ===\n%s\n=== end ===", out)
+
+	if !strings.Contains(string(out), "vma-before=") {
+		t.Fatalf("VMA count program did not produce expected output; got: %q", out)
+	}
+
+	var before, after, delta int
+	for _, line := range strings.Split(string(out), "\n") {
+		if n, _ := fmt.Sscanf(line, "vma-before=%d vma-after=%d delta=%d",
+			&before, &after, &delta); n == 3 {
+			break
+		}
+	}
+
+	// Without the fix: delta ≈ 10 (one leaked VMA per thread).
+	// With the fix: delta ≈ 0 (sigaltstacks munmap'd on thread exit).
+	// Allow ≤5 headroom for incidental allocations (e.g. glibc arena).
+	const maxDelta = 5
+	if delta > maxDelta {
+		t.Fatalf("sigaltstack VMA leak: %d threads left delta=%d VMAs "+
+			"(expected <=%d); SYS_exit munmap on thread exit not working",
+			10, delta, maxDelta)
+	}
+}
+
 func truncate(b []byte, n int) []byte {
 	if len(b) <= n {
 		return b

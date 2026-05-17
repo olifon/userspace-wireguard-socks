@@ -21,15 +21,29 @@
  * reads via uwg_environ instead of libc's environ. */
 extern char **uwg_environ;
 
+/* Size of the mmap'd alternate signal stack allocated per thread.
+ * 64 KiB is comfortable for the dispatcher's stack frames; never
+ * recurse and the heaviest path is a fdproxy round-trip. Defined here
+ * so init.c, clone3_trampoline.c, and sigsys.c all share the value. */
+#define UWG_SIGALTSTACK_SIZE (64 * 1024)
+
 /* Per-thread sigaltstack lookup. Replaces the __thread-keyed storage
  * that the .so build uses. The freestanding build can't use __thread
  * because TLS requires runtime support (__tls_get_addr) absent in
  * static binaries.
  *
- * Backed by a small TID-indexed open-addressing table. The cost of a
- * lookup is one CAS-free linear probe over a few cache lines —
+ * Backed by a small TID-indexed open-addressing table with linear probing.
+ * Deletions write a tombstone (INT32_MIN) instead of 0 to preserve the
+ * probe chain for other TIDs whose entries are further in the chain.
+ * The cost of a lookup is a linear probe over a few cache lines —
  * negligible compared to the per-syscall overhead. */
+#define UWG_TID_TOMBSTONE ((int32_t)(-2147483647 - 1)) /* INT32_MIN */
+
 void *uwg_get_thread_sigaltstack(void);
 void  uwg_set_thread_sigaltstack(void *stack);
+/* Mark the current thread's sigaltstack table entry as tombstone.  Uses a
+ * tombstone rather than zeroing so other TIDs whose probe chains pass
+ * through this slot can still find their own entries. */
+void  uwg_clear_thread_sigaltstack(void);
 
 #endif /* UWG_PRELOAD_CORE_FREESTANDING_RUNTIME_H */

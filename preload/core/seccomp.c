@@ -565,7 +565,29 @@ int uwg_install_seccomp_filter_layer2(uint64_t bypass_secret) {
     uwg_emit(&prog, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP));
 #endif
 
-    /* (5) default → ALLOW. */
+    /* (5) SYS_exit → TRAP.
+     * Handler (sigsys.c) munmaps the pre-allocated 64 KiB sigaltstack via
+     * the assembly gate uwg_munmap_and_exit, then re-issues the real exit
+     * with bypass_secret in arg6 so this very rule is bypassed. Without
+     * the munmap, each thread creation leaks one VMA entry — harmless in
+     * size but grows the kernel's mm_struct rb-tree and slows mmap/fault
+     * paths over the process lifetime. */
+#ifdef SYS_exit
+    uwg_emit(&prog, (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
+                                                  SYS_exit, 0, 1));
+    uwg_emit(&prog, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP));
+#endif
+
+    /* (6) SYS_exit_group → TRAP.
+     * Same munmap-and-exit path as SYS_exit.  Handles threads created with
+     * CLONE_VM but without CLONE_THREAD (e.g. some async runtimes). */
+#ifdef SYS_exit_group
+    uwg_emit(&prog, (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
+                                                  SYS_exit_group, 0, 1));
+    uwg_emit(&prog, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP));
+#endif
+
+    /* (7) default → ALLOW. */
     uwg_emit(&prog, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
 
     long pr_rc = uwg_syscall5(SYS_prctl, PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
