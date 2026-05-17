@@ -58,14 +58,23 @@
 /* In-memory fallback when no shared-state file is available — what
  * makes phase1.so work as a drop-in replacement for the legacy preload.
  *
- * Declared without explicit initializers so the entire 10MB struct
- * (mostly the 65K-slot tracked[] array) lives in .bss instead of
- * .data; otherwise the .so balloons by ~10MB on disk. The few fields
- * that need non-zero defaults (magic/version) get populated at first
- * lookup via the lazy_local_init helper below. */
+ * Excluded from freestanding (ptloader) builds: the 10MB BSS would need
+ * to be kernel-backed when the PT_INTERP interpreter is mapped, bloating
+ * every exec's address space. In ptloader context the Go wrapper always
+ * sets UWGS_SHARED_STATE_PATH before exec so the mmap path succeeds; if
+ * it doesn't, uwg_state stays NULL and all dispatch calls short-circuit
+ * gracefully at the !uwg_state check.
+ *
+ * Non-freestanding: declared without explicit initializers so the struct
+ * lives in .bss instead of .data; non-zero fields are set by
+ * lazy_local_init on first use. */
+#ifndef UWG_FREESTANDING
 static struct uwg_shared_state uwg_state_local;
 static struct uwg_shared_state *uwg_state = &uwg_state_local;
 static _Atomic int uwg_state_local_inited;
+#else
+static struct uwg_shared_state *uwg_state;
+#endif
 
 /*
  * Per-process direct-indexed fast cache.
@@ -232,6 +241,7 @@ static inline void uwg_fd_cache_invalidate(int fd) {
 }
 
 static void lazy_local_init(void) {
+#ifndef UWG_FREESTANDING
     int expected = 0;
     if (atomic_compare_exchange_strong_explicit(
             &uwg_state_local_inited, &expected, 1,
@@ -239,6 +249,7 @@ static void lazy_local_init(void) {
         uwg_state_local.magic = UWG_SHARED_MAGIC;
         uwg_state_local.version = UWG_SHARED_VERSION;
     }
+#endif
 }
 
 /* Initialization guard. CAS-based — async-signal-safe. */

@@ -121,11 +121,15 @@ for entry in "systrap-elf:fast" "systrap-supervised:fast" "ptrace-seccomp:slow";
     if [[ ! -x "$s" ]]; then
       echo "skip $a — no script"; skip=$((skip+1)); continue
     fi
-    if CATALOG_TRANSPORT="$mode" bash "$s" >/dev/null 2>&1; then
+    tmpout=$(mktemp)
+    if CATALOG_TRANSPORT="$mode" bash "$s" >"$tmpout" 2>&1; then
       pass=$((pass+1))
     else
       fail=$((fail+1))
+      echo "FAIL [$mode/$a]:"
+      cat "$tmpout"
     fi
+    rm -f "$tmpout"
   done
   total_pass=$((total_pass+pass))
   total_fail=$((total_fail+fail))

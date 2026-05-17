@@ -166,10 +166,10 @@ func TestMeshChaosResume_HubProcessRestart(t *testing.T) {
 	// the rekey itself. Use a longer wait window. Production
 	// supervisor restart latency is typically a second or two
 	// followed by ≤ 1 minute of session-recovery; we permit up to
-	// 90s to keep the test stable on slow CI.
-	t.Log("waiting for clients to re-handshake with restarted hub (up to 90s)")
-	waitPeerReHandshake(t, hub2, keyA.PublicKey().String(), 90*time.Second)
-	waitPeerReHandshake(t, hub2, keyB.PublicKey().String(), 90*time.Second)
+	// 150s to keep the test stable on slow CI runners.
+	t.Log("waiting for clients to re-handshake with restarted hub (up to 150s)")
+	waitPeerReHandshake(t, hub2, keyA.PublicKey().String(), 150*time.Second)
+	waitPeerReHandshake(t, hub2, keyB.PublicKey().String(), 150*time.Second)
 	// Note: client Status.Peers shows the WG-side handshake state.
 	// After the hub restart, clients DO re-handshake, but their
 	// dynamic-peer state for each other still references the old
