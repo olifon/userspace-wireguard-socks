@@ -195,7 +195,7 @@ uwg_clone3_asm_gate:
      * survive the call (callee-saved ABI); r9 (bypass_secret) is
      * caller-saved and must be reloaded from GOT afterward. */
     movq  X64_OFF_SS_SP(%r15), %rdi   /* rdi = mmap base = ext.ss_sp */
-    call  uwg_set_thread_sigaltstack
+    call  uwg_set_thread_sigaltstack@PLT
     movq  uwg_bypass_secret@GOTPCREL(%rip), %r9
     movq  (%r9), %r9                   /* reload bypass_secret */
 

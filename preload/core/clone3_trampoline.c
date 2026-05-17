@@ -52,6 +52,18 @@
 # define UWG_SIGALTSTACK_SIZE (64 * 1024)
 #endif
 
+/* Ubuntu 18.04 / kernel-4.15 headers predate clone3 (Linux 5.3).
+ * Provide arch-correct fallback syscall numbers so the guard below fires
+ * and uwg_clone3_dfl_action is always compiled in — matching the identical
+ * fallback in clone3_asm.S. */
+#ifndef SYS_clone3
+# ifdef __aarch64__
+#  define SYS_clone3 220
+# else
+#  define SYS_clone3 435
+# endif
+#endif
+
 /* Guard: only meaningful on architectures where clone3 exists. */
 #if defined(SYS_clone3) && (defined(__x86_64__) || defined(__aarch64__))
 
