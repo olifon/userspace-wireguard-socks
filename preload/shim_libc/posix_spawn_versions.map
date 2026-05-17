@@ -1,4 +1,6 @@
-/* Minimal version nodes required by .symver directives in shim_posix_spawn.c.
- * No global/local sections: all other symbols remain exported as-is. */
+/* Version nodes for amd64: posix_spawn/posix_spawnp exist at GLIBC_2.15
+ * (default) and GLIBC_2.2.5 (legacy).  On arm64, glibc was added at 2.17
+ * so GLIBC_2.2.5 and GLIBC_2.15 don't exist there — use
+ * posix_spawn_versions_arm64.map instead (selected by build_phase1.sh). */
 GLIBC_2.2.5 { };
 GLIBC_2.15  { };

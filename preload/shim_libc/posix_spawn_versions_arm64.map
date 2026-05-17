@@ -1,0 +1,7 @@
+/* Version nodes for arm64: posix_spawn/posix_spawnp were introduced in
+ * glibc 2.17 (the first glibc release supporting aarch64), so that is
+ * the only version node that exists in arm64 glibc.  GNU ld 2.46+
+ * validates .symver version names against the linked libraries — referencing
+ * GLIBC_2.2.5 or GLIBC_2.15 on arm64 fails.  amd64 uses
+ * posix_spawn_versions.map instead (selected by build_phase1.sh). */
+GLIBC_2.17  { };

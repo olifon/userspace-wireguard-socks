@@ -60,9 +60,22 @@ fi
 # Honour CC for cross-compilation (e.g. CC="zig cc -target aarch64-linux-musl"
 # from the release.yml exotic-arch matrix). Default to gcc on the host.
 CC="${CC:-gcc}"
+# Select the right version script: arm64 glibc starts at 2.17, so
+# GLIBC_2.2.5 and GLIBC_2.15 don't exist there; GNU ld 2.46+ validates
+# .symver names against the linked libraries and rejects missing ones.
+case "${CC}" in
+    *aarch64*) VMAP=preload/shim_libc/posix_spawn_versions_arm64.map ;;
+    *)
+        if [ "$(uname -m 2>/dev/null)" = "aarch64" ]; then
+            VMAP=preload/shim_libc/posix_spawn_versions_arm64.map
+        else
+            VMAP=preload/shim_libc/posix_spawn_versions.map
+        fi
+        ;;
+esac
 $CC $CFLAGS_BASE $CFLAGS_WARN \
     "${CORE_SRCS[@]}" "${SHIM_SRCS[@]}" \
-    -Wl,--version-script=preload/shim_libc/posix_spawn_versions.map \
+    -Wl,--version-script="$VMAP" \
     -o "$OUT" -ldl
 
 echo "built $OUT ($(stat -c '%s' "$OUT") bytes)"

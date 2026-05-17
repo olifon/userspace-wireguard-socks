@@ -288,6 +288,13 @@ typedef int (*posix_spawn_fn)(pid_t *, const char *,
                                const posix_spawnattr_t *,
                                char *const [], char *const []);
 
+/* amd64: glibc has posix_spawn at GLIBC_2.15 (default) and GLIBC_2.2.5
+ * (legacy).  arm64: glibc was introduced at 2.17, so only GLIBC_2.17
+ * exists there — different .symver directives and a different version
+ * script (posix_spawn_versions_arm64.map) are used on aarch64. */
+
+#ifndef __aarch64__
+
 /* posix_spawn — GLIBC_2.15 (Python 3.14+ on Ubuntu 20.04+) */
 int __uwg_posix_spawn_215(pid_t *pid, const char *path,
                            const posix_spawn_file_actions_t *fa,
@@ -352,5 +359,48 @@ int __uwg_posix_spawnp_225(pid_t *pid, const char *file,
     return real_fn(pid, file, fa, sa, argv, envp);
 }
 __asm__(".symver __uwg_posix_spawnp_225, posix_spawnp@GLIBC_2.2.5");
+
+#else /* __aarch64__ */
+
+/* On arm64, glibc's posix_spawn/posix_spawnp only exist at GLIBC_2.17.
+ * GLIBC_2.2.5 and GLIBC_2.15 don't exist in arm64 glibc, so GNU ld 2.46+
+ * rejects .symver directives referencing those non-existent versions. */
+
+typedef int (*posix_spawnp_fn)(pid_t *, const char *,
+                                const posix_spawn_file_actions_t *,
+                                const posix_spawnattr_t *,
+                                char *const [], char *const []);
+
+/* posix_spawn — GLIBC_2.17 (the only version on arm64) */
+int __uwg_posix_spawn_217(pid_t *pid, const char *path,
+                           const posix_spawn_file_actions_t *fa,
+                           const posix_spawnattr_t *sa,
+                           char *const argv[], char *const envp[]) {
+    if (uwg_seccomp_docker_flag)
+        return uwg_do_posix_spawn(pid, path, fa, sa, argv, envp);
+    static posix_spawn_fn real_fn;
+    if (!real_fn)
+        real_fn = (posix_spawn_fn)dlsym(RTLD_NEXT, "posix_spawn");
+    if (!real_fn) return ENOSYS;
+    return real_fn(pid, path, fa, sa, argv, envp);
+}
+__asm__(".symver __uwg_posix_spawn_217, posix_spawn@GLIBC_2.17");
+
+/* posix_spawnp — GLIBC_2.17 (the only version on arm64) */
+int __uwg_posix_spawnp_217(pid_t *pid, const char *file,
+                            const posix_spawn_file_actions_t *fa,
+                            const posix_spawnattr_t *sa,
+                            char *const argv[], char *const envp[]) {
+    if (uwg_seccomp_docker_flag)
+        return uwg_do_posix_spawn(pid, file, fa, sa, argv, envp);
+    static posix_spawnp_fn real_fn;
+    if (!real_fn)
+        real_fn = (posix_spawnp_fn)dlsym(RTLD_NEXT, "posix_spawnp");
+    if (!real_fn) return ENOSYS;
+    return real_fn(pid, file, fa, sa, argv, envp);
+}
+__asm__(".symver __uwg_posix_spawnp_217, posix_spawnp@GLIBC_2.17");
+
+#endif /* __aarch64__ */
 
 #endif /* !UWG_FREESTANDING */
