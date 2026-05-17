@@ -1,9 +1,9 @@
 {
   "host": "hub",
   "app": "python",
-  "transport": "systrap-supervised",
+  "transport": "",
   "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 0.18,
-  "notes": "cmd: python3 -c \"import sys,urllib.request; print(urllib.request.urlopen(\\\"http://10.200.0.1:9091/v1/status\\\", timeout=10).status)\" | rc=0 | out: 200 | stderr-tail: uwgwrapper: mode=launch target=/usr/bin/bash transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-fd59cd3116d9ea5d.so listen=/tmp/uwgfdproxy-907990.sock api=http://127.0.0.1:57501 socketPath=/uwg/socket spawnFDProxy=true|uwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)|"
+  "duration_seconds": 0.29,
+  "notes": "cmd: python3 -c \"import sys,urllib.request; print(urllib.request.urlopen(\\\"http://10.200.0.1:9091/v1/status\\\", timeout=10).status)\" | rc=0 | out: 200 | stderr-tail: 1084996 fd=3 local=8|uwgwrapper: tid=1084996 syscall=7 seccomp=true rax=-38|uwgwrapper: local fd hit group=1084996 fd=3 local=8|uwgwrapper: tid=1084996 syscall=45 seccomp=true rax=-38|uwgwrapper: local fd hit group=1084996 fd=3 local=8|uwgwrapper: tid=1084996 syscall=3 seccomp=true rax=-38|uwgwrapper: local fd clear group=1084996 fd=3 local=8|uwgwrapper: tid=1084996 syscall=1 seccomp=true rax=-38|"
 }

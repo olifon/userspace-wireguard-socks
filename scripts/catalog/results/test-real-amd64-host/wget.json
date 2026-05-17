@@ -1,0 +1,9 @@
+{
+  "host": "test-real-amd64-host",
+  "app": "wget",
+  "transport": "",
+  "wrapped_ok": true,
+  "unwrapped_blocked": true,
+  "duration_seconds": 0.07,
+  "notes": "cmd: wget -q --timeout=10 --tries=1 -O - -S http://10.200.0.1:9091/v1/status 2>&1 | awk \"/HTTP\\/1/ {print \\$2; exit}\" | rc=0 | out: 200 | stderr-tail: uwgwrapper: mode=launch target=/usr/bin/bash transport=systrap-supervised preload=/tmp/uwgwrapper-0/uwgpreload-fd59cd3116d9ea5d.so listen=/tmp/uwgfdproxy-1082896.sock api=http://127.0.0.1:9091 socketPath=/uwg/socket spawnFDProxy=true|"
+}

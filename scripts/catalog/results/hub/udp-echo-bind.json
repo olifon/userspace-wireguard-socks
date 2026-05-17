@@ -1,9 +1,9 @@
 {
   "host": "hub",
   "app": "udp-echo-bind",
-  "transport": "systrap-supervised",
+  "transport": "",
   "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 0.14,
-  "notes": "self_ip=10.200.0.1 port=59100 | out: echo:hello-udp | srv-log: listening_udp 10.200.0.1:59100 | err-tail: d=/tmp/uwgwrapper-0/uwgpreload-fd59cd3116d9ea5d.so listen=/tmp/uwgfdproxy-908818.sock api=http://127.0.0.1:57501 socketPath=/uwg/socket spawnFDProxy=true|uwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)|"
+  "duration_seconds": 0.16,
+  "notes": "self_ip=10.200.0.1 port=52443 | out: echo:hello-udp | srv-log: listening_udp 10.200.0.1:52443 | err-tail: ort=52443|uwgwrapper: tid=1085047 syscall=52 seccomp=true rax=-38|uwgwrapper: getsockname fd=3 peer=true active=1 proxied=1 kind=3|uwgwrapper: tid=1085047 syscall=3 seccomp=true rax=-38|uwgwrapper: local fd clear group=1085047 fd=3 local=8|"
 }

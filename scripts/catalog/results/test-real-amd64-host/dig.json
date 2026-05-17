@@ -1,0 +1,9 @@
+{
+  "host": "test-real-amd64-host",
+  "app": "dig",
+  "transport": "",
+  "wrapped_ok": false,
+  "unwrapped_blocked": true,
+  "duration_seconds": 0.25,
+  "notes": "out:  | err-tail: gfdproxy-1085252.sock api=http://127.0.0.1:9091 socketPath=/uwg/socket spawnFDProxy=true|ERROR: ld.so: object '/tmp/uwgwrapper-0/uwgpreload-fd59cd3116d9ea5d.so' from LD_PRELOAD cannot be preloaded (cannot open shared object file): ignored.|"
+}

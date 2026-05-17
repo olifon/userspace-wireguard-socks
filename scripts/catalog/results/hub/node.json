@@ -1,9 +1,9 @@
 {
   "host": "hub",
   "app": "node",
-  "transport": "systrap-supervised",
+  "transport": "",
   "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 0.21,
-  "notes": "out: 200 | err-tail: pper: mode=launch target=/usr/bin/node transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-fd59cd3116d9ea5d.so listen=/tmp/uwgfdproxy-908048.sock api=http://127.0.0.1:57501 socketPath=/uwg/socket spawnFDProxy=true|uwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)|"
+  "duration_seconds": 0.26,
+  "notes": "out: 200 | err-tail: uwgwrapper: mode=launch target=/usr/bin/node transport=systrap-supervised preload=/tmp/uwgwrapper-0/uwgpreload-fd59cd3116d9ea5d.so listen=/tmp/uwgfdproxy-1084580.sock api=http://127.0.0.1:9091 socketPath=/uwg/socket spawnFDProxy=true|"
 }

@@ -1,9 +1,9 @@
 {
   "host": "hub",
   "app": "iperf3-udp",
-  "transport": "systrap-supervised",
+  "transport": "",
   "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 2.10,
-  "notes": "port=47326 bps=5002100.694453117 | err-tail: d=/tmp/uwgwrapper-0/uwgpreload-fd59cd3116d9ea5d.so listen=/tmp/uwgfdproxy-908758.sock api=http://127.0.0.1:57501 socketPath=/uwg/socket spawnFDProxy=true|uwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)|"
+  "duration_seconds": 2.11,
+  "notes": "port=53545 bps=5001193.757298652 | err-tail: eccomp=true rax=-38|uwgwrapper: tid=1085161 syscall=1 seccomp=true rax=-38|uwgwrapper: tid=1085161 syscall=3 seccomp=true rax=-38|uwgwrapper: tid=1085161 syscall=1 seccomp=true rax=-38|uwgwrapper: tid=1085161 syscall=3 seccomp=true rax=-38|"
 }

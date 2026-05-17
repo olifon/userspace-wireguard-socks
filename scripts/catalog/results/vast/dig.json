@@ -1,9 +1,0 @@
-{
-  "host": "vast",
-  "app": "dig",
-  "transport": "systrap-supervised",
-  "wrapped_ok": true,
-  "unwrapped_blocked": true,
-  "duration_seconds": 0.13,
-  "notes": "out: 104.20.23.154\n172.66.147.243 | err-tail: oad=/tmp/uwgwrapper-0/uwgpreload-f49ea877bc01b8b2.so listen=/tmp/uwgfdproxy-24376.sock api=http://127.0.0.1:9094 socketPath=/uwg/socket spawnFDProxy=true|uwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)|"
-}

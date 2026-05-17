@@ -1,9 +1,9 @@
 {
   "host": "hub",
   "app": "curl",
-  "transport": "systrap-supervised",
+  "transport": "",
   "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 0.12,
-  "notes": "cmd: curl -sS --max-time 10 -o /dev/null -w \"%{http_code}\\n\" http://10.200.0.1:9091/v1/status | rc=0 | out: 200 | stderr-tail: uwgwrapper: mode=launch target=/usr/bin/bash transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-fd59cd3116d9ea5d.so listen=/tmp/uwgfdproxy-907867.sock api=http://127.0.0.1:57501 socketPath=/uwg/socket spawnFDProxy=true|uwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)|"
+  "duration_seconds": 0.14,
+  "notes": "cmd: curl -sS --max-time 10 -o /dev/null -w \"%{http_code}\\n\" http://10.200.0.1:9091/v1/status | rc=0 | out: 200 | stderr-tail: omp=true rax=-38|uwgwrapper: tid=1084946 syscall=3 seccomp=true rax=-38|uwgwrapper: tid=1084946 syscall=72 seccomp=true rax=-38|uwgwrapper: tid=1084946 syscall=45 seccomp=true rax=-38|uwgwrapper: local fd hit group=1084946 fd=4 local=8|uwgwrapper: tid=1084946 syscall=3 seccomp=true rax=-38|uwgwrapper: local fd clear group=1084946 fd=4 local=8|uwgwrapper: tid=1084946 syscall=1 seccomp=true rax=-38|"
 }

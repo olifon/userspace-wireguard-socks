@@ -1,0 +1,9 @@
+{
+  "host": "test-real-amd64-host",
+  "app": "udp-echo-bind",
+  "transport": "",
+  "wrapped_ok": true,
+  "unwrapped_blocked": true,
+  "duration_seconds": 0.16,
+  "notes": "self_ip=10.200.0.1 port=45195 | out: echo:hello-udp | srv-log: listening_udp 10.200.0.1:45195 | err-tail: ort=45195|uwgwrapper: tid=1083525 syscall=52 seccomp=true rax=-38|uwgwrapper: getsockname fd=3 peer=true active=1 proxied=1 kind=3|uwgwrapper: tid=1083525 syscall=3 seccomp=true rax=-38|uwgwrapper: local fd clear group=1083525 fd=3 local=8|"
+}

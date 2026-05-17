@@ -1,9 +1,9 @@
 {
   "host": "hub",
   "app": "wget",
-  "transport": "systrap-supervised",
+  "transport": "",
   "wrapped_ok": true,
   "unwrapped_blocked": true,
   "duration_seconds": 0.11,
-  "notes": "cmd: wget -q --timeout=10 --tries=1 -O - -S http://10.200.0.1:9091/v1/status 2>&1 | awk \"/HTTP\\/1/ {print \\$2; exit}\" | rc=0 | out: 200 | stderr-tail: uwgwrapper: mode=launch target=/usr/bin/bash transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-fd59cd3116d9ea5d.so listen=/tmp/uwgfdproxy-907927.sock api=http://127.0.0.1:57501 socketPath=/uwg/socket spawnFDProxy=true|uwgwrapper: auto: chose systrap-supervised (dynamic target, seccomp=true ptrace=true)|"
+  "notes": "cmd: wget -q --timeout=10 --tries=1 -O - -S http://10.200.0.1:9091/v1/status 2>&1 | awk \"/HTTP\\/1/ {print \\$2; exit}\" | rc=0 | out: 200 | stderr-tail: uwgwrapper: mode=launch target=/usr/bin/bash transport=systrap-supervised preload=/tmp/uwgwrapper-0/uwgpreload-fd59cd3116d9ea5d.so listen=/tmp/uwgfdproxy-1084473.sock api=http://127.0.0.1:9091 socketPath=/uwg/socket spawnFDProxy=true|"
 }
