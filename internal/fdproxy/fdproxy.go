@@ -1196,7 +1196,14 @@ func (g *udpListenerGroup) serveMember(token string, local net.Conn) {
 			continue
 		}
 		remote := netip.AddrPortFrom(dgram.RemoteIP, dgram.RemotePort)
-		g.recordPeerOwner(remote, token)
+		// SO_REUSEPORT groups load-balance across members; pinning a client
+		// source port to the first member that replied defeats distribution
+		// and causes all subsequent traffic from that source to bypass other
+		// members.  Only record ownership for non-reusable single-listener
+		// groups where per-client affinity is intentional.
+		if !g.reusable {
+			g.recordPeerOwner(remote, token)
+		}
 		if remote.Addr().IsLoopback() && g.loop != nil {
 			if _, err := g.loop.WriteTo(dgram.Payload, net.UDPAddrFromAddrPort(remote)); err != nil {
 				return

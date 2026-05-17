@@ -274,6 +274,10 @@ func TestUWGWrapperReuseAcrossTransports(t *testing.T) {
 				if ok {
 					seenUDP[reply] = true
 				}
+				// Pace probes so we don't exhaust the listen count on the
+				// first registered member before the second one joins the
+				// SO_REUSEPORT group and starts receiving dispatched packets.
+				time.Sleep(10 * time.Millisecond)
 			}
 			if !seenUDP["udp-a"] || !seenUDP["udp-b"] {
 				t.Fatalf("UDP reuse replies did not reach both listeners within 60s: %v", seenUDP)
