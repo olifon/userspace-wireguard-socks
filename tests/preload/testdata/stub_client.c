@@ -975,6 +975,19 @@ static int run_udp_listener(const char *ip, const char *port, const char *messag
         close(fd);
         return 1;
     }
+    /* Eagerly trigger fdproxy registration before signaling ready.
+     * In preload/systrap mode, recvfrom() is intercepted and calls
+     * uwg_ensure_udp_listener() synchronously; MSG_DONTWAIT returns
+     * EAGAIN immediately after registration.  This guarantees both
+     * SO_REUSEPORT stubs are in the fdproxy group before the test
+     * probes, preventing the lazy-registration ordering race. */
+    {
+        char etmp[1];
+        struct sockaddr_in edummy;
+        socklen_t edummylen = sizeof(edummy);
+        (void)recvfrom(fd, etmp, sizeof(etmp), MSG_DONTWAIT,
+                       (struct sockaddr *)&edummy, &edummylen);
+    }
     printf("READY\n");
     fflush(stdout);
     int listen_count = env_int_or_default("UWGS_STUB_LISTEN_COUNT", 1);
