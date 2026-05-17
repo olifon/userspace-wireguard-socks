@@ -242,28 +242,11 @@ uwg_clone3_asm_gate:
     /* Step 1: RSP = child_rsp */
     movq  %r13, %rsp
 
-    /* Step 2: signal futex if r14 != 0 (CLONE_VM + no CLONE_VFORK case) */
-    testq %r14, %r14
-    jz    .Lx64_child_nofutex
-
-    movl  $1, (%r14)               /* *futex_ptr = 1 */
-    movq  %r14, %rdi
-    movl  $FUTEX_WAKE, %esi
-    movl  $1, %edx
-    xorl  %r10d, %r10d
-    xorl  %r8d, %r8d
-    xorl  %r9d, %r9d              /* futex does not need bypass */
-    movl  $SYS_futex, %eax
-    syscall
-    /* r11 clobbered — trap_rip is safe in r12 */
-
-.Lx64_child_nofutex:
     /* Unblock SIGSYS: the child inherits parent's task->blocked from inside
      * the SIGSYS handler, where SIGSYS is auto-added (SA_NODEFER absent).
      * If left blocked, force_sig_info resets the SIGSYS handler to SIG_DFL
      * on the child's first BPF-trapped syscall (e.g. the execve docker trap
-     * or glibc's sigprocmask restore), killing the child.
-     * Reload bypass_secret from GOT — the futex path zeros r9. */
+     * or glibc's sigprocmask restore), killing the child. */
     movq  uwg_bypass_secret@GOTPCREL(%rip), %rax
     movq  (%rax), %r9
     subq  $8, %rsp
@@ -280,7 +263,13 @@ uwg_clone3_asm_gate:
     /* Step 3: r11 = trap_rip.  Loaded AFTER all syscalls that clobber r11. */
     movq  %r12, %r11
 
-    /* Step 4: restore all saved GPRs from save_area (r15 = base).
+    /* Step 4: push futex_ptr (r14) onto child's stack BEFORE restoring GPRs.
+     * The restore below overwrites r14 with the parent's r14; we need the
+     * futex_ptr afterwards to signal the parent.  rcx is not in the save_area
+     * (clobbered by syscall) so it is safe to pop into. */
+    pushq %r14
+
+    /* Step 5: restore all saved GPRs from save_area (r15 = base).
      * r15 self-destructs on the last load. r11 and rcx are excluded
      * from save_area (clobbered by syscall instruction; callers do not
      * rely on their post-syscall values). */
@@ -297,7 +286,38 @@ uwg_clone3_asm_gate:
     movq  X64_OFF_R14(%r15), %r14
     movq  X64_OFF_R15(%r15), %r15  /* r15 self-destructs */
 
-    /* Step 5: rax = 0, jump to trap_rip via r11 */
+    /* Step 6: signal futex AFTER all save_area reads are complete.
+     * Pop saved futex_ptr into rcx (not part of the save_area).  The futex
+     * write tells the parent its signal stack is free to reuse — it MUST
+     * happen only after the child has finished reading every field in ext.
+     *
+     * The FUTEX_WAKE svc overwrites rdi, rsi, rdx, r10, r8, r9 with its
+     * arguments.  glibc's clone3 child-entry stub reads rdx (start_fn)
+     * and r8 (fn arg / pd) immediately after clone3 returns 0 — push
+     * both onto the child stack so they survive the svc. syscall also
+     * clobbers r11 (← eflags), so push trap_rip there too. */
+    popq  %rcx
+    testq %rcx, %rcx
+    jz    .Lx64_post_nofutex
+
+    pushq %r11                    /* preserve trap_rip (r11 clobbered by syscall) */
+    pushq %rdx                    /* preserve start_fn (rdx set to 1 by futex args) */
+    pushq %r8                     /* preserve pd arg  (r8  set to 0 by futex args) */
+    movl  $1, (%rcx)             /* *futex_ptr = 1 */
+    movq  %rcx, %rdi
+    movl  $FUTEX_WAKE, %esi
+    movl  $1, %edx
+    xorl  %r10d, %r10d
+    xorl  %r8d, %r8d
+    xorl  %r9d, %r9d
+    movl  $SYS_futex, %eax
+    syscall
+    popq  %r8                     /* restore pd arg */
+    popq  %rdx                    /* restore start_fn */
+    popq  %r11                    /* restore trap_rip */
+
+.Lx64_post_nofutex:
+    /* Step 7: rax = 0, jump to trap_rip via r11 */
     xorl  %eax, %eax
     jmpq  *%r11
     /* child never returns */
@@ -528,21 +548,6 @@ uwg_clone3_asm_gate:
     /* Step 1: SP = child_sp (x20 bookmark, still valid) */
     mov   sp, x20
 
-    /* Step 2: signal futex if x21 != 0 */
-    cbz   x21, .La64_child_nofutex
-
-    mov   w0, #1
-    str   w0, [x21]                /* *futex_ptr = 1 */
-    mov   x0, x21
-    mov   x1, #FUTEX_WAKE
-    mov   x2, #1
-    mov   x3, xzr
-    mov   x4, xzr
-    mov   x5, xzr                  /* futex does not need bypass */
-    mov   x8, #SYS_futex
-    svc   #0
-
-.La64_child_nofutex:
     /* Unblock SIGSYS: child inherits parent's task->blocked from inside the
      * SIGSYS handler, where SIGSYS is auto-added (SA_NODEFER absent).
      * If left blocked, force_sig_info resets the handler to SIG_DFL on the
@@ -592,7 +597,30 @@ uwg_clone3_asm_gate:
     ldp   x28, x29, [x0, #A64_OFF_X28]
     ldr   x30,      [x0, #A64_OFF_X30]
 
-    /* Step 6: x0 = 0 (child return value), jump to trap_pc */
+    /* Step 6: signal futex AFTER all save_area reads are complete.
+     * x0 still holds the save_area base (used only as load base in the
+     * ldp sequence above, never as a destination).  x8 = trap_pc.
+     * Re-read futex_ptr; if set, write 1 and FUTEX_WAKE.  svc #0 only
+     * clobbers x0; the kernel restores x8 to the syscall number on
+     * return, so push trap_pc on the child stack across the svc. */
+    ldr   x1, [x0, #A64_OFF_FUTEX_PTR]
+    cbz   x1, .La64_post_nofutex
+
+    str   x8, [sp, #-16]!          /* push trap_pc (16-byte aligned) */
+    mov   w2, #1
+    str   w2, [x1]                  /* *futex_ptr = 1 */
+    mov   x0, x1                    /* x0 = futex_ptr */
+    mov   x1, #FUTEX_WAKE
+    mov   x2, #1
+    mov   x3, xzr
+    mov   x4, xzr
+    mov   x5, xzr
+    mov   x8, #SYS_futex
+    svc   #0                        /* wake parent; x8 restored to SYS_futex by kernel */
+    ldr   x8, [sp], #16             /* pop trap_pc */
+
+.La64_post_nofutex:
+    /* Step 7: x0 = 0 (child return value), jump to trap_pc via x8 */
     mov   x0, xzr
     br    x8
     /* child never returns */

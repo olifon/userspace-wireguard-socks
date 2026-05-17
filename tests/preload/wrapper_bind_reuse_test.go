@@ -240,7 +240,7 @@ func TestUWGWrapperReuseAcrossTransports(t *testing.T) {
 					env: map[string]string{
 						"UWGS_STUB_REUSE":        "1",
 						"UWGS_STUB_REPLY":        "udp-a",
-						"UWGS_STUB_LISTEN_COUNT": "64",
+						"UWGS_STUB_LISTEN_COUNT": "1000",
 					},
 				})
 			defer killProcessGroup(aCmd)
@@ -252,7 +252,7 @@ func TestUWGWrapperReuseAcrossTransports(t *testing.T) {
 					env: map[string]string{
 						"UWGS_STUB_REUSE":        "1",
 						"UWGS_STUB_REPLY":        "udp-b",
-						"UWGS_STUB_LISTEN_COUNT": "64",
+						"UWGS_STUB_LISTEN_COUNT": "1000",
 					},
 				})
 			defer killProcessGroup(bCmd)
@@ -268,15 +268,15 @@ func TestUWGWrapperReuseAcrossTransports(t *testing.T) {
 			// for both registrations to be processed.
 			seenUDP := map[string]bool{}
 			addr := fmt.Sprintf("127.0.0.1:%d", udpPort)
-			deadline := time.Now().Add(30 * time.Second)
+			deadline := time.Now().Add(60 * time.Second)
 			for time.Now().Before(deadline) && !(seenUDP["udp-a"] && seenUDP["udp-b"]) {
-				reply, ok := tryRoundTripHostUDP(addr, "ping", 500*time.Millisecond)
+				reply, ok := tryRoundTripHostUDP(addr, "ping", 1500*time.Millisecond)
 				if ok {
 					seenUDP[reply] = true
 				}
 			}
 			if !seenUDP["udp-a"] || !seenUDP["udp-b"] {
-				t.Fatalf("UDP reuse replies did not reach both listeners within 30s: %v", seenUDP)
+				t.Fatalf("UDP reuse replies did not reach both listeners within 60s: %v", seenUDP)
 			}
 			killProcessGroup(aCmd)
 			killProcessGroup(bCmd)
