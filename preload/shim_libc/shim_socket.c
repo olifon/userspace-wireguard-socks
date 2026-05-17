@@ -29,9 +29,27 @@
 
 #include "../core/dispatch.h"
 
+/* Zero the bypass-secret register before returning from any shim that
+ * called into uwg_* (which calls uwg_passthrough_syscall*, leaving
+ * bypass_secret in r9/x5). Without this, the leaked bypass_secret in r9
+ * causes subsequent raw syscalls in the caller (e.g. glibc's internal
+ * pthread_sigmask → rt_sigprocmask) to bypass the layer-2 BPF filter
+ * entirely, so a sigprocmask(SIG_BLOCK, ~{}) call from glibc/Python
+ * child_exec blocks SIGSYS without our SIGSYS-stripping shim running.
+ * force_sig_info then sees SIGSYS blocked on the next BPF trap,
+ * resets the handler to SIG_DFL, and delivers — killing the process. */
+static inline void uwg_zero_bypass_reg(void) {
+#if defined(__x86_64__)
+    __asm__ __volatile__("xor %%r9, %%r9" ::: "r9");
+#elif defined(__aarch64__)
+    __asm__ __volatile__("mov x5, #0" ::: "x5");
+#endif
+}
+
 /* Translate a freestanding return (-errno on error, >=0 on success)
  * into the libc convention. Sets errno if rc < 0. */
 static int errno_from(long rc) {
+    uwg_zero_bypass_reg();
     if (rc < 0) {
         errno = (int)(-rc);
         return -1;
@@ -40,6 +58,7 @@ static int errno_from(long rc) {
 }
 
 static ssize_t errno_from_ssize(long rc) {
+    uwg_zero_bypass_reg();
     if (rc < 0) {
         errno = (int)(-rc);
         return -1;
@@ -74,6 +93,7 @@ int listen(int fd, int backlog) {
 int accept(int fd, struct sockaddr *addr, socklen_t *alen) {
     uint32_t a = alen ? *alen : 0;
     long rc = uwg_accept(fd, addr, alen ? &a : NULL);
+    uwg_zero_bypass_reg();
     if (rc < 0) { errno = (int)(-rc); return -1; }
     if (alen) *alen = (socklen_t)a;
     return (int)rc;
@@ -82,6 +102,7 @@ int accept(int fd, struct sockaddr *addr, socklen_t *alen) {
 int accept4(int fd, struct sockaddr *addr, socklen_t *alen, int flags) {
     uint32_t a = alen ? *alen : 0;
     long rc = uwg_accept4(fd, addr, alen ? &a : NULL, flags);
+    uwg_zero_bypass_reg();
     if (rc < 0) { errno = (int)(-rc); return -1; }
     if (alen) *alen = (socklen_t)a;
     return (int)rc;
@@ -94,6 +115,7 @@ int setsockopt(int fd, int level, int optname, const void *val, socklen_t vlen) 
 int getsockopt(int fd, int level, int optname, void *val, socklen_t *vlen) {
     uint32_t v = vlen ? *vlen : 0;
     long rc = uwg_getsockopt(fd, level, optname, val, vlen ? &v : NULL);
+    uwg_zero_bypass_reg();
     if (rc < 0) { errno = (int)(-rc); return -1; }
     if (vlen) *vlen = (socklen_t)v;
     return (int)rc;
@@ -102,6 +124,7 @@ int getsockopt(int fd, int level, int optname, void *val, socklen_t *vlen) {
 int getsockname(int fd, struct sockaddr *addr, socklen_t *alen) {
     uint32_t a = alen ? *alen : 0;
     long rc = uwg_getsockname(fd, addr, alen ? &a : NULL);
+    uwg_zero_bypass_reg();
     if (rc < 0) { errno = (int)(-rc); return -1; }
     if (alen) *alen = (socklen_t)a;
     return (int)rc;
@@ -110,6 +133,7 @@ int getsockname(int fd, struct sockaddr *addr, socklen_t *alen) {
 int getpeername(int fd, struct sockaddr *addr, socklen_t *alen) {
     uint32_t a = alen ? *alen : 0;
     long rc = uwg_getpeername(fd, addr, alen ? &a : NULL);
+    uwg_zero_bypass_reg();
     if (rc < 0) { errno = (int)(-rc); return -1; }
     if (alen) *alen = (socklen_t)a;
     return (int)rc;
@@ -151,6 +175,7 @@ ssize_t recvfrom(int fd, void *buf, size_t len, int flags,
                  struct sockaddr *src, socklen_t *slen) {
     uint32_t s = slen ? *slen : 0;
     long rc = uwg_recvfrom(fd, buf, len, flags, src, slen ? &s : NULL);
+    uwg_zero_bypass_reg();
     if (rc < 0) { errno = (int)(-rc); return -1; }
     if (slen) *slen = (socklen_t)s;
     return (ssize_t)rc;
