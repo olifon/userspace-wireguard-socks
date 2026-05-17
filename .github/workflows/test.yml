@@ -345,7 +345,18 @@ jobs:
         run: |
           $zip = Join-Path $env:RUNNER_TEMP 'wintun.zip'
           $dir = Join-Path $env:RUNNER_TEMP 'wintun'
-          Invoke-WebRequest -Uri 'https://www.wintun.net/builds/wintun-0.14.1.zip' -OutFile $zip -TimeoutSec 60
+          $uris = @(
+            'https://www.wintun.net/builds/wintun-0.14.1.zip',
+            'https://github.com/WireGuard/wintun/releases/download/v0.14.1/wintun-0.14.1.zip'
+          )
+          $ok = $false
+          foreach ($uri in $uris) {
+            try {
+              Invoke-WebRequest -Uri $uri -OutFile $zip -TimeoutSec 60 -ErrorAction Stop
+              $ok = $true; break
+            } catch { Write-Warning "Failed $uri : $_" }
+          }
+          if (-not $ok) { throw 'All wintun download mirrors failed' }
           Expand-Archive -LiteralPath $zip -DestinationPath $dir -Force
           Copy-Item (Join-Path $dir 'wintun\bin\amd64\wintun.dll') 'C:\Windows\System32\wintun.dll' -Force
 
