@@ -188,12 +188,34 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 	if spawnFDProxy {
 		_ = os.Remove(listenPath)
 		fdproxyCmd = exec.Command(os.Args[0], fdproxySpawnArgs(listenPath, api, socketPath, allowBind, allowLowBind, apiToken, debug, allowedUIDs)...)
-		fdproxyCmd.Stdout = os.Stderr
-		fdproxyCmd.Stderr = os.Stderr
+		// Use a dedicated pipe for the fdproxy's combined output instead of
+		// directly inheriting os.Stderr.  Directly sharing os.Stderr causes a
+		// hang when the wrapper is run under exec.Cmd.CombinedOutput() in tests
+		// (or any context where stderr is a pipe): the fdproxy inherits the pipe
+		// write-end, and cmd.CombinedOutput() blocks until ALL writers close it —
+		// even after the wrapper exits.  A private pipe avoids that: the pipe
+		// write-end lives only in the fdproxy, so it closes when fdproxy exits,
+		// independent of the wrapper's own stderr.
+		pr, pw, pipeErr := os.Pipe()
+		if pipeErr != nil {
+			log.Fatalf("create fdproxy output pipe: %v", pipeErr)
+		}
+		fdproxyCmd.Stdout = pw
+		fdproxyCmd.Stderr = pw
 		fdproxyCmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGTERM}
 		if err := fdproxyCmd.Start(); err != nil {
+			_ = pw.Close()
+			_ = pr.Close()
 			log.Fatalf("start built-in uwgfdproxy: %v", err)
 		}
+		// Close the write end in this process so the read goroutine below
+		// sees EOF when the fdproxy exits.
+		_ = pw.Close()
+		// Forward fdproxy output to our stderr without keeping a shared FD.
+		go func() {
+			_, _ = io.Copy(os.Stderr, pr)
+			_ = pr.Close()
+		}()
 		defer cleanupSpawnedFDProxy(fdproxyCmd, listenPath)
 		if err := waitFDProxyReady(listenPath, 5*time.Second); err != nil {
 			log.Fatalf("uwgfdproxy did not become ready: %v", err)
