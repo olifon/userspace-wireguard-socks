@@ -1,0 +1,4 @@
+/* Minimal version nodes required by .symver directives in shim_posix_spawn.c.
+ * No global/local sections: all other symbols remain exported as-is. */
+GLIBC_2.2.5 { };
+GLIBC_2.15  { };
