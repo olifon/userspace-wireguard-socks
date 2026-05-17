@@ -29,7 +29,7 @@ case "$ARCH" in
     *) echo "unsupported arch: $ARCH" >&2; exit 1 ;;
 esac
 
-CFLAGS_BASE="-O2 -fPIC -shared -D_GNU_SOURCE -DUWG_FREESTANDING -I preload/core -I preload"
+CFLAGS_BASE="-O2 -fPIC -shared -D_GNU_SOURCE -DUWG_FREESTANDING -fvisibility=hidden -I preload/core -I preload"
 CFLAGS_FREESTANDING="-ffreestanding -nostdlib -fno-stack-protector"
 # -Wl,-Bsymbolic: resolve internal symbol references at link time,
 #   eliminating GOT-indirect accesses for locally-defined symbols.
