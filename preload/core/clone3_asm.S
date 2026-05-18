@@ -2,10 +2,19 @@
  * Copyright (c) 2026 Reindert Pelsma
  * SPDX-License-Identifier: ISC
  *
- * clone3 CLONE_CLEAR_SIGHAND assembly gate.
+ * clone / clone3 assembly gates for per-thread sigaltstack setup.
  *
- * Implements uwg_clone3_asm_gate(clone_args_ptr, clone_args_size,
- * save_area_ext_ptr) for x86_64 and aarch64.
+ * Implements:
+ *   uwg_clone3_asm_gate(clone_args_ptr, clone_args_size, save_area_ext_ptr)
+ *   uwg_clone_asm_gate(save_ext_ptr, flags, child_stack,
+ *                      parent_tid, child_tid, tls)
+ * for x86_64 and aarch64.
+ *
+ * Both entry points share a common post-syscall body (.Lx64_post_syscall /
+ * .La64_post_syscall) that handles the child sigaltstack install, optional
+ * signal-handler clear loop, RSP/SP setup, SIGSYS unblock, GPR restore,
+ * futex signal, and trap_rip jump.  The parent path does a futex wait then
+ * pops callee-saved regs and returns.
  *
  * See clone3_trampoline.c for the full design description and struct
  * layouts. This file must stay in sync with the field offsets there.
@@ -37,6 +46,13 @@
 #ifndef SYS_clone3
 # if defined(__x86_64__) || defined(__aarch64__)
 #  define SYS_clone3 435
+# endif
+#endif
+#ifndef SYS_clone
+# if defined(__x86_64__)
+#  define SYS_clone 56
+# elif defined(__aarch64__)
+#  define SYS_clone 220
 # endif
 #endif
 #ifndef SYS_rt_sigaction
@@ -162,7 +178,70 @@ uwg_clone3_asm_gate:
     syscall
     /* syscall clobbers rcx (← rip) and r11 (← rflags).
      * r9, r12..r15, rbx, rbp are all preserved. */
+    jmp   .Lx64_post_syscall
+    /* continues at .Lx64_post_syscall (shared with uwg_clone_asm_gate) */
 
+/*
+ * uwg_clone_asm_gate — old-style SYS_clone entry point.
+ *
+ * C signature:
+ *   uwg_clone_asm_gate(save_ext_ptr, flags, child_stack,
+ *                      parent_tid, child_tid, tls)
+ *
+ * C args (System V AMD64 ABI):
+ *   rdi = save_ext_ptr    rsi = flags
+ *   rdx = child_stack     rcx = parent_tid
+ *   r8  = child_tid       r9  = tls
+ *
+ * SYS_clone kernel register layout:
+ *   rdi = flags           rsi = child_stack
+ *   rdx = parent_tid      r10 = child_tid   (NOT rcx)
+ *   r8  = tls             r9  = bypass_secret
+ *
+ * Uses the SAME callee-saved push sequence as uwg_clone3_asm_gate so the
+ * shared parent epilogue (pop sequence + ret) works for both.  Shares all
+ * code from .Lx64_post_syscall onward.
+ */
+    .globl uwg_clone_asm_gate
+    .type  uwg_clone_asm_gate, @function
+uwg_clone_asm_gate:
+    pushq %rbx
+    pushq %rbp
+    pushq %r12
+    pushq %r13
+    pushq %r14
+    pushq %r15
+
+    /* r15 = save_ext_ptr (C arg 1, in rdi — load before rdi is overwritten) */
+    movq  %rdi, %r15
+
+    /* Load coordination fields from save_area_ext */
+    movq  X64_OFF_TRAP_RIP(%r15),  %r12   /* r12 = trap_rip */
+    movq  X64_OFF_CHILD_RSP(%r15), %r13   /* r13 = child_rsp */
+    movq  X64_OFF_FUTEX_PTR(%r15), %r14   /* r14 = futex_ptr */
+
+    /* Shuffle C args into SYS_clone kernel register layout.
+     * Current: rdi=save_ext(done), rsi=flags, rdx=child_stack,
+     *          rcx=parent_tid, r8=child_tid, r9=tls
+     * Target:  rdi=flags, rsi=child_stack, rdx=parent_tid,
+     *          r10=child_tid, r8=tls, r9=bypass_secret
+     *
+     * Order is load-bearing: r10=r8 and r8=r9 must precede the
+     * bypass_secret load (which clobbers r9); rdi=rsi must come after
+     * the r10/r8 moves so their source registers haven't been changed. */
+    movq  %r8,  %r10   /* r10 = child_tid (before r8 is overwritten) */
+    movq  %r9,  %r8    /* r8  = tls       (before r9 used for bypass) */
+    movq  %rsi, %rdi   /* rdi = flags */
+    movq  %rdx, %rsi   /* rsi = child_stack */
+    movq  %rcx, %rdx   /* rdx = parent_tid */
+    movq  uwg_bypass_secret@GOTPCREL(%rip), %r9
+    movq  (%r9), %r9   /* r9 = bypass_secret */
+    movl  $SYS_clone, %eax
+    syscall
+
+    /* Fall through to shared post-syscall code. */
+
+.Lx64_post_syscall:
     testq %rax, %rax
     jnz   .Lx64_parent
 
@@ -361,6 +440,7 @@ uwg_clone3_asm_gate:
     popq  %rbx
     retq
 
+    .size uwg_clone_asm_gate, . - uwg_clone_asm_gate
     .size uwg_clone3_asm_gate, . - uwg_clone3_asm_gate
 
 /* ================================================================
@@ -472,7 +552,73 @@ uwg_clone3_asm_gate:
     mov   x8, #SYS_clone3
     svc   #0
     /* x0 = result; x1..x30 (except x0) preserved by kernel */
+    b     .La64_post_syscall
+    /* continues at .La64_post_syscall (shared with uwg_clone_asm_gate) */
 
+    .size uwg_clone3_asm_gate, . - uwg_clone3_asm_gate
+
+/*
+ * uwg_clone_asm_gate — old-style SYS_clone entry point (aarch64).
+ *
+ * C signature:
+ *   uwg_clone_asm_gate(save_ext_ptr, flags, child_stack,
+ *                      parent_tid, child_tid, tls)
+ *
+ * C args (AAPCS64):
+ *   x0 = save_ext_ptr   x1 = flags   x2 = child_stack
+ *   x3 = parent_tid     x4 = child_tid   x5 = tls
+ *
+ * SYS_clone kernel register layout:
+ *   x0 = flags   x1 = child_stack   x2 = parent_tid
+ *   x3 = child_tid   x4 = tls   x5 = bypass_secret
+ *
+ * Uses the SAME stp prologue as uwg_clone3_asm_gate so the shared
+ * parent epilogue (ldp sequence + ret) works for both.  Shares all
+ * code from .La64_post_syscall onward.
+ */
+    .globl uwg_clone_asm_gate
+    .type  uwg_clone_asm_gate, %function
+uwg_clone_asm_gate:
+    stp   x29, x30, [sp, #-16]!
+    mov   x29, sp
+    stp   x27, x28, [sp, #-16]!
+    stp   x25, x26, [sp, #-16]!
+    stp   x23, x24, [sp, #-16]!
+    stp   x21, x22, [sp, #-16]!
+    stp   x19, x20, [sp, #-16]!
+
+    /* x22 = save_ext_ptr (C arg 1, in x0 — load before x0 is overwritten) */
+    mov   x22, x0
+
+    /* Load coordination fields from save_area_ext */
+    ldr   x19, [x22, #A64_OFF_TRAP_PC]    /* x19 = trap_pc */
+    ldr   x20, [x22, #A64_OFF_CHILD_SP]   /* x20 = child_sp */
+    ldr   x21, [x22, #A64_OFF_FUTEX_PTR]  /* x21 = futex_ptr */
+
+    /* Shuffle C args into SYS_clone kernel register layout.
+     * Initial: x0=save_ext(done), x1=flags, x2=child_stack,
+     *          x3=parent_tid, x4=child_tid, x5=tls
+     * Target:  x0=flags, x1=child_stack, x2=parent_tid,
+     *          x3=child_tid, x4=tls, x5=bypass_secret
+     *
+     * Left-to-right assignment works because x0 (save_ext) is already
+     * consumed into x22 and is safe to overwrite.  Each step propagates
+     * one position left, finishing with x4=tls before x5 is replaced
+     * by the bypass_secret load. */
+    mov   x0, x1                   /* x0 = flags */
+    mov   x1, x2                   /* x1 = child_stack */
+    mov   x2, x3                   /* x2 = parent_tid */
+    mov   x3, x4                   /* x3 = child_tid */
+    mov   x4, x5                   /* x4 = tls */
+    adrp  x5, :got:uwg_bypass_secret
+    ldr   x5, [x5, :got_lo12:uwg_bypass_secret]
+    ldr   x5, [x5]                 /* x5 = bypass_secret */
+    mov   x8, #SYS_clone
+    svc   #0
+    /* x0 = result; x1..x30 (except x0) preserved by kernel */
+    /* Fall through to shared post-syscall code. */
+
+.La64_post_syscall:
     cbnz  x0, .La64_parent
 
     /* ==============================================================
@@ -660,6 +806,7 @@ uwg_clone3_asm_gate:
     ldp   x29, x30, [sp], #16
     ret
 
+    .size uwg_clone_asm_gate, . - uwg_clone_asm_gate
     .size uwg_clone3_asm_gate, . - uwg_clone3_asm_gate
 
 #endif /* __x86_64__ / __aarch64__ */

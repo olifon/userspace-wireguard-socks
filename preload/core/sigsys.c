@@ -114,6 +114,22 @@ extern void uwg_munmap_and_exit(void *ss_base, long exit_nr, long exit_status)
 extern long uwg_clone3_trampoline(long a1, long a2, ucontext_t *uc);
 #endif
 
+/* SYS_clone (old-style) trampoline for per-thread sigaltstack setup.
+ * glibc < 2.34, musl, and the Go runtime use SYS_clone for threads.
+ * Defined in clone3_trampoline.c; uses same save_ext struct and shared
+ * asm common body as clone3 via uwg_clone_asm_gate. */
+#if defined(__x86_64__) || defined(__aarch64__)
+#ifndef SYS_clone
+# if defined(__x86_64__)
+#  define SYS_clone 56
+# elif defined(__aarch64__)
+#  define SYS_clone 220
+# endif
+#endif
+extern long uwg_clone_trampoline(long a1, long a2, long a3, long a4, long a5,
+                                  ucontext_t *uc);
+#endif
+
 /* SA_RESTORER and the kernel_sigaction layout aren't always exported
  * via <signal.h>. Define explicitly. */
 #ifndef SA_RESTORER
@@ -333,6 +349,24 @@ void uwg_sigsys_handler(int sig, siginfo_t *si, void *uctx_void) {
          * this, sigreturn restores task->blocked with SIGSYS set, so
          * the next BPF trap fires with SIGSYS blocked — force_sig_info
          * resets the handler to SIG_DFL and delivers, killing the process. */
+        ((unsigned long *)&uc->uc_sigmask)[0] &= ~((unsigned long)1 << (SIGSYS - 1));
+        uwg_uctx_set_result(uc, result);
+        return;
+    }
+#endif
+
+#if defined(SYS_clone) && (defined(__x86_64__) || defined(__aarch64__))
+    /* SYS_clone (old-style) per-thread sigaltstack trampoline.
+     * glibc < 2.34, musl, and the Go runtime use SYS_clone for thread
+     * creation.  Linux clears the child's sigaltstack for CLONE_VM
+     * without CLONE_VFORK, just as for clone3.  The trampoline mmap's a
+     * 64 KB sigaltstack for the child and installs it via the shared asm
+     * gate (uwg_clone_asm_gate in clone3_asm.S).
+     * Only active in docker mode (where SYS_clone is BPF-trapped by the
+     * layer-2 filter).  Parent returns child PID; child jumps to trap_rip. */
+    if (nr == (long)SYS_clone && uwg_seccomp_docker_flag) {
+        long result = uwg_clone_trampoline(args[0], args[1], args[2],
+                                           args[3], args[4], uc);
         ((unsigned long *)&uc->uc_sigmask)[0] &= ~((unsigned long)1 << (SIGSYS - 1));
         uwg_uctx_set_result(uc, result);
         return;

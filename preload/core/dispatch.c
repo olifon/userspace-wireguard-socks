@@ -35,6 +35,21 @@
 # define CLONE_CLEAR_SIGHAND 0x100000000ULL
 #endif
 
+/* SYS_clone is always present on Linux; fallback for freestanding builds. */
+#ifndef SYS_clone
+# if defined(__x86_64__)
+#  define SYS_clone 56
+# elif defined(__aarch64__)
+#  define SYS_clone 220
+# endif
+#endif
+#ifndef CLONE_VM
+# define CLONE_VM 0x00000100
+#endif
+#ifndef CLONE_VFORK
+# define CLONE_VFORK 0x00004000
+#endif
+
 #define ENOSYS_RET (-38L)
 
 /* The big switch. Kept dense so the compiler can lay it out as a
@@ -79,6 +94,28 @@ long uwg_dispatch(long nr, long a1, long a2, long a3,
     case SYS_writev:      return uwg_writev((int)a1, (const struct iovec *)a2, (int)a3);
     case SYS_pread64:     return uwg_pread((int)a1, (void *)a2, (size_t)a3, (int64_t)a4);
     case SYS_pwrite64:    return uwg_pwrite((int)a1, (const void *)a2, (size_t)a3, (int64_t)a4);
+
+    /* --- clone (old-style) per-thread sigaltstack setup (docker mode) --- */
+#ifdef SYS_clone
+    case SYS_clone: {
+        /* Reached via the PLT syscall() shim (shim_syscall.c → uwg_dispatch).
+         * The BPF layer-2 trap path is handled via sigsys.c → uwg_clone_trampoline
+         * which has the full ucontext and uses the assembly gate.
+         * Here (PLT path) we don't have a ucontext, so we can only do the
+         * passthrough and install the sigaltstack as a best-effort post-clone
+         * step in the child.  This is the same approach as the clone3 PLT case.
+         *
+         * a1=flags, a2=child_stack, a3=parent_tid, a4=child_tid, a5=tls */
+        int need_ss = (a1 & CLONE_VM) && !(a1 & CLONE_VFORK);
+        long r = uwg_passthrough_syscall5(SYS_clone, a1, a2, a3, a4, a5);
+        /* Child path: install sigaltstack so subsequent SIGSYS delivery
+         * on this thread has a valid alternate stack. */
+        if (r == 0 && need_ss && uwg_seccomp_docker_flag) {
+            uwg_core_init_thread();
+        }
+        return r;
+    }
+#endif
 
     /* --- execve interception (systrap-docker mode) --- */
 #ifdef SYS_execve

@@ -565,6 +565,19 @@ int uwg_install_seccomp_filter_layer2(uint64_t bypass_secret) {
     uwg_emit(&prog, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP));
 #endif
 
+    /* (4b) clone (old-style) → TRAP.
+     * glibc < 2.34, musl, and the Go runtime use SYS_clone (not SYS_clone3)
+     * for thread creation.  Without this trap, threads created via SYS_clone
+     * never get a per-thread sigaltstack installed, so SIGSYS delivery on
+     * those threads falls back to the normal thread stack and can overflow.
+     * handler: sigsys.c → uwg_clone_trampoline → clone3_asm.S (shared common
+     * code via uwg_clone_asm_gate). */
+#ifdef SYS_clone
+    uwg_emit(&prog, (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
+                                                  SYS_clone, 0, 1));
+    uwg_emit(&prog, (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP));
+#endif
+
     /* (5) SYS_exit → TRAP.
      * Handler (sigsys.c) munmaps the pre-allocated 64 KiB sigaltstack via
      * the assembly gate uwg_munmap_and_exit, then re-issues the real exit

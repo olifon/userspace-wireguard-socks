@@ -64,6 +64,16 @@
 # endif
 #endif
 
+/* SYS_clone is always present on Linux; fallback in case freestanding
+ * headers omit it. */
+#ifndef SYS_clone
+# if defined(__x86_64__)
+#  define SYS_clone 56
+# elif defined(__aarch64__)
+#  define SYS_clone 220
+# endif
+#endif
+
 /* Guard: only meaningful on architectures where clone3 exists. */
 #if defined(SYS_clone3) && (defined(__x86_64__) || defined(__aarch64__))
 
@@ -179,6 +189,19 @@ struct uwg_clone3_save_ext {
 extern long uwg_clone3_asm_gate(long clone_args_ptr,
                                  long clone_args_size,
                                  long save_area_ext_ptr);
+
+/* clone (old-style) asm gate — same save_ext layout, different syscall
+ * number and flat arg layout.  Declared in clone3_asm.S.
+ * Args: save_ext_ptr, flags, child_stack, parent_tid, child_tid, tls.
+ * The asm entry point shuffles these into the kernel-ABI registers for
+ * SYS_clone, loads bypass_secret into the 6th syscall arg, then jumps
+ * to the shared clone3/clone common body. */
+extern long uwg_clone_asm_gate(long save_ext_ptr,
+                                long flags,
+                                long child_stack,
+                                long parent_tid,
+                                long child_tid,
+                                long tls);
 
 /*
  * Entry point called from the SIGSYS handler (sigsys.c) when SYS_clone3
@@ -322,3 +345,124 @@ fallback:
 }
 
 #endif /* SYS_clone3 */
+
+/* SYS_clone (old-style) trampoline.
+ *
+ * glibc < 2.34, musl, and the Go runtime use SYS_clone (not SYS_clone3) for
+ * thread creation.  Linux clears the child's sigaltstack for CLONE_VM without
+ * CLONE_VFORK threads just as it does for clone3 — so the same per-thread
+ * sigaltstack setup is required.
+ *
+ * CLONE_CLEAR_SIGHAND is a clone3-only flag; SYS_clone does not support it.
+ * So need_clr is always 0 here.  We only intercept when CLONE_VM is set
+ * without CLONE_VFORK (thread creation) and a sigaltstack install is needed.
+ *
+ * Reuses uwg_clone3_save_ext (identical struct layout) and the shared
+ * assembly common body via uwg_clone_asm_gate (new entry point in
+ * clone3_asm.S that sets rax/x8=SYS_clone and shuffles the flat args into
+ * syscall register order before jumping to the shared common code).
+ *
+ * SYS_clone flat arg layout:
+ *   x86_64: rdi=flags, rsi=child_stack, rdx=parent_tid, r10=child_tid, r8=tls
+ *   aarch64: x0=flags, x1=child_stack, x2=parent_tid, x3=child_tid, x4=tls
+ *
+ * The ucontext reflects these positions via uwg_uctx_load_args (args[0..4]).
+ */
+#if defined(__x86_64__) || defined(__aarch64__)
+long uwg_clone_trampoline(long a1, long a2, long a3, long a4, long a5,
+                          ucontext_t *uc)
+{
+    /* a1=flags, a2=child_stack, a3=parent_tid, a4=child_tid, a5=tls */
+    uint64_t flags       = (uint64_t)a1;
+    long     child_stack = a2;
+
+    /* Only intercept thread creation: CLONE_VM set, CLONE_VFORK not set.
+     * Anything else (fork-like, vfork) doesn't need sigaltstack setup. */
+    int need_ss = !!(flags & CLONE_VM) && !(flags & CLONE_VFORK);
+    if (!need_ss)
+        goto fallback;
+
+    struct uwg_clone3_save_ext ext;
+
+    /* Fill GPR save from ucontext — same fields as clone3 trampoline. */
+#if defined(__x86_64__)
+    ext.regs.rbx = (uint64_t)uc->uc_mcontext.gregs[REG_RBX];
+    ext.regs.rdx = (uint64_t)uc->uc_mcontext.gregs[REG_RDX];
+    ext.regs.rsi = (uint64_t)uc->uc_mcontext.gregs[REG_RSI];
+    ext.regs.rdi = (uint64_t)uc->uc_mcontext.gregs[REG_RDI];
+    ext.regs.rbp = (uint64_t)uc->uc_mcontext.gregs[REG_RBP];
+    ext.regs.r8  = (uint64_t)uc->uc_mcontext.gregs[REG_R8];
+    ext.regs.r9  = (uint64_t)uc->uc_mcontext.gregs[REG_R9];
+    ext.regs.r10 = (uint64_t)uc->uc_mcontext.gregs[REG_R10];
+    ext.regs.r12 = (uint64_t)uc->uc_mcontext.gregs[REG_R12];
+    ext.regs.r13 = (uint64_t)uc->uc_mcontext.gregs[REG_R13];
+    ext.regs.r14 = (uint64_t)uc->uc_mcontext.gregs[REG_R14];
+    ext.regs.r15 = (uint64_t)uc->uc_mcontext.gregs[REG_R15];
+    ext.trap_rip  = (uint64_t)uc->uc_mcontext.gregs[REG_RIP];
+    /* child_rsp: SYS_clone's child_stack arg is the TOP of the child stack
+     * (Linux kernel interprets it as the starting SP directly).  If zero,
+     * the child inherits the parent's RSP. */
+    ext.child_rsp = child_stack ? (uint64_t)child_stack
+                                : (uint64_t)uc->uc_mcontext.gregs[REG_RSP];
+#elif defined(__aarch64__)
+    ext.regs.x1  = (uint64_t)uc->uc_mcontext.regs[1];
+    ext.regs.x2  = (uint64_t)uc->uc_mcontext.regs[2];
+    ext.regs.x3  = (uint64_t)uc->uc_mcontext.regs[3];
+    ext.regs.x4  = (uint64_t)uc->uc_mcontext.regs[4];
+    ext.regs.x5  = (uint64_t)uc->uc_mcontext.regs[5];
+    ext.regs.x6  = (uint64_t)uc->uc_mcontext.regs[6];
+    ext.regs.x7  = (uint64_t)uc->uc_mcontext.regs[7];
+    ext.regs.x9  = (uint64_t)uc->uc_mcontext.regs[9];
+    ext.regs.x10 = (uint64_t)uc->uc_mcontext.regs[10];
+    ext.regs.x11 = (uint64_t)uc->uc_mcontext.regs[11];
+    ext.regs.x12 = (uint64_t)uc->uc_mcontext.regs[12];
+    ext.regs.x13 = (uint64_t)uc->uc_mcontext.regs[13];
+    ext.regs.x14 = (uint64_t)uc->uc_mcontext.regs[14];
+    ext.regs.x15 = (uint64_t)uc->uc_mcontext.regs[15];
+    ext.regs.x16 = (uint64_t)uc->uc_mcontext.regs[16];
+    ext.regs.x17 = (uint64_t)uc->uc_mcontext.regs[17];
+    ext.regs.x18 = (uint64_t)uc->uc_mcontext.regs[18];
+    ext.regs.x19 = (uint64_t)uc->uc_mcontext.regs[19];
+    ext.regs.x20 = (uint64_t)uc->uc_mcontext.regs[20];
+    ext.regs.x21 = (uint64_t)uc->uc_mcontext.regs[21];
+    ext.regs.x22 = (uint64_t)uc->uc_mcontext.regs[22];
+    ext.regs.x23 = (uint64_t)uc->uc_mcontext.regs[23];
+    ext.regs.x24 = (uint64_t)uc->uc_mcontext.regs[24];
+    ext.regs.x25 = (uint64_t)uc->uc_mcontext.regs[25];
+    ext.regs.x26 = (uint64_t)uc->uc_mcontext.regs[26];
+    ext.regs.x27 = (uint64_t)uc->uc_mcontext.regs[27];
+    ext.regs.x28 = (uint64_t)uc->uc_mcontext.regs[28];
+    ext.regs.x29 = (uint64_t)uc->uc_mcontext.regs[29];
+    ext.regs.x30 = (uint64_t)uc->uc_mcontext.regs[30];
+    ext.trap_rip  = (uint64_t)uc->uc_mcontext.pc;
+    ext.child_rsp = child_stack ? (uint64_t)child_stack
+                                : (uint64_t)uc->uc_mcontext.sp;
+#endif
+
+    /* Futex: CLONE_VM without CLONE_VFORK means shared address space, parent
+     * not blocked by kernel — need futex to prevent save_ext reuse before
+     * child is done reading it. */
+    uint32_t futex_word = 0;
+    ext.futex_ptr = (uint64_t)&futex_word;
+
+    /* Allocate per-thread sigaltstack (same as clone3 thread path). */
+    long mm = uwg_syscall6(SYS_mmap, 0, UWG_SIGALTSTACK_SIZE,
+                           PROT_READ | PROT_WRITE,
+                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (mm < 0) goto fallback;
+    ext.ss_sp    = (uint64_t)mm;
+    ext.ss_flags = 0;
+    ext._ss_pad  = 0;
+    ext.ss_size  = UWG_SIGALTSTACK_SIZE;
+    ext.ss_ptr   = (uint64_t)&ext.ss_sp;
+
+    /* SYS_clone with CLONE_SIGHAND shares the sigaction table — never clear
+     * handlers from the child (would reset parent's handlers too). */
+    ext.clear_sighandlers = 0;
+
+    return uwg_clone_asm_gate((long)&ext, a1, a2, a3, a4, a5);
+
+fallback:
+    return uwg_passthrough_syscall5(SYS_clone, a1, a2, a3, a4, a5);
+}
+#endif /* __x86_64__ || __aarch64__ */
