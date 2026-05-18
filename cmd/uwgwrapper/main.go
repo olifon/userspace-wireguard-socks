@@ -176,8 +176,12 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 	// multi-threaded raw-asm syscall load (Caddy, Python test_urllib). It is
 	// not selected by --transport=auto. Warn when explicitly requested so
 	// operators are aware of the limitation.
+	// The leading '\n' ensures the warning starts on its own line even when
+	// the wrapped process's stdout lacked a trailing newline (the test harness
+	// concatenates stdout then stderr, so without the prefix newline the warning
+	// can appear on the same line as the last stdout byte).
 	if transport == "systrap-supervised" {
-		log.Printf("warning: systrap-supervised has a known concurrency race under multi-threaded raw-asm syscall load; prefer systrap-elf for most workloads (see docs/howto/03-wrapper-interception.md)")
+		_, _ = fmt.Fprintf(os.Stderr, "\nuwgwrapper: warning: systrap-supervised has a known concurrency race under multi-threaded raw-asm syscall load; prefer systrap-elf for most workloads (see docs/howto/03-wrapper-interception.md)\n")
 	}
 
 	// systrap-elf (and auto, which may select systrap-elf for either
