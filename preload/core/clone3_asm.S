@@ -370,16 +370,25 @@ uwg_clone_asm_gate:
      * write tells the parent its signal stack is free to reuse — it MUST
      * happen only after the child has finished reading every field in ext.
      *
-     * The FUTEX_WAKE svc overwrites rdi, rsi, rdx, r10, r8, r9 with its
-     * arguments.  glibc's clone3 child-entry stub reads rdx (start_fn)
-     * and r8 (fn arg / pd) immediately after clone3 returns 0 — push
-     * both onto the child stack so they survive the svc. syscall also
-     * clobbers r11 (← eflags), so push trap_rip there too. */
+     * The FUTEX_WAKE syscall clobbers rdi, rsi, rdx, r10, r8, r9 with its
+     * arguments and clobbers r11 (← eflags) and rcx (← rip) via the
+     * syscall instruction itself.
+     *
+     * Registers to preserve:
+     *   r11  — trap_rip (syscall clobbers r11 ← eflags)
+     *   rsi  — child_rsp / stk: Go's clone reads RSI for `mov %rsi,%rsp`
+     *           to restore the child stack pointer; FUTEX_WAKE sets esi=1
+     *   r9   — gp: Go's clone reads R9 for `cmp $0,%r9` guard; zeroed for
+     *           futex arg6
+     *   rdx  — start_fn: glibc's clone3 child-entry stub reads rdx
+     *   r8   — pd arg: glibc's clone3 child-entry stub reads r8 */
     popq  %rcx
     testq %rcx, %rcx
     jz    .Lx64_post_nofutex
 
-    pushq %r11                    /* preserve trap_rip (r11 clobbered by syscall) */
+    pushq %r11                    /* preserve trap_rip (r11 ← eflags via syscall) */
+    pushq %rsi                    /* preserve stk: Go clone child reads RSI for mov rsi,rsp */
+    pushq %r9                     /* preserve gp:  Go clone child reads R9 for cmp $0,%r9 */
     pushq %rdx                    /* preserve start_fn (rdx set to 1 by futex args) */
     pushq %r8                     /* preserve pd arg  (r8  set to 0 by futex args) */
     movl  $1, (%rcx)             /* *futex_ptr = 1 */
@@ -393,6 +402,8 @@ uwg_clone_asm_gate:
     syscall
     popq  %r8                     /* restore pd arg */
     popq  %rdx                    /* restore start_fn */
+    popq  %r9                     /* restore gp */
+    popq  %rsi                    /* restore stk */
     popq  %r11                    /* restore trap_rip */
 
 .Lx64_post_nofutex:
