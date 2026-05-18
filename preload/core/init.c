@@ -97,11 +97,17 @@ static void uwg_sigsys_atfork_child(void) {
         (void)uwg_install_sigsys_handler();
 }
 
-/* Forward-declare pthread_atfork without pulling in all of <pthread.h>. */
+/* Forward-declare pthread_atfork without pulling in all of <pthread.h>.
+ * Declared weak so the preload.so loads on glibc < 2.34 targets that have
+ * not loaded libpthread.so.0 (where pthread_atfork lives before glibc 2.34
+ * merged it into libc.so.6). A NULL-guarded call is safe: if libpthread is
+ * absent the process cannot fork from multiple threads anyway. */
 extern int pthread_atfork(void (*prepare)(void), void (*parent)(void),
-                          void (*child)(void));
+                          void (*child)(void)) __attribute__((weak));
 
 static int uwg_register_sigsys_atfork(void) {
+    if (!pthread_atfork)
+        return 0;
     return pthread_atfork(NULL, NULL, uwg_sigsys_atfork_child);
 }
 #endif /* !UWG_FREESTANDING */

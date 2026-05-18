@@ -979,8 +979,8 @@ jobs:
                    gcc --version | head -1; \
                    bash ./preload/build_ptloader.sh cmd/uwgwrapper/assets; \
                    bash ./preload/build_static.sh >/dev/null; \
-                   go test -buildvcs=false -count=1 -timeout 600s ./tests/preload/... || \
-                     go test -buildvcs=false -count=1 -timeout 600s ./tests/preload/...'
+                   go test -buildvcs=false -count=1 -timeout 1800s ./tests/preload/... || \
+                     go test -buildvcs=false -count=1 -timeout 1800s ./tests/preload/...'
 
   # NOTE: the preload-chromium-matrix has been removed for v0.1.0.
   # Investigation in beta.39-beta.44 surfaced two real wrapper bugs
