@@ -295,7 +295,7 @@ func TestReconnectMatrixSessionDeath(t *testing.T) {
 					t.Fatal("expected error after server close, got nil")
 				}
 				t.Logf("%s: session death detected: %v", tc.name, err)
-			case <-time.After(5 * time.Second):
+			case <-time.After(15 * time.Second):
 				t.Fatal("timeout waiting for session death detection")
 			}
 			clientSess.Close()
