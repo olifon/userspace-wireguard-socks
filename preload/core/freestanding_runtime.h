@@ -32,11 +32,21 @@ extern char **uwg_environ;
  * because TLS requires runtime support (__tls_get_addr) absent in
  * static binaries.
  *
- * Backed by a small TID-indexed open-addressing table with linear probing.
+ * Backed by a TID-indexed open-addressing table with linear probing.
  * Deletions write a tombstone (INT32_MIN) instead of 0 to preserve the
  * probe chain for other TIDs whose entries are further in the chain.
  * The cost of a lookup is a linear probe over a few cache lines —
- * negligible compared to the per-syscall overhead. */
+ * negligible compared to the per-syscall overhead.
+ *
+ * In docker/elf mode, SYS_exit is BPF-trapped so the sigaltstack entry
+ * is tombstoned and munmapped on thread exit. In non-docker modes
+ * (plain systrap), SYS_exit is not trapped, so entries persist as
+ * stale-live after thread exit. TID recycling means a new thread may
+ * find and reuse the old entry (the mapping is still valid). The table
+ * is sized to comfortably outlive typical high-churn workloads (Go HTTP
+ * servers, Python multiprocessing) before slot exhaustion is possible.
+ * A full table silently degrades to SIGSYS on the normal stack rather
+ * than the sigaltstack (see uwg_set_thread_sigaltstack comment). */
 #define UWG_TID_TOMBSTONE ((int32_t)(-2147483647 - 1)) /* INT32_MIN */
 
 void *uwg_get_thread_sigaltstack(void);

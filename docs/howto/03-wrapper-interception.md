@@ -107,7 +107,7 @@ through `uwgsocks`; it does not change the process' Unix privileges.
 
 ## Why It Still Works On Static Go Or Rust Binaries
 
-- `transport=systrap-docker` (the default for static targets when seccomp is
+- `transport=systrap-elf` (the default for static targets when seccomp is
   available): patches the binary's ELF headers in a memfd, appending a
   `PT_INTERP` entry pointing at `uwgptloader.so`. The kernel loads the ptloader
   as the ELF interpreter before `_start`, installing the seccomp+SIGSYS handler
@@ -115,20 +115,21 @@ through `uwgsocks`; it does not change the process' Unix privileges.
 - `transport=systrap` (dynamic targets in containers without ptrace): `LD_PRELOAD`
   catches the libc path; a seccomp-bpf filter + in-process SIGSYS handler catches
   raw-asm syscalls. No tracer attached.
-- `transport=systrap-supervised` (dynamic targets with ptrace available, or exec
-  chains that mix dynamic and static descendants, e.g. `bash` launching a static
-  binary): same in-process SIGSYS path as `systrap`, plus a persistent ptrace
-  supervisor that re-arms interception at every exec boundary.
+- `transport=systrap-supervised` [experimental]: same in-process SIGSYS path as
+  `systrap`, plus a persistent ptrace supervisor that re-arms interception at every
+  exec boundary. Has a known concurrency race under multi-threaded raw-asm syscall
+  load (e.g. Caddy, Python's `test_urllib`). Not selected by `auto`; must be
+  explicitly requested. Prefer `systrap-elf` for most exec-chain workloads.
 - `transport=ptrace`/`ptrace-only`: per-syscall ptrace fallback for hosts where
   seccomp is not available.
 - `transport=preload`: libc-only fallback when neither seccomp nor ptrace is
   available — raw-asm syscalls bypass interception silently.
 
 `auto` probes seccomp and ptrace availability, ELF-checks the target for
-`PT_INTERP`, and picks the strongest viable mode. For a standalone static binary
-it selects `systrap-docker` whenever seccomp is available (regardless of ptrace).
-For a dynamic binary launching into a mixed exec tree it selects
-`systrap-supervised` when ptrace is also available.
+`PT_INTERP`, and picks the strongest viable mode. Dynamic-target cascade:
+`systrap-elf` → `systrap` → `ptrace-seccomp` → `ptrace` → `preload`.
+Static-target cascade: `systrap-elf` → `systrap-static` → `ptrace-seccomp` →
+`ptrace` → fail-fast. `systrap-supervised` is not in the auto cascade.
 
 That combination is why `uwgwrapper` is closer to "socksify for any Linux binary"
 than to a normal proxy helper. See
@@ -142,20 +143,17 @@ for the full mode comparison + per-host-shape `auto` cascade.
 Some container runtimes (Docker default seccomp profile, Kubernetes pods without
 `SYS_PTRACE`, gVisor) block `ptrace(2)` even when they allow `seccomp(2)`.
 
-`systrap-docker` was designed for exactly this shape. It uses ELF `PT_INTERP`
+`systrap-elf` was designed for exactly this shape. It uses ELF `PT_INTERP`
 injection rather than ptrace-based blob injection, so it works in any container
 that allows seccomp. `auto` selects it automatically for static targets.
 
 One remaining case where ptrace still matters: if your workload is a **dynamic**
 binary (e.g. `bash`, a Python script, a JVM) that `execve`s into a **static**
-descendant. On a ptrace-blocked host, `systrap-docker` handles this via
-`execve_docker_dispatch` in the ptloader. On a ptrace-allowed host,
-`systrap-supervised` does it via the ptrace supervisor — which is more robust for
-complex exec trees (dynamic→static→dynamic chains, Chromium-style zygote forks).
+descendant. On either a ptrace-blocked or ptrace-allowed host, `systrap-elf`
+handles this via `execve_docker_dispatch` in the ptloader — no ptrace required.
 
 If your container blocks ptrace and your workload has the dynamic-parent-to-static-
-child pattern, `systrap-docker` is the right choice. If ptrace is available and
-your exec tree is complex, prefer `systrap-supervised` explicitly.
+child pattern, `systrap-elf` is the right choice (and is what `auto` selects).
 
 See [`docs/features/transparent-wrapper.md`](../features/transparent-wrapper.md)
 for the full host-shape compatibility table.

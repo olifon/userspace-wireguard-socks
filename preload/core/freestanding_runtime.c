@@ -38,7 +38,11 @@ char **uwg_environ;
  * re-allocates a sigaltstack lazily.
  */
 #ifndef UWG_THREAD_SLOTS
-#define UWG_THREAD_SLOTS 256
+/* 4096 slots × 12 bytes = ~48 KiB BSS; zero-filled, no physical pages
+ * until accessed. Sized to cover high-churn thread workloads (Go HTTP
+ * servers, Python multiprocessing) where stale-live entries accumulate
+ * in non-docker modes without exit-syscall cleanup. */
+#define UWG_THREAD_SLOTS 4096
 #endif
 
 struct uwg_thread_slot {

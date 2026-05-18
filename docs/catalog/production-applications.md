@@ -57,8 +57,8 @@ non-discriminating.
 | `git` | HTTPS client | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | Clones a tiny public repo; exec tree (git → git-remote-https → curl). |
 | `pip` | HTTPS client | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | PyPI fetch via CPython requests stack. |
 | `xh` | HTTPS client | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | Rust HTTP client (curl alternative). |
-| `gh` | static Go | ✅ `systrap-docker` | ✅ `systrap-docker` | ✅ `systrap-docker` | — | GitHub CLI — static Go binary; --version boots cleanly under systrap-docker. |
-| `cloudflared` | static Go daemon | ✅ `systrap-docker` | ✅ `systrap-docker` | ✅ `systrap-docker` | — | Cloudflare tunnel client — static Go binary. |
+| `gh` | static Go | ✅ `systrap-elf` | ✅ `systrap-elf` | ✅ `systrap-elf` | — | GitHub CLI — static Go binary; --version boots cleanly under systrap-docker. |
+| `cloudflared` | static Go daemon | ✅ `systrap-elf` | ✅ `systrap-elf` | ✅ `systrap-elf` | — | Cloudflare tunnel client — static Go binary. |
 | `java-http` | JVM | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | OpenJDK HttpURLConnection — JIT, GC, NIO. Verifies the IPv4-mapped IPv6 fix. |
 | `java-minecraft` | JVM server | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | Real Paper Minecraft server, TCP listener on 25565. |
 | `nginx` | C server | ✅ `systrap-supervised` | ✅ `systrap-supervised` | ✅ `systrap-supervised` | — | nginx in foreground, worker fork model, accept loop. |

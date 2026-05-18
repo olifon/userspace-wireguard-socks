@@ -172,6 +172,14 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 		transport = "systrap-elf"
 	}
 
+	// systrap-supervised has a known SIGSYS-forward concurrency race under
+	// multi-threaded raw-asm syscall load (Caddy, Python test_urllib). It is
+	// not selected by --transport=auto. Warn when explicitly requested so
+	// operators are aware of the limitation.
+	if transport == "systrap-supervised" {
+		log.Printf("warning: systrap-supervised has a known concurrency race under multi-threaded raw-asm syscall load; prefer systrap-elf for most workloads (see docs/howto/03-wrapper-interception.md)")
+	}
+
 	// systrap-elf (and auto, which may select systrap-elf for either
 	// static or dynamic targets) calls syscall.Exec, which kills all Go OS
 	// threads except the calling one. If the fdproxy was spawned from a
