@@ -628,6 +628,17 @@ uwg_clone_asm_gate:
      * ==============================================================
      */
 
+    /* Guard: some runtimes pre-load data at [SP-8..SP-32] BEFORE the SVC
+     * and pass the original (unadjusted) SP as child_stack.  Go 1.21+
+     * aarch64 stores fn/mp/gp at [SP-8..-24] and a stack canary (0x4d2)
+     * at [SP-32] this way.  Without this guard, the `bl` below and the
+     * Unblock SIGSYS sub/str/add would clobber those locations, the
+     * child entry's canary check would pass (we never touch [SP-32]),
+     * but the corrupted fn would cause a store into read-only .so text
+     * → SIGSEGV.  mov sp, x20 after Unblock SIGSYS (Step 1) restores
+     * the correct SP; 128 bytes covers all known pre-load patterns. */
+    sub   sp, sp, #128
+
     /* Step 0: install child sigaltstack if ss_ptr is non-zero.
      * CLONE_VM+no_CLONE_VFORK (thread creation): Linux clears the child's
      * sigaltstack at clone3. Call SYS_sigaltstack using registers only —
@@ -691,13 +702,13 @@ uwg_clone_asm_gate:
 .La64_clr_done:
     /* All handlers cleared (or skipped for threads). */
 
-    /* Step 1: SP = child_sp (x20 bookmark, still valid) */
-    mov   sp, x20
-
     /* Unblock SIGSYS: child inherits parent's task->blocked from inside the
      * SIGSYS handler, where SIGSYS is auto-added (SA_NODEFER absent).
      * If left blocked, force_sig_info resets the handler to SIG_DFL on the
      * first BPF-trapped syscall in the child, killing it.
+     * SP is currently child_sp - 128 (guard from top of child path), so
+     * the sub/str/add below writes to [child_sp-144], safely below any
+     * data the caller may have pre-placed at [child_sp-8..child_sp-32].
      * Reload bypass_secret from GOT — futex path zeros x5. */
     adrp  x0, :got:uwg_bypass_secret
     ldr   x0, [x0, :got_lo12:uwg_bypass_secret]
@@ -713,6 +724,12 @@ uwg_clone_asm_gate:
     mov   x8, #SYS_rt_sigprocmask
     svc   #0                    /* clobbers x0 only; x5, x22 preserved */
     add   sp, sp, #16
+
+    /* Step 1: SP = child_sp — restores the kernel-set SP after the sub at
+     * the top of this child path.  Placed here, AFTER Unblock SIGSYS, so
+     * the sigprocmask stack slot is below the restored SP and therefore
+     * below any caller-pre-placed data at [child_sp-8..child_sp-32]. */
+    mov   sp, x20
 
     /* Step 3: x8 = trap_pc (jump register, not in save_area).
      * Load AFTER all svcs that set x8.
@@ -746,13 +763,16 @@ uwg_clone_asm_gate:
     /* Step 6: signal futex AFTER all save_area reads are complete.
      * x0 still holds the save_area base (used only as load base in the
      * ldp sequence above, never as a destination).  x8 = trap_pc.
-     * Re-read futex_ptr; if set, write 1 and FUTEX_WAKE.  svc #0 only
-     * clobbers x0; the kernel restores x8 to the syscall number on
-     * return, so push trap_pc on the child stack across the svc. */
+     * Re-read futex_ptr; if set, write 1 and FUTEX_WAKE.
+     *
+     * Save trap_pc in x9 (caller-saved) rather than pushing it to the
+     * child stack: SP has been restored to child_sp (= kernel-set SP =
+     * child_stack), so [SP-16] is exactly where runtimes like Go's
+     * runtime.clone.abi0 pre-placed mp.  A stack push would corrupt it. */
     ldr   x1, [x0, #A64_OFF_FUTEX_PTR]
     cbz   x1, .La64_post_nofutex
 
-    str   x8, [sp, #-16]!          /* push trap_pc (16-byte aligned) */
+    mov   x9, x8                   /* save trap_pc across futex svc */
     mov   w2, #1
     str   w2, [x1]                  /* *futex_ptr = 1 */
     mov   x0, x1                    /* x0 = futex_ptr */
@@ -762,8 +782,8 @@ uwg_clone_asm_gate:
     mov   x4, xzr
     mov   x5, xzr
     mov   x8, #SYS_futex
-    svc   #0                        /* wake parent; x8 restored to SYS_futex by kernel */
-    ldr   x8, [sp], #16             /* pop trap_pc */
+    svc   #0                        /* wake parent */
+    mov   x8, x9                   /* restore trap_pc from register */
 
 .La64_post_nofutex:
     /* Step 7: x0 = 0 (child return value), jump to trap_pc via x8 */
