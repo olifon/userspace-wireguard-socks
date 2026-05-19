@@ -175,8 +175,8 @@ struct uwg_clone3_save_ext {
     uint64_t trap_rip;          /* jump target for child */
     uint64_t child_rsp;         /* RSP/SP to set in child */
     uint64_t futex_ptr;         /* &futex_word, or 0 if no wait needed */
-    /* Sigaltstack setup for CLONE_VM+no_CLONE_VFORK children: */
-    uint64_t ss_ptr;            /* pointer to ss_sp below, or 0 (inherit) */
+    /* Sigaltstack setup for CLONE_VM children (threads and vfork): */
+    uint64_t ss_ptr;            /* pointer to ss_sp below, or 0 (skip) */
     uint64_t clear_sighandlers; /* 1 = run handler-clear loop, 0 = skip */
     /* Inline stack_t layout (valid when ss_ptr != 0; ss_ptr points here): */
     uint64_t ss_sp;             /* sigaltstack base address */
@@ -219,9 +219,14 @@ long uwg_clone3_trampoline(long a1, long a2, ucontext_t *uc)
 
     /* Determine what we need to fix up for this clone3 call. */
     int need_clr = !!(ca->flags & CLONE_CLEAR_SIGHAND);
-    /* CLONE_VM without CLONE_VFORK = thread creation: kernel clears child's
-     * sigaltstack. CLONE_VFORK = parent blocked by kernel, child inherits. */
-    int need_ss  = !!(ca->flags & CLONE_VM) && !(ca->flags & CLONE_VFORK);
+    /* CLONE_VM: always set up a sigaltstack in the child. Thread creation
+     * (no CLONE_VFORK): kernel clears child's sigaltstack — must install.
+     * CLONE_VM|CLONE_VFORK (posix_spawn-style): child inherits parent's
+     * sigaltstack mapping (CLONE_VM shares it), BUT musl's internal child
+     * stack is tiny (~1 KB) and the inherited mapping is from the parent's
+     * thread — the kernel may clear it for CLONE_VM children. Install
+     * unconditionally for both cases to be safe. */
+    int need_ss  = !!(ca->flags & CLONE_VM);
 
     if (!need_clr && !need_ss)
         goto fallback;
@@ -312,12 +317,12 @@ long uwg_clone3_trampoline(long a1, long a2, ucontext_t *uc)
     int need_futex = (ca->flags & CLONE_VM) && !(ca->flags & CLONE_VFORK);
     ext.futex_ptr = need_futex ? (uint64_t)&futex_word : 0;
 
-    /* Sigaltstack for child thread: when CLONE_VM is set without CLONE_VFORK,
-     * Linux clears the child's sigaltstack at clone3 time. Allocate 64 KB now
-     * (in the parent, safe to call mmap from SIGSYS handler) and embed the
-     * stack_t in the save area. The assembly gate calls SYS_sigaltstack in the
-     * child path using registers only — no stack push — so the call is safe
-     * even before child_rsp is established. */
+    /* Sigaltstack for child: CLONE_VM children (threads and vfork-style) need
+     * a private sigaltstack before the first BPF-trapped syscall fires SIGSYS.
+     * Allocate 64 KB now (in parent; mmap is safe from a SIGSYS handler) and
+     * embed the stack_t in the save area. The asm gate calls SYS_sigaltstack
+     * in the child path using registers only — no stack push — so the call is
+     * safe even before child_rsp is established. */
     if (need_ss) {
         long mm = uwg_syscall6(SYS_mmap, 0, UWG_SIGALTSTACK_SIZE,
                                PROT_READ | PROT_WRITE,
@@ -376,11 +381,20 @@ long uwg_clone_trampoline(long a1, long a2, long a3, long a4, long a5,
     uint64_t flags       = (uint64_t)a1;
     long     child_stack = a2;
 
-    /* Only intercept thread creation: CLONE_VM set, CLONE_VFORK not set.
-     * Anything else (fork-like, vfork) doesn't need sigaltstack setup. */
-    int need_ss = !!(flags & CLONE_VM) && !(flags & CLONE_VFORK);
+    /* Intercept CLONE_VM children: thread creation (no CLONE_VFORK) AND
+     * posix_spawn-style vfork children (CLONE_VM|CLONE_VFORK, e.g. musl).
+     * Both need a sigaltstack in the child before the first BPF-trapped
+     * execve fires SIGSYS — with SA_ONSTACK and no valid alternate stack
+     * the handler falls back to the tiny clone child_stack (~1 KB in musl
+     * posix_spawn), which overflows in uwg_execve_docker_dispatch and kills
+     * the child (SIGSEGV visible as "child failed: status=0").
+     * Pure fork-like clones (no CLONE_VM) inherit the parent's sigaltstack
+     * mapping via COW → no setup needed. */
+    int need_ss = !!(flags & CLONE_VM);
     if (!need_ss)
         goto fallback;
+
+    int vfork = !!(flags & CLONE_VFORK);
 
     struct uwg_clone3_save_ext ext;
 
@@ -439,11 +453,12 @@ long uwg_clone_trampoline(long a1, long a2, long a3, long a4, long a5,
                                 : (uint64_t)uc->uc_mcontext.sp;
 #endif
 
-    /* Futex: CLONE_VM without CLONE_VFORK means shared address space, parent
-     * not blocked by kernel — need futex to prevent save_ext reuse before
-     * child is done reading it. */
+    /* Futex: only needed for CLONE_VM without CLONE_VFORK (thread creation).
+     * CLONE_VM|CLONE_VFORK: kernel blocks parent until exec/exit → no futex
+     * needed. The asm gate skips both wait (parent) and signal (child) when
+     * futex_ptr == 0. */
     uint32_t futex_word = 0;
-    ext.futex_ptr = (uint64_t)&futex_word;
+    ext.futex_ptr = vfork ? 0 : (uint64_t)&futex_word;
 
     /* Allocate per-thread sigaltstack (same as clone3 thread path). */
     long mm = uwg_syscall6(SYS_mmap, 0, UWG_SIGALTSTACK_SIZE,
