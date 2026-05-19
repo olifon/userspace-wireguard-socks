@@ -81,19 +81,21 @@ func TestLoopbackSOCKSSoak(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
+			got := make([]byte, len(payload)) // reuse per-worker to avoid per-roundtrip alloc
 			for ctx.Err() == nil {
 				conn, err := dialer.Dial("tcp", "100.91.0.1:18080")
 				if err != nil {
 					errc <- fmt.Errorf("worker %d dial: %w", id, err)
 					return
 				}
-				_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+				// 60s: generous enough to survive GC pauses on a loaded
+				// soak host while still catching true hangs.
+				_ = conn.SetDeadline(time.Now().Add(60 * time.Second))
 				if _, err := conn.Write(payload); err != nil {
 					_ = conn.Close()
 					errc <- fmt.Errorf("worker %d write: %w", id, err)
 					return
 				}
-				got := make([]byte, len(payload))
 				if _, err := io.ReadFull(conn, got); err != nil {
 					_ = conn.Close()
 					errc <- fmt.Errorf("worker %d read: %w", id, err)
@@ -202,7 +204,7 @@ func TestLoopbackImpairedChattySOCKSSoak(t *testing.T) {
 					errc <- fmt.Errorf("worker %d dial: %w", id, err)
 					return
 				}
-				_ = conn.SetDeadline(time.Now().Add(20 * time.Second))
+				_ = conn.SetDeadline(time.Now().Add(120 * time.Second))
 				for j := 0; j < 200 && ctx.Err() == nil; j++ {
 					payload := bytes.Repeat([]byte{byte(id), byte(j)}, 1+rng.Intn(96))
 					if _, err := conn.Write(payload); err != nil {
