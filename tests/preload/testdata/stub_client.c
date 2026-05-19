@@ -818,6 +818,58 @@ static int run_tcp_listener_accept4(const char *ip, const char *port, const char
     return rc;
 }
 
+/* IPv6 listener: binds AF_INET6, calls accept4 with sockaddr_storage,
+ * verifies the returned peer family is AF_INET6, then echos message. */
+static int run_tcp_listener_accept4_v6(const char *ip, const char *port, const char *message) {
+    int fd = socket(AF_INET6, SOCK_STREAM, 0);
+    if (fd < 0) { perror("socket"); return 1; }
+    if (apply_reuse_from_env(fd) != 0) { close(fd); return 1; }
+    struct sockaddr_in6 addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin6_family = AF_INET6;
+    addr.sin6_port = htons((unsigned short)atoi(port));
+    if (inet_pton(AF_INET6, ip, &addr.sin6_addr) != 1) {
+        perror("inet_pton"); close(fd); return 1;
+    }
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        perror("bind"); close(fd); return 1;
+    }
+    if (listen(fd, 16) != 0) {
+        perror("listen"); close(fd); return 1;
+    }
+    printf("READY\n");
+    fflush(stdout);
+
+    struct sockaddr_storage ss;
+    socklen_t sslen = sizeof(ss);
+    int c = accept4(fd, (struct sockaddr *)&ss, &sslen, SOCK_CLOEXEC);
+    close(fd);
+    if (c < 0) { perror("accept4"); return 1; }
+
+    int fdflags = fcntl(c, F_GETFD, 0);
+    if (fdflags < 0 || !(fdflags & FD_CLOEXEC)) {
+        fprintf(stderr, "accept4 SOCK_CLOEXEC not set (flags=%d)\n", fdflags);
+        close(c); return 1;
+    }
+    if (ss.ss_family != AF_INET6) {
+        fprintf(stderr, "accept4 peer family wrong: got %d want %d (AF_INET6)\n",
+                (int)ss.ss_family, AF_INET6);
+        close(c); return 1;
+    }
+
+    char buf[4096];
+    ssize_t n = recv(c, buf, sizeof(buf), 0);
+    if (n < 0) { perror("recv"); close(c); return 1; }
+    if ((size_t)n != strlen(message) || memcmp(buf, message, (size_t)n) != 0) {
+        fprintf(stderr, "payload mismatch\n"); close(c); return 1;
+    }
+    if (send(c, buf, (size_t)n, 0) != (ssize_t)n) {
+        perror("send"); close(c); return 1;
+    }
+    close(c);
+    return 0;
+}
+
 static int echo_icmp_connected(int fd, const char *message, int ipv6) {
     unsigned char packet[1500];
     size_t payload_len = strlen(message);
@@ -1129,6 +1181,8 @@ int main(int argc, char **argv) {
             use_syscall_surface_extra = 1;
         } else if (strcmp(argv[i], "listen-tcp-accept4") == 0) {
             listen_tcp_accept4 = 1;
+        } else if (strcmp(argv[i], "listen-tcp6-accept4") == 0) {
+            return run_tcp_listener_accept4_v6(argv[1], argv[2], argv[3]);
         } else if (strcmp(argv[i], "recv-peek") == 0) {
             use_recv_peek = 1;
         } else if (strcmp(argv[i], "short-read") == 0) {

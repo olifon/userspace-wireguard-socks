@@ -294,6 +294,83 @@ long uwg_ensure_udp_listener(int fd) {
 }
 
 /*
+ * Freestanding mini inet_pton for AF_INET6.
+ * Handles ::, ::ffff:a.b.c.d, full and compressed hex-group forms.
+ * Writes 16 network-order bytes into out[]. Returns 0 ok, -1 error.
+ */
+static int parse_ipv6(const char *s, uint8_t out[16])
+{
+    uint16_t grp[8];
+    int n = 0, dc = -1; /* dc: index at which '::' was found */
+
+    memset(out, 0, 16);
+
+    if (s[0] == ':' && s[1] == ':') { dc = 0; s += 2; }
+
+    while (*s && n < 8) {
+        /* Look-ahead: dotted-quad IPv4 tail (digits then '.') */
+        {
+            const char *q = s;
+            while ((*q >= '0' && *q <= '9') ||
+                   (*q >= 'a' && *q <= 'f') || (*q >= 'A' && *q <= 'F')) q++;
+            if (*q == '.') {
+                unsigned int o[4] = {0}; int oi = 0;
+                while (oi < 4) {
+                    unsigned int v = 0; int nd = 0;
+                    while (*s >= '0' && *s <= '9') { v = v*10+(unsigned)(*s-'0'); s++; nd++; }
+                    if (!nd || v > 255) return -1;
+                    o[oi++] = v;
+                    if (oi < 4) { if (*s != '.') return -1; s++; }
+                }
+                if (*s) return -1;
+                grp[n++] = (uint16_t)((o[0] << 8) | o[1]);
+                grp[n++] = (uint16_t)((o[2] << 8) | o[3]);
+                break;
+            }
+        }
+        /* Parse one hex group */
+        unsigned int v = 0; int nd = 0;
+        for (;;) {
+            int d = (*s >= '0' && *s <= '9') ? *s - '0'
+                  : (*s >= 'a' && *s <= 'f') ? *s - 'a' + 10
+                  : (*s >= 'A' && *s <= 'F') ? *s - 'A' + 10 : -1;
+            if (d < 0 || nd >= 4) break;
+            v = (v << 4) | (unsigned)d; s++; nd++;
+        }
+        if (!nd) return -1;
+        grp[n++] = (uint16_t)v;
+        if (*s == ':') {
+            if (s[1] == ':') {
+                if (dc >= 0) return -1; /* two :: not allowed */
+                dc = n; s += 2;
+            } else { s++; }
+        } else if (*s) return -1;
+    }
+    if (*s) return -1;
+
+    if (dc < 0) {
+        if (n != 8) return -1;
+        for (int i = 0; i < 8; i++) {
+            out[i*2]   = (uint8_t)(grp[i] >> 8);
+            out[i*2+1] = (uint8_t)(grp[i] & 0xff);
+        }
+    } else {
+        int before = dc, after = n - dc, zeros = 8 - before - after;
+        if (zeros < 0) return -1;
+        for (int i = 0; i < before; i++) {
+            out[i*2]   = (uint8_t)(grp[i] >> 8);
+            out[i*2+1] = (uint8_t)(grp[i] & 0xff);
+        }
+        /* zeros already zeroed by memset */
+        for (int i = 0; i < after; i++) {
+            out[(before+zeros+i)*2]   = (uint8_t)(grp[dc+i] >> 8);
+            out[(before+zeros+i)*2+1] = (uint8_t)(grp[dc+i] & 0xff);
+        }
+    }
+    return 0;
+}
+
+/*
  * Public entry: managed accept. Reads an ACCEPT frame from the
  * listener fd, sends ATTACH on a new fdproxy connection, registers
  * the new fd in shared state.
@@ -386,12 +463,15 @@ long uwg_managed_accept(int listener_fd, struct sockaddr *addr,
     struct tracked_fd listener_state = uwg_state_lookup(listener_fd);
     struct tracked_fd s;
     memset(&s, 0, sizeof(s));
+    /* Detect IPv6 peer by ':' in the address string from the ACCEPT line. */
+    int peer_is_v6 = 0;
+    { const char *q = ip; while (*q) { if (*q == ':') { peer_is_v6 = 1; break; } q++; } }
     s.active = 1;
-    s.domain = AF_INET; /* TODO: support IPv6 ACCEPT lines */
+    s.domain = peer_is_v6 ? AF_INET6 : AF_INET;
     s.type = SOCK_STREAM;
     s.proxied = 1;
     s.kind = KIND_TCP_STREAM;
-    s.remote_family = AF_INET;
+    s.remote_family = peer_is_v6 ? AF_INET6 : AF_INET;
     s.remote_port = (uint16_t)port_u;
     {
         size_t i = 0;
@@ -412,27 +492,35 @@ long uwg_managed_accept(int listener_fd, struct sockaddr *addr,
     }
     (void)uwg_state_store(mgr, &s);
 
-    /* Fill caller-provided sockaddr. (Hand-rolled inet_pton-ish
-     * for the IPv4 case; IPv6 left for Phase 1 followup. ) */
-    if (addr && addrlen && *addrlen >= sizeof(struct sockaddr_in)) {
-        struct sockaddr_in *sin = (struct sockaddr_in *)addr;
-        memset(sin, 0, sizeof(*sin));
-        sin->sin_family = AF_INET;
-        sin->sin_port = (uint16_t)((port_u >> 8) | ((port_u & 0xff) << 8));
-        /* Parse dotted-quad IPv4. */
-        unsigned int oct[4] = {0};
-        int oi = 0; const char *q = ip;
-        while (*q && oi < 4) {
-            unsigned int v = 0;
-            while (*q >= '0' && *q <= '9') { v = v * 10 + (*q - '0'); q++; }
-            oct[oi++] = v;
-            if (*q == '.') q++;
+    /* Fill caller-provided sockaddr with peer address. */
+    if (addr && addrlen) {
+        uint16_t net_port = (uint16_t)((port_u >> 8) | ((port_u & 0xff) << 8));
+        if (!peer_is_v6 && *addrlen >= (uint32_t)sizeof(struct sockaddr_in)) {
+            struct sockaddr_in *sin = (struct sockaddr_in *)addr;
+            memset(sin, 0, sizeof(*sin));
+            sin->sin_family = AF_INET;
+            sin->sin_port = net_port;
+            unsigned int oct[4] = {0};
+            int oi = 0; const char *q = ip;
+            while (*q && oi < 4) {
+                unsigned int v = 0;
+                while (*q >= '0' && *q <= '9') { v = v * 10 + (*q - '0'); q++; }
+                oct[oi++] = v;
+                if (*q == '.') q++;
+            }
+            if (oi == 4) {
+                sin->sin_addr.s_addr = (uint32_t)((oct[0]) | (oct[1] << 8) |
+                                                  (oct[2] << 16) | (oct[3] << 24));
+            }
+            *addrlen = (uint32_t)sizeof(*sin);
+        } else if (peer_is_v6 && *addrlen >= (uint32_t)sizeof(struct sockaddr_in6)) {
+            struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)addr;
+            memset(sin6, 0, sizeof(*sin6));
+            sin6->sin6_family = AF_INET6;
+            sin6->sin6_port = net_port;
+            parse_ipv6(ip, sin6->sin6_addr.s6_addr);
+            *addrlen = (uint32_t)sizeof(*sin6);
         }
-        if (oi == 4) {
-            sin->sin_addr.s_addr = (uint32_t)((oct[0]) | (oct[1] << 8) |
-                                              (oct[2] << 16) | (oct[3] << 24));
-        }
-        *addrlen = sizeof(*sin);
     }
 
     return mgr;

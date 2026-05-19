@@ -614,6 +614,93 @@ func TestUWGWrapperPreloadAccept4Listener(t *testing.T) {
 	t.Fatal(lastErr)
 }
 
+// TestUWGWrapperIPv6AcceptListener pins the preload accept4() path for an
+// AF_INET6 listener. The stub creates a socket(AF_INET6, ...) and binds to
+// fd64::2:19196 through the preload. The server-side engine dials in; the
+// stub calls accept4 with a sockaddr_storage and asserts ss_family == AF_INET6
+// before echoing the payload. This exercises parse_ipv6() in
+// listener_ops.c, which was previously unreachable (domain was hardcoded
+// AF_INET for all accepted connections).
+func TestUWGWrapperIPv6AcceptListener(t *testing.T) {
+	requireWrapperToolchain(t)
+	if testing.Short() {
+		t.Skip("IPv6 accept listener test brings up full WireGuard engines")
+	}
+	art := buildWrapperArtifacts(t)
+
+	serverKey, clientKey := mustKey(t), mustKey(t)
+	serverPort := freeUDPPort(t)
+	serverCfg := config.Default()
+	serverCfg.WireGuard.PrivateKey = serverKey.String()
+	serverCfg.WireGuard.ListenPort = &serverPort
+	serverCfg.WireGuard.Addresses = []string{"fd64::1/128"}
+	serverCfg.WireGuard.Peers = []config.Peer{{
+		PublicKey:  clientKey.PublicKey().String(),
+		AllowedIPs: []string{"fd64::2/128"},
+	}}
+	serverEng := mustStart(t, serverCfg)
+
+	apiSock := filepath.Join(t.TempDir(), "api.sock")
+	httpSock := filepath.Join(t.TempDir(), "http.sock")
+	clientCfg := config.Default()
+	clientCfg.WireGuard.PrivateKey = clientKey.String()
+	clientCfg.WireGuard.Addresses = []string{"fd64::2/128"}
+	clientCfg.API.Listen = "unix:" + apiSock
+	clientCfg.API.AllowUnauthenticatedUnix = true
+	clientCfg.Proxy.HTTPListeners = []string{"unix:" + httpSock}
+	clientCfg.SocketAPI.Bind = true
+	clientCfg.WireGuard.Peers = []config.Peer{{
+		PublicKey:           serverKey.PublicKey().String(),
+		Endpoint:            net.JoinHostPort("127.0.0.1", itoa(serverPort)),
+		AllowedIPs:          []string{"fd64::1/128"},
+		PersistentKeepalive: 1,
+	}}
+	_ = mustStart(t, clientCfg)
+	waitPath(t, httpSock)
+
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		cmd, stderr, done := startWrappedListenerProcess(t, art, httpSock, "preload", art.stub,
+			[]string{"fd64::2", "19196", "ipv6-listener-accept4", "listen-tcp6-accept4"}, wrapperRunOptions{})
+
+		runErr := func() error {
+			drainAndDump := func() string {
+				killProcessGroup(cmd)
+				<-done
+				return stderr.String()
+			}
+			conn := retryTunnelDial(t, serverEng, "tcp", net.JoinHostPort("fd64::2", "19196"))
+			defer conn.Close()
+			_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+			if _, err := conn.Write([]byte("ipv6-listener-accept4")); err != nil {
+				return fmt.Errorf("write: %w\nstderr=%s", err, drainAndDump())
+			}
+			buf := make([]byte, len("ipv6-listener-accept4"))
+			if _, err := io.ReadFull(conn, buf); err != nil {
+				return fmt.Errorf("read: %w\nstderr=%s", err, drainAndDump())
+			}
+			if string(buf) != "ipv6-listener-accept4" {
+				return fmt.Errorf("echo mismatch %q\nstderr=%s", buf, drainAndDump())
+			}
+			select {
+			case err := <-done:
+				if err != nil {
+					return fmt.Errorf("listener exited with error: %w\nstderr=%s", err, stderr.String())
+				}
+			case <-time.After(10 * time.Second):
+				return fmt.Errorf("listener did not exit\nstderr=%s", drainAndDump())
+			}
+			return nil
+		}()
+		if runErr == nil {
+			return
+		}
+		lastErr = runErr
+		t.Logf("retrying IPv6 accept4 listener test: %v", runErr)
+	}
+	t.Fatal(lastErr)
+}
+
 // runWrappedListenerWithStats wires a temp UWGS_TRACE_STATS_PATH into
 // the listener wrapper, drives the echo round-trip, then reads the
 // resulting tracer stats file. It mirrors the retry/teardown logic of
