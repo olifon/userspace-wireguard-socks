@@ -94,6 +94,52 @@ into per-release sections as tags are cut.
   reverted because cross-engine serialisation broke chaos tests
   on slow CI. Mesh chaos suite now `!race`-gated; the per-tun
   lock is sufficient for production (one engine per process).
+- **`--allow-uid` shared-state file world-writable**: the shared-
+  state file under `/tmp/uwgwrapper-$UID/` was `chmod 0o666` when
+  any `--allow-uid` flag was set, making it writable by all users
+  on the host. Fixed with `chown` to the first allowed UID; mode
+  stays `0o600`. The fdproxy socket intentionally remains `0o666`
+  — its real access gate is `SO_PEERCRED`.
+- **`si_code` guard in SIGSYS handler**: a `kill(pid, SIGSYS)` or
+  `tgkill` directed at a wrapped process hit the handler with
+  `si_code = SI_USER`/`SI_TKILL`; the handler read garbage
+  `si_syscall` and dispatched a nonsensical syscall number. Fixed
+  with an early `si->si_code != SYS_SECCOMP` guard that terminates
+  the process cleanly via `exit_group(128 + SIGSYS)`.
+- **Thread table slots 256 → 4096**: under high-churn thread
+  workloads the 256-slot table filled with stale-live entries from
+  TID recycling; new threads silently inherited dead sigaltstacks.
+  Expanded to 4096 slots.
+- **x86-64 clone child path clobbered RSI and R9**: the
+  `FUTEX_WAKE` call in the clone asm overwrote RSI (Go runtime uses
+  `mov %rsi,%rsp` to restore the stack) and R9 (Go's nil-g guard).
+  Children SIGSEGV'd at `[0xfffffffffffffff9]`. Fixed by
+  saving/restoring both registers around the futex syscall.
+- **aarch64 clone child path pre-placed data overwrite**: the
+  child-stack guard written before `clone()` was silently
+  overwritten on aarch64; children read garbage values. Fixed with
+  an arch-conditional write guard.
+- **sigaltstack not installed for glibc<2.34 / musl `clone` paths**:
+  glibc 2.34+ unified `pthread_create` with `clone`; older glibc
+  and musl still use raw `SYS_clone`. The preload now intercepts
+  `SYS_clone` directly to install the per-thread sigaltstack on
+  those targets.
+- **glibc-2.27 / ubuntu:18.04 `clone3` compatibility**: ubuntu
+  18.04's glibc predates `clone3`; the handler emitted `ENOSYS`.
+  Fixed with a `clone3` → `clone` fallback that applies the same
+  sigaltstack setup.
+- **musl `posix_spawn` SIGSYS stack overflow**: musl uses
+  `clone(CLONE_VM|CLONE_VFORK)` with a ~1 KB internal child stack.
+  The `CLONE_VFORK` exclusion in `need_ss` prevented sigaltstack
+  setup in the vfork child; the BPF SIGSYS handler then fell back
+  to the 1 KB stack and overflowed → SIGSEGV. Fixed by removing the
+  exclusion and zeroing `futex_ptr` for vfork children so the
+  parent doesn't stall on a futex the exec'd child never signals.
+- **fdproxy pipe-inheritance hang under `CombinedOutput`**: when
+  the test harness used `CombinedOutput`, fdproxy inherited the
+  pipe's write end; the pipe never closed and the parent blocked
+  indefinitely. Fixed with a dedicated `os.Pipe()` for the fdproxy
+  subprocess.
 
 ### Removed
 
