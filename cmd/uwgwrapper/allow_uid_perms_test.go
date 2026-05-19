@@ -18,20 +18,19 @@ import (
 )
 
 // TestAllowUIDRelaxesSharedStateAndFDProxyPerms pins the apache2-class
-// regression fix: when --allow-uid is set, both the per-run shared-
-// state file under /tmp/uwgwrapper-$UID/ and the fdproxy AF_UNIX
-// manager socket must be mode 0o666 instead of the default 0o600.
-// Without that, setuid'd workers (apache www-data, postgres
-// `postgres`, mariadb mysql) can't read or write the proxied-fd
-// state and every wrapped syscall fails with EACCES.
+// regression fix: when --allow-uid is set, the fdproxy AF_UNIX manager
+// socket must be mode 0o666 (SO_PEERCRED is the real gate) and the
+// shared-state file must be chown'd to the allowed UID while keeping
+// mode 0o600 (uninvolved users have no access at all). Without these,
+// setuid'd workers (apache www-data, postgres, mariadb mysql) can't
+// open the proxied-fd state and every wrapped syscall fails with EACCES.
 //
-// The test launches a wrapper subprocess that just spawns a long
-// sleep — long enough for the test to inspect both filesystem
-// objects before tearing the wrapper down. We do NOT need a real
-// uwgsocks running for this; the fdproxy comes up against any URL
-// because we never actually issue a connect.
+// The test launches a wrapper subprocess that just spawns a long sleep —
+// long enough to inspect both filesystem objects before teardown. No real
+// uwgsocks is needed; fdproxy comes up against any URL because we never
+// actually issue a connect.
 //
-// Without --allow-uid, both objects must be 0o600.
+// Without --allow-uid both objects must be 0o600.
 func TestAllowUIDRelaxesSharedStateAndFDProxyPerms(t *testing.T) {
 	// Build the wrapper binary into a tmp path so we don't depend on
 	// $PATH and don't conflict with parallel tests.
@@ -48,10 +47,13 @@ func TestAllowUIDRelaxesSharedStateAndFDProxyPerms(t *testing.T) {
 		name      string
 		allowUID  string
 		wantMode  os.FileMode
+		wantOwner uint32 // 0 means don't check (no --allow-uid)
 		wantSock  os.FileMode
 	}{
-		{name: "default_locked_to_owner", allowUID: "", wantMode: 0o600, wantSock: 0o600},
-		{name: "allow_uid_relaxes_both", allowUID: "33", wantMode: 0o666, wantSock: 0o666},
+		{name: "default_locked_to_owner", allowUID: "", wantMode: 0o600, wantOwner: 0, wantSock: 0o600},
+		// shared-state mode stays 0o600; ownership is transferred to uid 33
+		// so the setuid'd worker can open it. Socket stays 0o666 (peercred gate).
+		{name: "allow_uid_chown_to_worker", allowUID: "33", wantMode: 0o600, wantOwner: 33, wantSock: 0o666},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -148,6 +150,16 @@ func TestAllowUIDRelaxesSharedStateAndFDProxyPerms(t *testing.T) {
 			}
 			if gotState != tc.wantMode {
 				t.Errorf("shared-state file %s mode = %#o, want %#o", statePath, gotState, tc.wantMode)
+			}
+			// Verify ownership transfer only when running as root (non-root
+			// wrapper can't chown, so EPERM is tolerated and owner stays as
+			// the test runner's UID).
+			if tc.wantOwner != 0 && os.Getuid() == 0 {
+				if stat, ok := stateInfo.Sys().(*syscall.Stat_t); ok {
+					if stat.Uid != tc.wantOwner {
+						t.Errorf("shared-state file %s owner uid = %d, want %d", statePath, stat.Uid, tc.wantOwner)
+					}
+				}
 			}
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 			_ = cmd.Wait()

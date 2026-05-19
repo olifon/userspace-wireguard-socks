@@ -267,16 +267,17 @@ func runLaunch(api, apiToken, socketPath, preloadPath, listenPath, dnsMode, tran
 	}
 	// When the caller explicitly allowed additional uids (e.g. www-data
 	// for apache2 workers, postgres for ident-auth pg backends), the
-	// shared-state file has to be readable+writable by them too,
-	// otherwise the setuid'd worker can't access the proxied-fd state
-	// and every wrapped syscall fails with EACCES. The file is bounded
-	// to the current wrapper run (PID-suffixed under
-	// /tmp/uwgwrapper-$UID/) and only contains proxied-fd metadata
-	// the wrapper already trusts the worker with — same trust scope as
-	// the fdproxy AF_UNIX socket --allow-uid lets through.
+	// shared-state file has to be readable+writable by the setuid'd
+	// worker too. Transfer ownership to the first allowed UID so exec'd
+	// children running under that UID can open the file with O_RDWR.
+	// Root bypasses POSIX mode checks unconditionally and retains full
+	// access. Mode stays 0o600 — uninvolved users get no access at all.
+	// For multiple allowed UIDs, the remainder rely on the inherited
+	// mmap across fork(); only the primary setuid target re-opens.
 	if len(allowedUIDs) > 0 {
-		if err := os.Chmod(shared.Path(), 0o666); err != nil {
-			log.Fatalf("relax shared-state perms for allow-uid: %v", err)
+		if err := os.Chown(shared.Path(), int(allowedUIDs[0]), -1); err != nil &&
+			!errors.Is(err, os.ErrPermission) {
+			log.Fatalf("chown shared-state to uid %d: %v", allowedUIDs[0], err)
 		}
 	}
 	env = setEnv(env, "UWGS_SHARED_STATE_PATH", shared.Path())
