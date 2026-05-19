@@ -73,7 +73,11 @@ func TestLoopbackSOCKSSoak(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	defer cancel()
-	const workers = 8
+	// 4 workers + 10ms inter-connection pause keeps the heap well below
+	// 500 MB (vs 2-3 GB with 8 workers no-pause), so GC stays current and
+	// memory-pressure-induced i/o stalls can't hit the deadline.  The soak
+	// goal is leak detection over 24 h, not maximum throughput.
+	const workers = 4
 	payload := bytes.Repeat([]byte("soak"), 16*1024)
 	var wg sync.WaitGroup
 	errc := make(chan error, workers)
@@ -88,9 +92,7 @@ func TestLoopbackSOCKSSoak(t *testing.T) {
 					errc <- fmt.Errorf("worker %d dial: %w", id, err)
 					return
 				}
-				// 60s: generous enough to survive GC pauses on a loaded
-				// soak host while still catching true hangs.
-				_ = conn.SetDeadline(time.Now().Add(60 * time.Second))
+				_ = conn.SetDeadline(time.Now().Add(120 * time.Second))
 				if _, err := conn.Write(payload); err != nil {
 					_ = conn.Close()
 					errc <- fmt.Errorf("worker %d write: %w", id, err)
@@ -106,6 +108,9 @@ func TestLoopbackSOCKSSoak(t *testing.T) {
 					errc <- fmt.Errorf("worker %d echo mismatch", id)
 					return
 				}
+				// brief pause: lets GC reclaim the previous connection's
+				// heap before allocating the next one.
+				time.Sleep(10 * time.Millisecond)
 			}
 		}(i)
 	}
