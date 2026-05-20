@@ -1,8 +1,8 @@
-# systrap-docker internals
+# systrap-elf internals
 
 ## Purpose
 
-`--transport=systrap-docker` handles static binaries in Docker containers where
+`--transport=systrap-elf` handles static binaries in Docker containers where
 `ptrace(2)` is blocked by the container runtime's seccomp policy but seccomp
 BPF is still allowed. It uses ELF PT_INTERP injection instead of ptrace-based
 blob injection.
@@ -14,7 +14,7 @@ blob injection.
 | `LD_PRELOAD` | ignored by kernel | n/a |
 | `systrap` | SIGSYS handler reset at exec | n/a |
 | `systrap-supervised` | requires ptrace | fails |
-| `systrap-docker` (PT_INTERP inject) | works | works |
+| `systrap-elf` (PT_INTERP inject) | works | works |
 
 At exec time `uwgwrapper`:
 1. Clones the static binary into a memfd.
@@ -188,7 +188,7 @@ the `musl-1.2.3` matrix entries do).
 `tests/preload/systrap_docker_test.go`:
 
 - `TestSystrapDockerStaticEcho` — builds a musl-static stub (`gcc -static`),
-  runs it via `--transport=systrap-docker`, asserts the expected output.
+  runs it via `--transport=systrap-elf`, asserts the expected output.
   Covers both ET_EXEC and ET_DYN (static-PIE) paths depending on the host
   toolchain's default.
 - `TestSystrapDockerDynamicEcho` — same with a dynamic binary; exercises the
