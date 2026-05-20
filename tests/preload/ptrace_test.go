@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -28,6 +29,11 @@ import (
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/config"
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/engine"
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/testconfig"
+)
+
+var (
+	sharedArtOnce     sync.Once
+	sharedArtifacts   wrapperArtifacts
 )
 
 type wrapperArtifacts struct {
@@ -1029,10 +1035,27 @@ func requireWrapperToolchain(t *testing.T) {
 	}
 }
 
+// buildWrapperArtifacts returns the compiled test binaries for the current
+// test binary run, building them exactly once via sharedArtOnce. Without
+// this cache each test function recompiles everything from scratch, causing
+// 40+ sequential gcc/go-build invocations that exhaust CPU on constrained
+// arm64 hosts and push the suite past the test timeout.
 func buildWrapperArtifacts(t *testing.T) wrapperArtifacts {
 	t.Helper()
+	dir := sharedArtDir
+	if dir == "" {
+		// TestMain couldn't create the shared dir; fall back to per-test build.
+		return buildWrapperArtifactsInto(t, t.TempDir())
+	}
+	sharedArtOnce.Do(func() {
+		sharedArtifacts = buildWrapperArtifactsInto(t, dir)
+	})
+	return sharedArtifacts
+}
+
+func buildWrapperArtifactsInto(t *testing.T, tmp string) wrapperArtifacts {
+	t.Helper()
 	repo := filepath.Clean(filepath.Join("..", ".."))
-	tmp := t.TempDir()
 	embeddedPreloadDir := filepath.Join(repo, "cmd", "uwgwrapper", "assets")
 	embeddedPreload := filepath.Join("cmd", "uwgwrapper", "assets", "uwgpreload.so")
 	art := wrapperArtifacts{

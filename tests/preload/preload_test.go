@@ -26,6 +26,26 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
+// sharedArtDir is a package-level temp directory for compiled test binaries.
+// buildWrapperArtifacts builds into this dir exactly once per test binary run
+// (via sync.Once) rather than recompiling for every test function. Without
+// this, 40+ tests each spawn 2 build_phase1.sh + 9 gcc/go-build invocations,
+// accumulating enough CPU load on constrained arm64 hosts to push the 43rd
+// compilation past the test suite timeout.
+var sharedArtDir string
+
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "uwg-preload-art-")
+	if err == nil {
+		sharedArtDir = dir
+	}
+	code := m.Run()
+	if sharedArtDir != "" {
+		_ = os.RemoveAll(sharedArtDir)
+	}
+	os.Exit(code)
+}
+
 func TestLDPreloadManagedTCPUDPConnect(t *testing.T) {
 	if testing.Short() {
 		t.Skip("LD_PRELOAD integration test skipped in -short mode")
