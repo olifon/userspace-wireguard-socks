@@ -1055,14 +1055,6 @@ func (e *Engine) meshSubscribeLoopPeer(parent config.Peer) {
 			continue
 		}
 
-		// Sync state before opening the subscribe stream: post P2P mode,
-		// fetch nets, and set meshParentReady. Without this, dynamic-peer
-		// traffic from this parent is denied (deny-until-ready), and the
-		// hub never receives our P2P role declaration. Best-effort: a
-		// failed sync is not fatal — subscribe may still succeed on the
-		// same connection, and a failed subscribe will retry after 5s.
-		e.runMeshPollingPeer(parent)
-
 		err := e.runMeshSubscribePeer(parent)
 		if errors.Is(err, meshSubscribeNotImplemented) {
 			usePolling = true
@@ -1077,26 +1069,6 @@ func (e *Engine) meshSubscribeLoopPeer(parent config.Peer) {
 	}
 }
 
-// meshSetSubscribeActive marks/unmarks a parent peer as having an active
-// subscribe connection. When active, runMeshPolling skips that parent.
-func (e *Engine) meshSetSubscribeActive(key string, active bool) {
-	e.meshSubActivesMu.Lock()
-	if active {
-		if e.meshSubActives == nil {
-			e.meshSubActives = make(map[string]bool)
-		}
-		e.meshSubActives[key] = true
-	} else {
-		delete(e.meshSubActives, key)
-	}
-	e.meshSubActivesMu.Unlock()
-}
-
-func (e *Engine) meshIsSubscribeActive(key string) bool {
-	e.meshSubActivesMu.Lock()
-	defer e.meshSubActivesMu.Unlock()
-	return e.meshSubActives[key]
-}
 
 // meshSubscribeHeartbeatTimeout is how long the subscribe client waits for a
 // frame before treating the connection as stale and reconnecting.
@@ -1180,9 +1152,6 @@ func (e *Engine) runMeshSubscribePeer(parent config.Peer) error {
 	if err != nil {
 		return err
 	}
-
-	e.meshSetSubscribeActive(parent.PublicKey, true)
-	defer e.meshSetSubscribeActive(parent.PublicKey, false)
 
 	br := bufio.NewReader(resp.Body)
 	var counter uint64
@@ -1330,11 +1299,6 @@ func (e *Engine) runMeshPolling() {
 	peers := e.meshStaticPeers()
 	for _, parent := range peers {
 		if !parent.MeshEnabled || !parent.MeshAcceptACLs || parent.ControlURL == "" {
-			continue
-		}
-		// Skip peers that have an active subscribe connection; they push state
-		// directly and do not need the polling path.
-		if e.meshIsSubscribeActive(parent.PublicKey) {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(e.ctx, 10*time.Second)

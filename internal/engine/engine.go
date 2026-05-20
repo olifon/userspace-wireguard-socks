@@ -177,12 +177,6 @@ type Engine struct {
 	meshSubs     map[uint64]chan struct{}
 	meshSubsNext uint64
 
-	// meshSubActivesMu guards meshSubActives. A parent peer's public key is
-	// present when a /v1/subscribe client connection is healthy for that
-	// parent; polling is suppressed for that parent while the key is set.
-	meshSubActivesMu sync.Mutex
-	meshSubActives   map[string]bool
-
 	// metrics is non-nil iff metrics.listen is configured. Hot-path
 	// counter increments use atomic operations and are safe to call when
 	// metrics is nil (callers check). See internal/engine/metrics.go.
