@@ -564,6 +564,8 @@ func (t *tracer) dispatchInterceptedSyscall(tid int, regs unix.PtraceRegs, secco
 		return t.handlePoll(tid, regs, false, seccompStop)
 	case unix.SYS_PPOLL:
 		return t.handlePoll(tid, regs, true, seccompStop)
+	case unix.SYS_CLOSE_RANGE:
+		return t.handleCloseRange(tid, regs, seccompStop)
 	default:
 		return t.resumeDefault(tid, seccompStop)
 	}
@@ -882,6 +884,27 @@ func (t *tracer) handleClose(tid int, regs unix.PtraceRegs, seccompStop bool) er
 		epoch: t.epochFor(procFD{pid: group, fd: fd}),
 	}
 	return t.resumeForExit(tid)
+}
+
+func (t *tracer) handleCloseRange(tid int, regs unix.PtraceRegs, seccompStop bool) error {
+	first := uint(regs.Rdi)
+	last := uint(regs.Rsi)
+	group := t.groupFor(tid)
+	// Clear tracked state for any fds in the range (bounded by the cache
+	// maximum — fds above 4095 are never in the Go-side table).
+	cacheLast := last
+	if cacheLast > 4095 {
+		cacheLast = 4095
+	}
+	for fd := first; fd <= cacheLast; fd++ {
+		key := procFD{pid: group, fd: int(fd)}
+		if t.epochFor(key) != 0 {
+			t.trackedClearGroup(group, int(fd))
+			t.clearLocalFD(key)
+			t.clearEpoch(key)
+		}
+	}
+	return t.resumeDefault(tid, seccompStop)
 }
 
 func (t *tracer) handleRead(tid int, regs unix.PtraceRegs, seccompStop bool) error {
@@ -3484,6 +3507,8 @@ func syscallName(nr int64) string {
 		return "poll"
 	case unix.SYS_PPOLL:
 		return "ppoll"
+	case unix.SYS_CLOSE_RANGE:
+		return "close_range"
 	default:
 		return strconv.FormatInt(nr, 10)
 	}
