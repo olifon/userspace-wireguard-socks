@@ -26,17 +26,54 @@ When you DO need this:
 | macOS | `utun` device (kernel built-in) | Needs root or an entitlement. `sudo` works for development. |
 | Windows | `wintun.dll` | Download from [wintun.net](https://www.wintun.net/), place in `C:\Windows\System32\` or alongside the binary. |
 | FreeBSD | `tun(4)` device | Needs `if_tap` / `if_tun` kernel module. |
-| OpenBSD | `tun(4)` device | Same. DNS automation is intentionally simple — `tun.dns_resolv_conf` is the safest cross-platform mechanism. |
+| OpenBSD | `tun(4)` device | Same. DNS is manual — see platform matrix below. |
 
-## What the backend manages
+## Platform support matrix
 
-| Operation | Implemented per-OS |
+Not all capabilities are automated on every platform. Know what you're
+getting before you deploy.
+
+### IP routing — all platforms
+
+Route management works on every supported OS. The mechanism differs:
+
+| OS | Route management |
 |---|---|
-| Create / start / stop the device | Yes |
-| Add / remove tunnel addresses | Yes |
-| Add / remove routes | Linux + macOS + Windows; BSD uses ifconfig/route conventions |
-| DNS resolver hooks | Linux (systemd-resolved + resolvconf), macOS (scutil), Windows (NRPT). BSD opts into `tun.dns_resolv_conf` (rewrites `/etc/resolv.conf`). |
-| Bypass-route snapshots | Linux only — captures routes that should bypass the tunnel for outbound dialer use. |
+| Linux | `netlink` (RTNETLINK) |
+| macOS | `route(8)` / BSD socket |
+| Windows | `netsh` / IP Helper API |
+| FreeBSD | `route(8)` / `ifconfig(8)` |
+| OpenBSD | `route(8)` / `ifconfig(8)` |
+
+`tun.route_allowed_ips: true` and `tun.default_route: true` work on all
+platforms. Routes are cleaned up when `uwgsocks` exits.
+
+### DNS automation — Linux, macOS, Windows only
+
+Automated DNS resolver configuration is **not available on FreeBSD or
+OpenBSD**. On BSD platforms, set `tun.dns_resolv_conf: true` to have
+`uwgsocks` rewrite `/etc/resolv.conf` directly, or configure DNS
+manually after the tunnel comes up.
+
+| OS | DNS mechanism | Automated |
+|---|---|---|
+| Linux | systemd-resolved (`resolvectl`) or `resolvconf` | Yes |
+| macOS | `scutil --dns` | Yes |
+| Windows | NRPT (Name Resolution Policy Table) | Yes |
+| FreeBSD | `tun.dns_resolv_conf` (`/etc/resolv.conf` rewrite) | Manual opt-in |
+| OpenBSD | `tun.dns_resolv_conf` (`/etc/resolv.conf` rewrite) | Manual opt-in |
+
+If you are deploying on FreeBSD or OpenBSD and expect DNS to route through
+the tunnel automatically, you must set `tun.dns_resolv_conf: true` or
+manage `/etc/resolv.conf` yourself.
+
+### Other per-OS notes
+
+| Operation | Availability |
+|---|---|
+| Bypass-route snapshots | Linux only |
+| fwmark / policy routing | Future opt-in (not yet exposed) |
+| BSD pf rules | Manual — pf doesn't bind rules to dynamic tun devices |
 
 ## Linux specifics
 
@@ -48,11 +85,8 @@ When you DO need this:
 
 ## BSD specifics
 
-- DNS automation is deliberately minimal. `tun.dns_resolv_conf` is
-  the most portable mechanism. Distribution-specific tools
-  (`resolvconf`, etc.) aren't auto-detected.
 - Real-host validation has been done manually on FreeBSD + OpenBSD;
-  CI cross-builds these targets but doesn't run-test them (no
+  CI cross-builds these targets but does not run-test them (no
   GitHub-hosted BSD runners). See
   [reference/compatibility.md](../reference/compatibility.md) for the
   current status.
