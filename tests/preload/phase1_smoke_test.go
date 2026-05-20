@@ -42,31 +42,16 @@ func requirePhase1Toolchain(t *testing.T) {
 	}
 }
 
-// buildPhase1Artifacts builds only the artifacts the Phase 1 smoke test
-// needs (the wrapper, the legacy preload as a placeholder, and the
-// libc-routed C stub_client). Skips the x86_64-only rawmix/raw_client
-// helpers that buildWrapperArtifacts would otherwise pull in.
+// buildPhase1Artifacts returns the compiled test binaries. It delegates to
+// buildWrapperArtifacts (which caches via sync.Once) to avoid redundant
+// compilations: there are 16+ call sites across the suite, and rebuilding
+// on every call accumulates enough load on constrained arm64 hardware to
+// push late compilations past the test-binary timeout.
+// buildWrapperArtifacts is a superset — all fields used by Phase 1 callers
+// (wrapper, preload, stub) are populated.
 func buildPhase1Artifacts(t *testing.T) wrapperArtifacts {
 	t.Helper()
-	repo := filepath.Clean(filepath.Join("..", ".."))
-	tmp := t.TempDir()
-	embeddedPreloadDir := filepath.Join(repo, "cmd", "uwgwrapper", "assets")
-	embeddedPreload := filepath.Join("cmd", "uwgwrapper", "assets", "uwgpreload.so")
-	art := wrapperArtifacts{
-		wrapper: filepath.Join(tmp, "uwgwrapper"),
-		preload: filepath.Join(tmp, "uwgpreload.so"),
-		stub:    filepath.Join(tmp, "stub_client"),
-	}
-	if err := os.MkdirAll(embeddedPreloadDir, 0o755); err != nil {
-		t.Fatalf("mkdir embedded preload dir: %v", err)
-	}
-	run(t, repo, "bash", "preload/build_phase1.sh", embeddedPreload)
-	run(t, repo, "bash", "preload/build_ptloader.sh", embeddedPreloadDir)
-	run(t, repo, "bash", "preload/build_phase1.sh", art.preload)
-	run(t, repo, "gcc", "-O2", "-Wall", "-Wextra", "-o", art.stub, "tests/preload/testdata/stub_client.c")
-	buildWithEnv(t, repo, map[string]string{"CGO_ENABLED": "0"}, "go",
-		append(append([]string{"build"}, goBuildCoverFlag()...), "-o", art.wrapper, "./cmd/uwgwrapper")...)
-	return art
+	return buildWrapperArtifacts(t)
 }
 
 // TestPhase1SeccompPreload validates the new SIGSYS+seccomp-based
