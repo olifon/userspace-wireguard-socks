@@ -7,7 +7,6 @@ package preload_test
 
 import (
 	"context"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
