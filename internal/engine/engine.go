@@ -169,6 +169,20 @@ type Engine struct {
 	meshAuth           meshAuthenticator
 	meshMasterKey      [32]byte
 
+	// meshSubsMu guards meshSubs and meshSubsNext.
+	// meshSubs maps a per-connection ID to a buffered notification channel.
+	// The channel carries at most one pending notification so a slow consumer
+	// doesn't queue unbounded signals; the write is non-blocking.
+	meshSubsMu   sync.Mutex
+	meshSubs     map[uint64]chan struct{}
+	meshSubsNext uint64
+
+	// meshSubActivesMu guards meshSubActives. A parent peer's public key is
+	// present when a /v1/subscribe client connection is healthy for that
+	// parent; polling is suppressed for that parent while the key is set.
+	meshSubActivesMu sync.Mutex
+	meshSubActives   map[string]bool
+
 	// metrics is non-nil iff metrics.listen is configured. Hot-path
 	// counter increments use atomic operations and are safe to call when
 	// metrics is nil (callers check). See internal/engine/metrics.go.

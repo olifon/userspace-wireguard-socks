@@ -6,6 +6,7 @@
 package engine
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/ecdh"
@@ -338,7 +339,7 @@ func (e *Engine) startMeshControlServer() error {
 	mux.HandleFunc("/v1/acls", e.handleMeshControlACLs)
 	mux.HandleFunc("/v1/nets", e.handleMeshControlNets)
 	mux.HandleFunc("/v1/p2p", e.handleMeshControlP2P)
-	mux.HandleFunc("/v1/subscribe", e.handleMeshControlNotImplemented)
+	mux.HandleFunc("/v1/subscribe", e.handleMeshControlSubscribe)
 
 	server := e.proxyHTTPServer(e.meshControlRateLimit(mux))
 	go func() {
@@ -578,12 +579,193 @@ func (e *Engine) meshNetsForRequester(requester string) (meshNetsResponse, error
 	return meshNetsResponse{Prefixes: prefixes}, nil
 }
 
-func (e *Engine) handleMeshControlNotImplemented(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusNotImplemented)
-	_ = json.NewEncoder(w).Encode(map[string]string{
-		"error": "mesh control endpoint is not implemented yet",
-	})
+// meshSubscribeContextLabel is mixed into the key derivation for
+// /v1/subscribe frames, distinct from the request-body label so the
+// same secret cannot be replayed across endpoints.
+const meshSubscribeContextLabel = "uwgsocks-mesh-subscribe"
+
+// meshSubscribeHeartbeat is the interval between heartbeat frames on an
+// idle subscribe connection. The client must reconnect if no frame has
+// arrived within 3× this window (~90s).
+const meshSubscribeHeartbeat = 30 * time.Second
+
+// meshSubscribeFrame is the JSON envelope for all frames emitted over
+// a /v1/subscribe stream.
+type meshSubscribeFrame struct {
+	Type  string               `json:"type"` // "state" or "heartbeat"
+	Peers []meshDiscoveredPeer `json:"peers,omitempty"`
+	ACLs  *meshACLResponse     `json:"acls,omitempty"`
+}
+
+// handleMeshControlSubscribe opens an encrypted octet-stream event subscription
+// for the authenticated peer. The frame format is:
+//
+//	[2-byte big-endian payload length][XChaCha20-Poly1305 ciphertext]
+//
+// The key is derived once from the per-connection shared secret. The nonce
+// is counter-based (counter 1, 2, 3…) encoded as a little-endian uint64 in
+// the first 8 bytes of the 24-byte nonce (remaining 16 bytes zero). The
+// receiver increments its own counter to decrypt each frame without a
+// transmitted nonce.
+//
+// Nonce safety: every /v1/subscribe connection requires a full challenge-
+// response auth that generates a fresh ECDH ephemeral pair, making the
+// SharedSecret and its derived key unique per connection. A counter starting
+// at 1 under a unique key therefore never reuses a (key, nonce) pair —
+// catastrophic under XChaCha20-Poly1305 (XOR stream) if violated.
+//
+// The first frame is always "state" (full peers + ACLs for the requester).
+// Subsequent "state" frames follow any mesh change event. "heartbeat" frames
+// are sent every 30s on idle connections so the client can detect a stale
+// connection.
+func (e *Engine) handleMeshControlSubscribe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if e.meshAuth == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "mesh control is not available")
+		return
+	}
+	authRes, err := e.meshAuth.Verify(r)
+	if err != nil {
+		writeAPIError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+	// Derive the per-connection stream key from the shared secret.
+	key, _ := meshKeyNonce(authRes.SharedSecret, meshSubscribeContextLabel)
+	aead, err := chacha20poly1305.NewX(key)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "cipher init failed")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("X-Accel-Buffering", "no") // hint to nginx: disable proxy buffering
+	w.WriteHeader(http.StatusOK)
+
+	flusher, canFlush := w.(http.Flusher)
+
+	// Register for change notifications.
+	notifyCh := e.meshSubsAdd()
+	defer e.meshSubsRemove(notifyCh)
+
+	var counter uint64
+	sendFrame := func(evType string, requester string) error {
+		frame := meshSubscribeFrame{Type: evType}
+		if evType == "state" {
+			if peers, ferr := e.meshPeersForRequester(requester); ferr == nil {
+				frame.Peers = peers
+			}
+			if aclResp, ferr := e.meshACLsForRequester(requester); ferr == nil {
+				frame.ACLs = &aclResp
+			}
+		}
+		plain, merr := json.Marshal(frame)
+		if merr != nil {
+			return merr
+		}
+		counter++
+		nonce := meshSubscribeNonce(counter)
+		ct := aead.Seal(nil, nonce, plain, nil)
+		if len(ct) > 0xffff {
+			return errors.New("frame too large")
+		}
+		var hdr [2]byte
+		hdr[0] = byte(len(ct) >> 8)
+		hdr[1] = byte(len(ct))
+		if _, werr := w.Write(hdr[:]); werr != nil {
+			return werr
+		}
+		if _, werr := w.Write(ct); werr != nil {
+			return werr
+		}
+		if canFlush {
+			flusher.Flush()
+		}
+		return nil
+	}
+
+	// First frame: full state snapshot.
+	if err = sendFrame("state", authRes.PeerPublicKey); err != nil {
+		return
+	}
+
+	heartbeat := time.NewTicker(meshSubscribeHeartbeat)
+	defer heartbeat.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-e.closed:
+			return
+		case <-notifyCh:
+			if err = sendFrame("state", authRes.PeerPublicKey); err != nil {
+				return
+			}
+		case <-heartbeat.C:
+			if err = sendFrame("heartbeat", authRes.PeerPublicKey); err != nil {
+				return
+			}
+		}
+	}
+}
+
+// meshSubscribeNonce encodes counter (1-based) as a little-endian uint64
+// in the first 8 bytes of a 24-byte XChaCha20 nonce.
+func meshSubscribeNonce(counter uint64) []byte {
+	n := make([]byte, chacha20poly1305.NonceSizeX)
+	n[0] = byte(counter)
+	n[1] = byte(counter >> 8)
+	n[2] = byte(counter >> 16)
+	n[3] = byte(counter >> 24)
+	n[4] = byte(counter >> 32)
+	n[5] = byte(counter >> 40)
+	n[6] = byte(counter >> 48)
+	n[7] = byte(counter >> 56)
+	return n
+}
+
+// meshSubsAdd registers a new subscriber and returns its notification channel.
+func (e *Engine) meshSubsAdd() chan struct{} {
+	ch := make(chan struct{}, 1)
+	e.meshSubsMu.Lock()
+	if e.meshSubs == nil {
+		e.meshSubs = make(map[uint64]chan struct{})
+	}
+	id := e.meshSubsNext
+	e.meshSubsNext++
+	e.meshSubs[id] = ch
+	e.meshSubsMu.Unlock()
+	return ch
+}
+
+// meshSubsRemove unregisters the subscription channel returned by meshSubsAdd.
+func (e *Engine) meshSubsRemove(ch chan struct{}) {
+	e.meshSubsMu.Lock()
+	for id, c := range e.meshSubs {
+		if c == ch {
+			delete(e.meshSubs, id)
+			break
+		}
+	}
+	e.meshSubsMu.Unlock()
+}
+
+// notifyMeshSubscribers sends a non-blocking notification to all active
+// /v1/subscribe connections. Called whenever mesh state changes.
+func (e *Engine) notifyMeshSubscribers() {
+	e.meshSubsMu.Lock()
+	for _, ch := range e.meshSubs {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+	e.meshSubsMu.Unlock()
 }
 
 // handleMeshControlP2P lets authenticated peers declare their P2P capability.
@@ -833,6 +1015,291 @@ func (e *Engine) startMeshPolling() {
 	}
 	go e.meshPollingLoop()
 	go e.keepaliveProbingLoop()
+	e.startMeshSubscribeLoops(peers)
+}
+
+// startMeshSubscribeLoops launches one long-lived subscribe goroutine per
+// parent peer. Each goroutine maintains a /v1/subscribe connection; when
+// connected, it suppresses the per-parent polling ticker. On disconnect it
+// clears the flag and retries after a 5-second backoff.
+func (e *Engine) startMeshSubscribeLoops(peers []config.Peer) {
+	for _, peer := range peers {
+		if !peer.MeshEnabled || !peer.MeshAcceptACLs || peer.ControlURL == "" {
+			continue
+		}
+		p := peer
+		go e.meshSubscribeLoopPeer(p)
+	}
+}
+
+// meshSubscribeNotImplemented is the sentinel returned by the subscribe
+// attempt when the server returns 501 (older server without subscribe support).
+var meshSubscribeNotImplemented = errors.New("subscribe: server returned 501")
+
+func (e *Engine) meshSubscribeLoopPeer(parent config.Peer) {
+	usePolling := false // set after first 501 → permanent polling fallback
+	for {
+		select {
+		case <-e.closed:
+			return
+		default:
+		}
+		if usePolling {
+			// Server doesn't support subscribe; poll on normal interval.
+			select {
+			case <-e.closed:
+				return
+			case <-time.After(15 * time.Second):
+				e.runMeshPollingPeer(parent)
+			}
+			continue
+		}
+
+		err := e.runMeshSubscribePeer(parent)
+		if errors.Is(err, meshSubscribeNotImplemented) {
+			usePolling = true
+			continue
+		}
+		// Any other error (network, auth, etc.): wait and retry.
+		select {
+		case <-e.closed:
+			return
+		case <-time.After(5 * time.Second):
+		}
+	}
+}
+
+// meshSetSubscribeActive marks/unmarks a parent peer as having an active
+// subscribe connection. When active, runMeshPolling skips that parent.
+func (e *Engine) meshSetSubscribeActive(key string, active bool) {
+	e.meshSubActivesMu.Lock()
+	if active {
+		if e.meshSubActives == nil {
+			e.meshSubActives = make(map[string]bool)
+		}
+		e.meshSubActives[key] = true
+	} else {
+		delete(e.meshSubActives, key)
+	}
+	e.meshSubActivesMu.Unlock()
+}
+
+func (e *Engine) meshIsSubscribeActive(key string) bool {
+	e.meshSubActivesMu.Lock()
+	defer e.meshSubActivesMu.Unlock()
+	return e.meshSubActives[key]
+}
+
+// meshSubscribeHeartbeatTimeout is how long the subscribe client waits for a
+// frame before treating the connection as stale and reconnecting.
+const meshSubscribeHeartbeatTimeout = 3 * meshSubscribeHeartbeat // 90s
+
+// runMeshSubscribePeer connects to /v1/subscribe for one parent peer,
+// reads frames, and applies state changes. Returns meshSubscribeNotImplemented
+// when the server returns HTTP 501. Any other error means "retry later".
+func (e *Engine) runMeshSubscribePeer(parent config.Peer) error {
+	local := e.meshSourceAddr()
+	if !local.IsValid() {
+		return errors.New("no local WireGuard address")
+	}
+	remote := netip.AddrPortFrom(local, 0)
+
+	// Use a context with no client timeout; the connection is long-lived.
+	// The heartbeat watchdog provides disconnect semantics.
+	ctx, cancel := context.WithCancel(e.ctx)
+	defer cancel()
+
+	// Build a separate client without the 15s response timeout.
+	key, err := wgtypes.ParseKey(e.cfg.WireGuard.PrivateKey)
+	if err != nil {
+		return err
+	}
+	subClient := &meshControlClient{
+		peer:       parent,
+		privateKey: key,
+		httpClient: &http.Client{
+			// No timeout — frame reading uses read deadlines via context.
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					if testMeshDialContextOverride != nil {
+						return testMeshDialContextOverride(ctx, network, addr)
+					}
+					return e.DialTunnelContext(ctx, network, addr)
+				},
+				// Disable keep-alive so reconnects create fresh TCP connections.
+				DisableKeepAlives: true,
+			},
+		},
+	}
+	u, err := url.Parse(parent.ControlURL)
+	if err != nil {
+		return err
+	}
+	subClient.controlURL = u
+
+	challenge, err := subClient.fetchChallenge(ctx)
+	if err != nil {
+		return err
+	}
+	token, secret, err := subClient.bearerToken(remote, challenge)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, subClient.controlURL.ResolveReference(&url.URL{Path: "/v1/subscribe"}).String(), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := subClient.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotImplemented {
+		return meshSubscribeNotImplemented
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("subscribe: server status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	// Derive the stream key (same as server side).
+	streamKey, _ := meshKeyNonce(secret, meshSubscribeContextLabel)
+	aead, err := chacha20poly1305.NewX(streamKey)
+	if err != nil {
+		return err
+	}
+
+	e.meshSetSubscribeActive(parent.PublicKey, true)
+	defer e.meshSetSubscribeActive(parent.PublicKey, false)
+
+	br := bufio.NewReader(resp.Body)
+	var counter uint64
+	lastFrame := time.Now()
+
+	readFrame := func() (meshSubscribeFrame, error) {
+		var hdr [2]byte
+		if _, err := io.ReadFull(br, hdr[:]); err != nil {
+			return meshSubscribeFrame{}, err
+		}
+		length := int(hdr[0])<<8 | int(hdr[1])
+		if length == 0 || length > 0xffff {
+			return meshSubscribeFrame{}, errors.New("invalid frame length")
+		}
+		ct := make([]byte, length)
+		if _, err := io.ReadFull(br, ct); err != nil {
+			return meshSubscribeFrame{}, err
+		}
+		counter++
+		nonce := meshSubscribeNonce(counter)
+		plain, err := aead.Open(nil, nonce, ct, nil)
+		if err != nil {
+			return meshSubscribeFrame{}, fmt.Errorf("subscribe frame decrypt: %w", err)
+		}
+		var frame meshSubscribeFrame
+		if err := json.Unmarshal(plain, &frame); err != nil {
+			return meshSubscribeFrame{}, err
+		}
+		lastFrame = time.Now()
+		return frame, nil
+	}
+
+	// heartbeat watchdog: cancel context if no frame within timeout.
+	watchdog := make(chan struct{}, 1)
+	go func() {
+		t := time.NewTicker(10 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-e.closed:
+				cancel()
+				return
+			case <-watchdog:
+			case <-t.C:
+				if time.Since(lastFrame) > meshSubscribeHeartbeatTimeout {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+
+	for {
+		frame, err := readFrame()
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		}
+		select {
+		case watchdog <- struct{}{}:
+		default:
+		}
+		if frame.Type == "state" {
+			if frame.Peers != nil {
+				if applyErr := e.applyMeshDiscoveredPeers(parent, frame.Peers); applyErr != nil {
+					return applyErr
+				}
+			}
+			if frame.ACLs != nil {
+				if applyErr := e.applyMeshACLsWithDefault(parent.PublicKey, frame.ACLs.Default, frame.ACLs.Inbound, frame.ACLs.Outbound); applyErr != nil {
+					return applyErr
+				}
+			}
+		}
+	}
+}
+
+// runMeshPollingPeer runs one poll cycle for a single parent peer.
+// Used by the subscribe fallback path when the server doesn't support subscribe.
+func (e *Engine) runMeshPollingPeer(parent config.Peer) {
+	ctx, cancel := context.WithTimeout(e.ctx, 10*time.Second)
+	defer cancel()
+	client, err := e.newMeshControlClient(ctx, parent)
+	if err != nil {
+		return
+	}
+	local := e.meshSourceAddr()
+	if !local.IsValid() {
+		return
+	}
+	remote := netip.AddrPortFrom(local, 0)
+	e.cfgMu.RLock()
+	p2pMode := e.cfg.MeshControl.P2PMode
+	e.cfgMu.RUnlock()
+	if p2pMode != "" {
+		if postErr := client.postP2PMode(ctx, remote, p2pMode); postErr != nil {
+			e.log.Errorf("mesh control p2p declare for %s failed: %v", parent.PublicKey, postErr)
+		}
+	}
+	peers, err := client.fetchPeers(ctx, remote)
+	if err != nil {
+		e.log.Errorf("mesh control poll for %s failed: %v", parent.PublicKey, err)
+		return
+	}
+	if err = e.applyMeshDiscoveredPeers(parent, peers); err != nil {
+		return
+	}
+	aclResp, err := client.fetchACLs(ctx, remote)
+	if err != nil {
+		return
+	}
+	_ = e.applyMeshACLsWithDefault(parent.PublicKey, aclResp.Default, aclResp.Inbound, aclResp.Outbound)
+	netsResp, err := client.fetchNets(ctx, remote)
+	if err != nil {
+		return
+	}
+	_ = e.applyMeshSelfPrefixes(parent.PublicKey, netsResp.Prefixes)
+	e.meshACLMu.Lock()
+	e.meshParentReady[parent.PublicKey] = true
+	e.meshACLMu.Unlock()
+	e.refreshDynamicPeerActivity()
 }
 
 func (e *Engine) meshPollingLoop() {
@@ -852,6 +1319,11 @@ func (e *Engine) runMeshPolling() {
 	peers := e.meshStaticPeers()
 	for _, parent := range peers {
 		if !parent.MeshEnabled || !parent.MeshAcceptACLs || parent.ControlURL == "" {
+			continue
+		}
+		// Skip peers that have an active subscribe connection; they push state
+		// directly and do not need the polling path.
+		if e.meshIsSubscribeActive(parent.PublicKey) {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(e.ctx, 10*time.Second)
@@ -1051,6 +1523,9 @@ func (e *Engine) applyMeshDiscoveredPeers(parent config.Peer, discovered []meshD
 		if err := e.removeDynamicPeerDevice(key); err != nil {
 			return err
 		}
+	}
+	if len(upserts) > 0 || len(removals) > 0 {
+		e.notifyMeshSubscribers()
 	}
 	return e.reconcileDynamicPeerPriority()
 }
@@ -1496,6 +1971,7 @@ func (e *Engine) refreshDynamicPeerActivity() {
 	e.dynamicMu.Unlock()
 	if changed {
 		_ = e.reconcileDynamicPeerPriority()
+		e.notifyMeshSubscribers()
 	}
 }
 
