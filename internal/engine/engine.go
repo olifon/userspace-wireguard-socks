@@ -157,6 +157,7 @@ type Engine struct {
 	connRejectUntil time.Time
 	socketNext      uint64
 	closed          chan struct{}
+	startedAt       time.Time
 	ctx             context.Context
 	cancel          context.CancelFunc
 
@@ -265,6 +266,7 @@ func New(cfg config.Config, logger LeveledLogger) (*Engine, error) {
 		socksUDPRelayPorts: make(map[string]map[int]struct{}),
 		connTable:          make(map[int64]*trackedConn),
 		closed:             make(chan struct{}),
+		startedAt:          time.Now(),
 		fallbackDialer:     fallback,
 		localPrefixes:      localPrefixes,
 		icmpForwardLimiter: rate.NewLimiter(255, 255),

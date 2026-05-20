@@ -651,9 +651,9 @@ func TestMeshDynamicACLBlocksSpoofedReverseAndAllowsLegitFlow(t *testing.T) {
 		_, _ = io.Copy(conn, conn)
 	}()
 
-	goodCtx, goodCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	goodCtx, goodCancel := context.WithTimeout(context.Background(), 30*time.Second*testDeadlineScale)
 	defer goodCancel()
-	conn, err := retryMeshDialContextWithContext(goodCtx, clientA, "tcp", "100.64.97.3:80", 30*time.Second)
+	conn, err := retryMeshDialContextWithContext(goodCtx, clientA, "tcp", "100.64.97.3:80", 30*time.Second*testDeadlineScale)
 	if err != nil {
 		t.Fatal(err)
 	}

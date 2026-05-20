@@ -157,3 +157,30 @@ child pattern, `systrap-elf` is the right choice (and is what `auto` selects).
 
 See [`docs/features/transparent-wrapper.md`](../features/transparent-wrapper.md)
 for the full host-shape compatibility table.
+
+## Server processes that fork privileged workers (Apache, Chromium)
+
+Some server processes fork worker children and then drop privileges (e.g.
+Apache event-MPM setuids workers to `www-data`; Chromium setuids its
+renderer sandbox). These workers can no longer read the root-owned
+shared-state file (`/tmp/uwgwrapper-*/shared-state-*.bin`, mode 0600),
+and they lose access to the fdproxy unix socket, so wrapped connections
+opened after the privilege drop fail.
+
+**Current recommendation: disable worker sandboxing for these processes
+when running under `uwgwrapper`.** This is the same guidance given for
+Chromium (which exposes a `--no-sandbox` flag). For Apache, this means
+configuring workers to run as the same user as the wrapper rather than a
+lower-privilege account (e.g. run `uwgwrapper` as the web user and drop
+the `User`/`Group` directive, or use `mod_mpm_event` with a single
+non-setuid pool).
+
+This is not a false claim about the wrapper's security properties — the
+wrapper is a network-routing shim, not a security sandbox. It does not
+prevent what the underlying OS allows; it merely redirects socket traffic.
+Running with `--no-sandbox` or equivalent does not weaken the tunnel
+itself.
+
+A proper solution (passing the shared memfd through the process tree via
+inheritance, verifying via fdproxy auth) is planned but not yet
+implemented.

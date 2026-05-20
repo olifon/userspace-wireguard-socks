@@ -92,7 +92,7 @@
 /* ------------------------------------------------------------------ */
 
 /* fd of the master ptloader memfd (non-CLOEXEC). Inherited across execs. */
-static int  uwg_ptloader_master_fd = -1;
+int  uwg_ptloader_master_fd = -1;
 /* File offset of the .uwgcfg section inside the ptloader binary. */
 static long uwg_ptloader_cfg_off   = -1;
 /* Byte size of the ptloader binary. */
@@ -148,6 +148,40 @@ static int uwg_is_my_ptloader_path(const char *interp_path, int my_fd) {
     const char *b = expected;
     while (*b && *a == *b) { a++; b++; }
     return (*b == '\0' && *a == '\0');
+}
+
+/* Create an anonymous writable fd.  Tries memfd_create first (best);
+ * falls back to O_TMPFILE under /dev/shm then /tmp when memfd_create is
+ * blocked (some seccomp-hardened containers).  flags_mfd is passed to
+ * memfd_create (e.g. 0 or MFD_CLOEXEC); the O_TMPFILE fallback always
+ * opens with O_CLOEXEC. */
+#ifndef O_TMPFILE
+#  define O_TMPFILE (0200000 | 020000000)  /* Linux-specific */
+#endif
+#ifndef O_WRONLY
+#  define O_WRONLY 1
+#endif
+#ifndef O_RDWR
+#  define O_RDWR   2
+#endif
+static long uwg_create_anon_fd(const char *name, unsigned long flags_mfd) {
+    long fd = uwg_syscall2(SYS_memfd_create, (long)name, (long)flags_mfd);
+    if (fd >= 0) return fd;
+
+    /* memfd_create blocked; fall back to O_TMPFILE on a tmpfs. */
+    static const char *const dirs[] = { "/dev/shm", "/tmp", NULL };
+    for (int i = 0; dirs[i]; i++) {
+        fd = uwg_syscall4(SYS_openat, (long)AT_FDCWD, (long)dirs[i],
+                          (long)(O_RDWR | O_TMPFILE | O_CLOEXEC), 0600L);
+        if (fd >= 0) {
+            /* If the caller wants non-CLOEXEC (flags_mfd == 0), clear it. */
+            if (!(flags_mfd & MFD_CLOEXEC)) {
+                uwg_syscall3(SYS_fcntl, fd, (long)F_SETFD, 0L);
+            }
+            return fd;
+        }
+    }
+    return fd; /* last error */
 }
 
 /* Read exactly len bytes from fd at offset off into buf.
@@ -312,7 +346,7 @@ static long uwg_docker_patch_exec(int orig_fd, long orig_size,
     long rc;
 
     /* Create ptl_fd: copy of ptloader. NO O_CLOEXEC — must survive exec. */
-    long ptl_fd_l = uwg_syscall2(SYS_memfd_create, (long)"uwgptl", 0);
+    long ptl_fd_l = uwg_create_anon_fd("uwgptl", 0);
     if (ptl_fd_l < 0) return ptl_fd_l;
     int ptl_fd = (int)ptl_fd_l;
 
@@ -361,8 +395,7 @@ static long uwg_docker_patch_exec(int orig_fd, long orig_size,
     if (ptl_path_len <= 0) { rc = -22; goto out_ptl; }
 
     /* Create bin_fd: patched copy of the original binary. O_CLOEXEC. */
-    long bin_fd_l = uwg_syscall2(SYS_memfd_create,
-                                  (long)"uwgbin", (long)MFD_CLOEXEC);
+    long bin_fd_l = uwg_create_anon_fd("uwgbin", (unsigned long)MFD_CLOEXEC);
     if (bin_fd_l < 0) { rc = bin_fd_l; goto out_ptl; }
     int bin_fd = (int)bin_fd_l;
 
@@ -673,7 +706,7 @@ static long uwg_docker_patch_exec_dynamic(int orig_fd, long orig_size,
     long rc;
 
     /* Create ptl_fd: copy of ptloader. NOT O_CLOEXEC — must survive exec. */
-    long ptl_fd_l = uwg_syscall2(SYS_memfd_create, (long)"uwgptl", 0);
+    long ptl_fd_l = uwg_create_anon_fd("uwgptl", 0);
     if (ptl_fd_l < 0) return ptl_fd_l;
     int ptl_fd = (int)ptl_fd_l;
 
@@ -736,7 +769,7 @@ static long uwg_docker_patch_exec_dynamic(int orig_fd, long orig_size,
     if (rc < 0) goto out_ptl;
 
     /* Create bin_fd: copy of the original binary. O_CLOEXEC. */
-    long bin_fd_l = uwg_syscall2(SYS_memfd_create, (long)"uwgbin", (long)MFD_CLOEXEC);
+    long bin_fd_l = uwg_create_anon_fd("uwgbin", (unsigned long)MFD_CLOEXEC);
     if (bin_fd_l < 0) { rc = bin_fd_l; goto out_ptl; }
     int bin_fd = (int)bin_fd_l;
 

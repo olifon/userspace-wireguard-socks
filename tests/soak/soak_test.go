@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/reindertpelsma/userspace-wireguard-socks/internal/acl"
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/config"
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/engine"
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/testconfig"
@@ -257,6 +258,124 @@ func TestLoopbackImpairedChattySOCKSSoak(t *testing.T) {
 		case <-ctx.Done():
 			wg.Wait()
 			return
+		}
+	}
+}
+
+// TestMeshSubscribeSoak holds a hub + N client subscribe connections open for
+// the soak duration and verifies no goroutine or memory leak. The hub
+// periodically receives ACL mutations via SetACL to drive real "state" frames
+// (not just heartbeats) to the subscribers.
+//
+// Catches regressions in:
+//   - meshSubsAdd / meshSubsRemove goroutine registration (leak on disconnect)
+//   - sendFrame error path (must not block the hub loop)
+//   - per-connection AEAD + counter state (must be independent per connection)
+func TestMeshSubscribeSoak(t *testing.T) {
+	tcfg := testconfig.Get()
+	if !tcfg.Soak {
+		t.Skip("set UWGS_SOAK=1 or -uwgs-soak to run long soak tests")
+	}
+	duration := 2 * time.Minute
+	if tcfg.SoakSeconds > 0 {
+		duration = time.Duration(tcfg.SoakSeconds) * time.Second
+	}
+
+	hubKey := mustKey(t)
+	clientKey := mustKey(t)
+	psk := mustKey(t)
+	hubPort := freeUDPPort(t)
+
+	hubCfg := config.Default()
+	hubCfg.MeshControl.Listen = "100.91.2.1:18787"
+	hubCfg.WireGuard.PrivateKey = hubKey.String()
+	hubCfg.WireGuard.ListenPort = &hubPort
+	hubCfg.WireGuard.Addresses = []string{"100.91.2.1/32"}
+	hubCfg.WireGuard.Peers = []config.Peer{{
+		PublicKey:      clientKey.PublicKey().String(),
+		PresharedKey:   psk.String(),
+		AllowedIPs:     []string{"100.91.2.2/32"},
+		MeshEnabled:    true,
+		MeshAcceptACLs: true,
+	}}
+	hub := mustStartEngine(t, hubCfg)
+
+	clientCfg := config.Default()
+	clientCfg.WireGuard.PrivateKey = clientKey.String()
+	clientCfg.WireGuard.Addresses = []string{"100.91.2.2/32"}
+	clientCfg.WireGuard.Peers = []config.Peer{{
+		PublicKey:           hubKey.PublicKey().String(),
+		PresharedKey:        psk.String(),
+		Endpoint:            fmt.Sprintf("127.0.0.1:%d", hubPort),
+		AllowedIPs:          []string{"100.91.2.1/32"},
+		PersistentKeepalive: 1,
+		ControlURL:          "http://100.91.2.1:18787",
+		MeshEnabled:         true,
+		MeshAcceptACLs:      true,
+	}}
+	mustStartEngine(t, clientCfg)
+
+	// Wait up to 20s for the WireGuard handshake to complete.
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		st, err := hub.Status()
+		if err == nil {
+			for _, p := range st.Peers {
+				if p.HasHandshake {
+					goto handshakeDone
+				}
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for WireGuard handshake before subscribe soak")
+handshakeDone:
+
+	goroutineBaseline := runtime.NumGoroutine()
+
+	// Mutate ACLs on the hub every 10s to generate real state frames.
+	ctx, cancel := context.WithTimeout(context.Background(), duration)
+	defer cancel()
+	go func() {
+		tick := time.NewTicker(10 * time.Second)
+		defer tick.Stop()
+		toggle := false
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				toggle = !toggle
+				nextACL := config.ACL{}
+				if toggle {
+					nextACL.Outbound = []acl.Rule{{Action: "accept"}}
+				}
+				_ = hub.SetACL(nextACL)
+			}
+		}
+	}()
+
+	// Periodic health check: goroutine count must stay bounded.
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			var mem runtime.MemStats
+			runtime.ReadMemStats(&mem)
+			goroutinesNow := runtime.NumGoroutine()
+			t.Logf("subscribe soak done: goroutines baseline=%d final=%d heap=%d", goroutineBaseline, goroutinesNow, mem.Alloc)
+			// A goroutine leak is flagged if count grows by more than 50
+			// above baseline — generous to avoid false positives from
+			// unrelated background goroutines.
+			if goroutinesNow > goroutineBaseline+50 {
+				t.Errorf("possible goroutine leak: baseline=%d final=%d", goroutineBaseline, goroutinesNow)
+			}
+			return
+		case <-ticker.C:
+			var mem runtime.MemStats
+			runtime.ReadMemStats(&mem)
+			t.Logf("subscribe soak: goroutines=%d heap=%d", runtime.NumGoroutine(), mem.Alloc)
 		}
 	}
 }

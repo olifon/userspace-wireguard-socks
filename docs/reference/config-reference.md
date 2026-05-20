@@ -484,7 +484,15 @@ coordination.md for the full protocol.
     Rotate auth challenges on this interval.
 
   - **`active_peer_window_seconds`** (int) — default: `120`  
-    Only advertise recently active peers.
+    Only advertise recently active peers. **Do not lower this value unless
+    you fully understand the two-clock interaction:** the hub advertisement
+    path requires ≥ 120s (wireguard-go's 180s rekey interval means
+    `LastHandshakeTime` fluctuates above lower thresholds between rekeys,
+    causing the hub to intermittently drop peers from its advertisement
+    list). The client dead-path detection path uses a separate 15s fast
+    check and is not affected by this setting. Raising the value is safe;
+    lowering it risks intermittent peer loss under normal WireGuard rekey
+    timing.
 
   - **`p2p_mode`** (string) — default: `""` (passive)  
     How this node declares its own P2P capability to the hub. Sent via

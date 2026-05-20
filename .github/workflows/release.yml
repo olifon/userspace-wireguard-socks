@@ -183,6 +183,13 @@ jobs:
           set -euo pipefail
           UWGS_SOAK=1 UWGS_SOAK_SECONDS=15 go test ./tests/soak -run TestLoopbackImpairedChattySOCKSSoak -count=1
 
+      - name: Subscribe soak (mesh-control goroutine-leak canary)
+        shell: bash
+        run: |
+          set -euo pipefail
+          UWGS_SOAK=1 UWGS_SOAK_SECONDS=30 go test -count=1 -timeout 120s \
+            ./tests/soak -run TestMeshSubscribeSoak
+
       - name: Transport adversarial soak
         if: runner.os == 'Linux'
         shell: bash
@@ -255,6 +262,20 @@ jobs:
       # sufficient and we don't want to silence a real regression.
       - name: Mesh chaos test
         if: runner.os == 'Linux'
+        env:
+          UWGS_RUN_MESH_CHAOS: "1"
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -count=1 -timeout 900s \
+            -run 'TestMeshChaosResume_(Foundation|LossyDirectPath|AdvertisedEndpointThroughNAT|RelayFailoverOn100PercentDrop|SourcePortRebind|TCPOuterMidStreamDrop|HubProcessRestart|MultiInstanceHost|RuntimeMutationsUnderLoad)' \
+            ./internal/engine/
+
+      # Windows mesh chaos: identical test suite, different OS scheduler
+      # and net stack — surfaces races that loopback-UDP on Linux masks.
+      # BLOCKING (no continue-on-error): same policy as the Linux step.
+      - name: Mesh chaos test (Windows)
+        if: runner.os == 'Windows'
         env:
           UWGS_RUN_MESH_CHAOS: "1"
         shell: bash
@@ -528,12 +549,6 @@ jobs:
           - goos: linux
             goarch: riscv64
             artifact_name: uwgsocks-linux-riscv64
-          - goos: linux
-            goarch: mips
-            artifact_name: uwgsocks-linux-mips
-          - goos: linux
-            goarch: mipsle
-            artifact_name: uwgsocks-linux-mipsle
           - goos: darwin
             goarch: amd64
             artifact_name: uwgsocks-darwin-amd64
@@ -606,12 +621,6 @@ jobs:
           - goos: linux
             goarch: riscv64
             artifact_name: uwgsocks-lite-linux-riscv64
-          - goos: linux
-            goarch: mips
-            artifact_name: uwgsocks-lite-linux-mips
-          - goos: linux
-            goarch: mipsle
-            artifact_name: uwgsocks-lite-linux-mipsle
           - goos: darwin
             goarch: amd64
             artifact_name: uwgsocks-lite-darwin-amd64

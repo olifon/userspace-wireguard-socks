@@ -101,6 +101,14 @@ static const int uwg_trapped_syscalls[] = {
     SYS_sendmsg,
     SYS_sendmmsg,
 
+    /* close_range — Python 3.12+ uses it for close_fds=True instead of
+     * iterating close(2).  Without trapping it, close_range(3,MAX,0) in
+     * a fork-child silently closes uwg-tracked fds (incl. the ptloader
+     * master fd) before execve, breaking injection into grandchildren. */
+#ifdef SYS_close_range
+    SYS_close_range,
+#endif
+
     /* read / write / close / dup / fcntl ARE trapped under the
      * supervised flag (see uwg_trapped_extra_supervised below).
      * Without supervised mode they stay un-trapped — libc-init
@@ -144,6 +152,9 @@ static const int uwg_trapped_extra_supervised[] = {
 #endif
     SYS_dup3,
     SYS_fcntl,
+#ifdef SYS_close_range
+    SYS_close_range,
+#endif
 };
 #define UWG_N_TRAPPED_EXTRA_SUPERVISED \
     (sizeof(uwg_trapped_extra_supervised) / sizeof(uwg_trapped_extra_supervised[0]))

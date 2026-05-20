@@ -216,14 +216,14 @@ func mustParseAddrPort(t *testing.T, s string) netip.AddrPort {
 // fetchBlobAndVerify is the 2-peer counterpart of
 // meshChaosNet.fetchAndVerify — same logic, single dialer.
 func fetchBlobAndVerify(srcEng *Engine, addr string, srvSrcIdx, requestDstIdx, sizeBytes int) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second*testDeadlineScale)
 	defer cancel()
-	conn, err := retryMeshDialContextWithContext(ctx, srcEng, "tcp", addr, 30*time.Second)
+	conn, err := retryMeshDialContextWithContext(ctx, srcEng, "tcp", addr, 30*time.Second*testDeadlineScale)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(180 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(180 * time.Second * testDeadlineScale))
 	req := []byte("GET /blob?dst=" + intToStr(requestDstIdx) + "&size=" + intToStr(sizeBytes) +
 		" HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
 	if _, err := conn.Write(req); err != nil {
@@ -288,9 +288,9 @@ func TestMeshChaosResume_Foundation(t *testing.T) {
 	if testing.Short() {
 		t.Skip("mesh chaos test skipped in -short mode")
 	}
-	// Even without the env flag, we run the foundation case as a
-	// smoke check (it's quick, ~5s) — the chaos layers themselves
-	// are what take longer and are more env-flag-gated.
+	if !testingChaosFlag() {
+		t.Skip("set UWGS_RUN_MESH_CHAOS=1 to run mesh chaos tests")
+	}
 
 	const (
 		nPeers     = 5

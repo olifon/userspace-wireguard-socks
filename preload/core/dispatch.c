@@ -62,6 +62,10 @@ long uwg_dispatch(long nr, long a1, long a2, long a3,
     case SYS_socket:      return uwg_socket((int)a1, (int)a2, (int)a3);
     case SYS_socketpair:  return uwg_socketpair((int)a1, (int)a2, (int)a3, (int *)a4);
     case SYS_close:       return uwg_close((int)a1);
+#ifdef SYS_close_range
+    case SYS_close_range: return uwg_close_range((unsigned)a1, (unsigned)a2,
+                                                  (unsigned)a3);
+#endif
     case SYS_connect:     return uwg_connect((int)a1, (const struct sockaddr *)a2, (uint32_t)a3);
     case SYS_bind:        return uwg_bind((int)a1, (const struct sockaddr *)a2, (uint32_t)a3);
     case SYS_listen:      return uwg_listen((int)a1, (int)a2);

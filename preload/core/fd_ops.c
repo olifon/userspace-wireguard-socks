@@ -25,6 +25,11 @@
 #include "syscall.h"
 #include "dispatch.h"
 
+/* Ptloader master fd — protects the fd from close_range(3,MAX,0) in fork
+ * children so the exec injection chain survives close_fds=True subprocesses.
+ * Defined in execve_docker.c; -1 when not applicable (e.g. non-systrap-elf). */
+extern int uwg_ptloader_master_fd;
+
 #define UWG_F_GETFL 3
 #define UWG_F_SETFL 4
 #define UWG_F_GETFD 1
@@ -277,3 +282,51 @@ long uwg_shutdown(int fd, int how) {
      * EOF and tear down its end). */
     return uwg_passthrough_syscall2(SYS_shutdown, fd, how);
 }
+
+#ifdef SYS_close_range
+/* close_range(2) — Linux 5.9+.  Python 3.12 uses it for close_fds=True
+ * (close_range(3, UINT_MAX, 0)) in a fork-child before execve.  Without
+ * this handler the call bypasses the SIGSYS dispatcher, silently closing
+ * any uwg-tracked fds and the ptloader master fd.
+ *
+ * Strategy:
+ *  1. Clear uwg shared-state for each fd in [first, min(last, cache_max)].
+ *  2. Protect uwg_ptloader_master_fd from the kernel close by splitting the
+ *     range around it: issue close_range(first, master-1) and
+ *     close_range(master+1, last) separately.  If master is outside the
+ *     range, issue a single passthrough.  Flags (CLOSE_RANGE_CLOEXEC,
+ *     CLOSE_RANGE_UNSHARE) are forwarded unchanged to each sub-range call.
+ */
+long uwg_close_range(unsigned int first, unsigned int last, unsigned int flags) {
+    /* 1. Clear shared state for cache-range fds. */
+    unsigned int cache_last = (last < 4095u) ? last : 4095u;
+    for (unsigned int f = first; f <= cache_last; f++) {
+        uwg_state_clear((int)f);
+    }
+
+    /* 2. Protect uwg_ptloader_master_fd (typically fd 3). */
+    int master = uwg_ptloader_master_fd;
+    int protect = (master >= 0 &&
+                   (unsigned int)master >= first &&
+                   (unsigned int)master <= last);
+
+    if (!protect) {
+        return uwg_passthrough_syscall3(SYS_close_range, first, last, flags);
+    }
+
+    long rc = 0;
+    /* Range before master_fd. */
+    if (first < (unsigned int)master) {
+        rc = uwg_passthrough_syscall3(SYS_close_range,
+                                      first, (unsigned int)(master - 1), flags);
+    }
+    /* Range after master_fd. */
+    if ((unsigned int)master < last) {
+        long rc2 = uwg_passthrough_syscall3(SYS_close_range,
+                                            (unsigned int)(master + 1), last,
+                                            flags);
+        if (rc == 0) rc = rc2;
+    }
+    return rc;
+}
+#endif

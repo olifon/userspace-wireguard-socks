@@ -87,6 +87,8 @@ func (e *Engine) startAPIServer() error {
 	mux.HandleFunc("/uwg/socket", e.handleAPISocket)
 	mux.HandleFunc("/v1/resolve", e.handleAPIResolve)
 	mux.HandleFunc("/uwg/resolve", e.handleAPIResolve)
+	mux.HandleFunc("/v1/health", e.handleAPIHealth)
+	mux.HandleFunc("/health", e.handleAPIHealth)
 	mux.HandleFunc("/v1/status", e.handleAPIStatus)
 	mux.HandleFunc("/v1/ping", e.handleAPIPing)
 	mux.HandleFunc("/v1/transports", e.handleAPITransports)
@@ -386,6 +388,18 @@ func (e *Engine) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeAPIJSON(w, http.StatusOK, status)
+}
+
+func (e *Engine) handleAPIHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	writeAPIJSON(w, http.StatusOK, map[string]any{
+		"status":   "ok",
+		"uptime_s": int64(time.Since(e.startedAt).Seconds()),
+	})
 }
 
 func (e *Engine) handleAPIPing(w http.ResponseWriter, r *http.Request) {

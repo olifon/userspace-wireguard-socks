@@ -73,6 +73,9 @@ long uwg_dup2      (int oldfd, int newfd);
 long uwg_dup3      (int oldfd, int newfd, int flags);
 long uwg_fcntl     (int fd, int cmd, long arg);
 long uwg_shutdown  (int fd, int how);
+#ifdef SYS_close_range
+long uwg_close_range(unsigned int first, unsigned int last, unsigned int flags);
+#endif
 
 long uwg_recvfrom  (int fd, void *buf, size_t len, int flags,
                     struct sockaddr *src, uint32_t *slen);
