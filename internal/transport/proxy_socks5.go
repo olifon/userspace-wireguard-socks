@@ -101,19 +101,15 @@ func (d *SOCKS5Dialer) SupportsHostname() bool { return true }
 
 // socks5UDPAssociate sends a UDP ASSOCIATE request over the control
 // connection and returns the relay address (host:port) the server provides.
+//
+// RFC 1928 §4: DST.ADDR/DST.PORT in the request declares the address from
+// which the client will send UDP datagrams. Strict servers (some TURN
+// deployments) only accept UDP from the declared source; permissive servers
+// accept any source and ignore the hint. We populate from hint when it
+// parses as host:port with a resolvable address, and fall back to 0.0.0.0:0
+// for servers that don't require it.
 func socks5UDPAssociate(ctrl net.Conn, hint string) (string, error) {
-	// RFC 1928 §4: send VER, NMETHODS, METHODS (no-auth or user/pass)
-	// We reuse the already-authenticated control connection; we only need
-	// to send the UDP ASSOCIATE command.
-
-	// Build UDP ASSOCIATE request: VER=5, CMD=3, RSV=0, ATYP=1, ADDR=0.0.0.0, PORT=0
-	req := []byte{
-		5, 3, 0, // VER CMD RSV
-		1,          // ATYP: IPv4
-		0, 0, 0, 0, // DST.ADDR 0.0.0.0 (hint from caller ignored for now)
-		0, 0, // DST.PORT 0
-	}
-	_ = hint // TODO: parse hint and put IP/port in request for strict servers
+	req := buildUDPAssociateRequest(hint)
 	if _, err := ctrl.Write(req); err != nil {
 		return "", err
 	}
@@ -200,6 +196,43 @@ func (c *socks5UDPConn) Close() error {
 		return err1
 	}
 	return err2
+}
+
+// buildUDPAssociateRequest constructs a SOCKS5 UDP ASSOCIATE request (RFC 1928 §4).
+// hint is an optional host:port of the remote UDP destination; if it resolves
+// to an IP, it is embedded as DST.ADDR/DST.PORT so strict TURN servers can
+// validate the source. Falls back to 0.0.0.0:0 when hint is absent or
+// unresolvable.
+func buildUDPAssociateRequest(hint string) []byte {
+	if hint != "" {
+		if host, portStr, err := net.SplitHostPort(hint); err == nil {
+			if portNum, err := strconv.Atoi(portStr); err == nil && portNum > 0 && portNum <= 65535 {
+				var ip net.IP
+				if ip = net.ParseIP(host); ip == nil {
+					if addrs, err := net.LookupHost(host); err == nil && len(addrs) > 0 {
+						ip = net.ParseIP(addrs[0])
+					}
+				}
+				if ip4 := ip.To4(); ip4 != nil {
+					req := make([]byte, 10)
+					req[0], req[1], req[2] = 5, 3, 0
+					req[3] = 1
+					copy(req[4:8], ip4)
+					binary.BigEndian.PutUint16(req[8:], uint16(portNum))
+					return req
+				}
+				if ip6 := ip.To16(); ip6 != nil {
+					req := make([]byte, 22)
+					req[0], req[1], req[2] = 5, 3, 0
+					req[3] = 4
+					copy(req[4:20], ip6)
+					binary.BigEndian.PutUint16(req[20:], uint16(portNum))
+					return req
+				}
+			}
+		}
+	}
+	return []byte{5, 3, 0, 1, 0, 0, 0, 0, 0, 0}
 }
 
 // socks5UDPHeaderLen returns the total header length for a SOCKS5 UDP datagram.
