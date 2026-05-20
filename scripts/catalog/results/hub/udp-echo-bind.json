@@ -4,6 +4,6 @@
   "transport": "",
   "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 0.18,
-  "notes": "self_ip=10.200.0.1 port=46338 | out: echo:hello-udp | srv-log: listening_udp 10.200.0.1:46338 | err-tail: ort=46338|uwgwrapper: tid=3374190 syscall=52 seccomp=true rax=-38|uwgwrapper: getsockname fd=3 peer=true active=1 proxied=1 kind=3|uwgwrapper: tid=3374190 syscall=3 seccomp=true rax=-38|uwgwrapper: local fd clear group=3374190 fd=3 local=9|"
+  "duration_seconds": 0.78,
+  "notes": "self_ip=10.200.0.1 port=49397 | out: echo:hello-udp | srv-log: listening_udp 10.200.0.1:49397 | err-tail: peer=true active=1 proxied=1 kind=3|uwgwrapper: wait syscall-exit tid=3247264 seccomp=true|uwgwrapper: got syscall-exit tid=3247264|uwgwrapper: tid=3247264 syscall=57 seccomp=true rax=3|uwgwrapper: local fd clear group=3247264 fd=3 local=9|"
 }

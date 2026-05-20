@@ -4,6 +4,6 @@
   "transport": "",
   "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 0.13,
-  "notes": "cmd: curl -sS --max-time 10 -o /dev/null -w \"%{http_code}\\n\" http://10.200.0.1:9091/v1/status | rc=0 | out: 200 | stderr-tail: omp=true rax=-38|uwgwrapper: tid=3374082 syscall=3 seccomp=true rax=-38|uwgwrapper: tid=3374082 syscall=72 seccomp=true rax=-38|uwgwrapper: tid=3374082 syscall=45 seccomp=true rax=-38|uwgwrapper: local fd hit group=3374082 fd=4 local=9|uwgwrapper: tid=3374082 syscall=3 seccomp=true rax=-38|uwgwrapper: local fd clear group=3374082 fd=4 local=9|uwgwrapper: tid=3374082 syscall=1 seccomp=true rax=-38|"
+  "duration_seconds": 1.02,
+  "notes": "cmd: curl -sS --max-time 10 -o /dev/null -w \"%{http_code}\\n\" http://10.200.0.1:9091/v1/status | rc=0 | out: 200 | stderr-tail: pper: got syscall-exit tid=3246964|uwgwrapper: tid=3246964 syscall=207 seccomp=true rax=4|uwgwrapper: local fd hit group=3246964 fd=4 local=9|uwgwrapper: wait syscall-exit tid=3246964 seccomp=true|uwgwrapper: got syscall-exit tid=3246964|uwgwrapper: tid=3246964 syscall=57 seccomp=true rax=4|uwgwrapper: local fd clear group=3246964 fd=4 local=9|uwgwrapper: tid=3246964 syscall=64 seccomp=true rax=1|"
 }

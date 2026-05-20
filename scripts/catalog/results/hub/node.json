@@ -4,6 +4,6 @@
   "transport": "",
   "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 0.22,
-  "notes": "out: 200 | err-tail: lf for most workloads (see docs/howto/03-wrapper-interception.md)|uwgwrapper: mode=launch target=/usr/bin/node transport=systrap-supervised preload=/tmp/uwgwrapper-0/uwgpreload-650512f07b8cc38d.so listen=/tmp/uwgfdproxy-3373637.sock api=http://127.0.0.1:9091 socketPath=/uwg/socket spawnFDProxy=true|"
+  "duration_seconds": 2.12,
+  "notes": "out: 200 | err-tail: lf for most workloads (see docs/howto/03-wrapper-interception.md)|uwgwrapper: mode=launch target=/usr/bin/node transport=systrap-supervised preload=/tmp/uwgwrapper-0/uwgpreload-9966162ed2bb8f33.so listen=/tmp/uwgfdproxy-3245842.sock api=http://127.0.0.1:9091 socketPath=/uwg/socket spawnFDProxy=true|"
 }

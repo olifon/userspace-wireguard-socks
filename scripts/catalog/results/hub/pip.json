@@ -4,6 +4,6 @@
   "transport": "systrap-elf",
   "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 0.96,
-  "notes": "out: uwgwrapper: mode=launch target=/usr/bin/bash transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-650512f07b8cc38d.so listen=/tmp/uwgfdproxy-3371668.sock api=http://127.0.0.1:9091 socketPath=/uwg/socket spawnFDProxy=true\nuwgwrapper: auto: ch"
+  "duration_seconds": 12.09,
+  "notes": "out: uwgwrapper: mode=launch target=/usr/bin/bash transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-9966162ed2bb8f33.so listen=/tmp/uwgfdproxy-3240381.sock api=http://127.0.0.1:9091 socketPath=/uwg/socket spawnFDProxy=true\nuwgwrapper: auto: ch"
 }

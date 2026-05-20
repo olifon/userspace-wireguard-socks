@@ -4,6 +4,6 @@
   "transport": "",
   "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 2.14,
-  "notes": "port=41830 bps=4997821.239841812 | err-tail: eccomp=true rax=-38|uwgwrapper: tid=3374307 syscall=1 seccomp=true rax=-38|uwgwrapper: tid=3374307 syscall=3 seccomp=true rax=-38|uwgwrapper: tid=3374307 syscall=1 seccomp=true rax=-38|uwgwrapper: tid=3374307 syscall=3 seccomp=true rax=-38|"
+  "duration_seconds": 2.69,
+  "notes": "port=45708 bps=4991191.8384681875 | err-tail: l=57 seccomp=true rax=5|uwgwrapper: tid=3247633 syscall=64 seccomp=true rax=4|uwgwrapper: tid=3247633 syscall=57 seccomp=true rax=4|uwgwrapper: tid=3247633 syscall=64 seccomp=true rax=1|uwgwrapper: tid=3247633 syscall=57 seccomp=true rax=6|"
 }

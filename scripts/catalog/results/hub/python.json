@@ -4,6 +4,6 @@
   "transport": "",
   "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 0.22,
-  "notes": "cmd: python3 -c \"import sys,urllib.request; print(urllib.request.urlopen(\\\"http://10.200.0.1:9091/v1/status\\\", timeout=10).status)\" | rc=0 | out: 200 | stderr-tail: 3374136 fd=3 local=9|uwgwrapper: tid=3374136 syscall=7 seccomp=true rax=-38|uwgwrapper: local fd hit group=3374136 fd=3 local=9|uwgwrapper: tid=3374136 syscall=45 seccomp=true rax=-38|uwgwrapper: local fd hit group=3374136 fd=3 local=9|uwgwrapper: tid=3374136 syscall=3 seccomp=true rax=-38|uwgwrapper: local fd clear group=3374136 fd=3 local=9|uwgwrapper: tid=3374136 syscall=1 seccomp=true rax=-38|"
+  "duration_seconds": 1.17,
+  "notes": "cmd: python3 -c \"import sys,urllib.request; print(urllib.request.urlopen(\\\"http://10.200.0.1:9091/v1/status\\\", timeout=10).status)\" | rc=0 | out: 200 | stderr-tail: pper: got syscall-exit tid=3247057|uwgwrapper: tid=3247057 syscall=207 seccomp=true rax=3|uwgwrapper: local fd hit group=3247057 fd=3 local=9|uwgwrapper: wait syscall-exit tid=3247057 seccomp=true|uwgwrapper: got syscall-exit tid=3247057|uwgwrapper: tid=3247057 syscall=57 seccomp=true rax=3|uwgwrapper: local fd clear group=3247057 fd=3 local=9|uwgwrapper: tid=3247057 syscall=64 seccomp=true rax=1|"
 }

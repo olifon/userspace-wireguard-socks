@@ -1,9 +1,9 @@
 {
   "host": "hub",
   "app": "test-python-httplib",
-  "transport": "systrap-elf",
-  "wrapped_ok": true,
+  "transport": "no-stdlib-tests",
+  "wrapped_ok": false,
   "unwrapped_blocked": true,
-  "duration_seconds": 3.41,
-  "notes": "modules=5 exit=0 run=5 | Total tests: run=437 skipped=31|Result: SUCCESS|"
+  "duration_seconds": 0,
+  "notes": "install: apt-get install -y python3-full (Ubuntu) \u2014 python3-X-test elsewhere"
 }
