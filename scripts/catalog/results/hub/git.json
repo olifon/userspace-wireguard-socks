@@ -1,9 +1,9 @@
 {
   "host": "hub",
   "app": "git",
-  "transport": "systrap",
+  "transport": "systrap-elf",
   "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 0.67,
-  "notes": "out: uwgwrapper: mode=launch target=/usr/bin/git transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-fd59cd3116d9ea5d.so listen=/tmp/uwgfdproxy-1044083.sock api=http://127.0.0.1:53441 socketPath=/uwg/socket spawnFDProxy=true\nuwgwrapper: auto: ch"
+  "duration_seconds": 0.89,
+  "notes": "out: uwgwrapper: mode=launch target=/usr/bin/git transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-650512f07b8cc38d.so listen=/tmp/uwgfdproxy-3221946.sock api=http://127.0.0.1:9091 socketPath=/uwg/socket spawnFDProxy=true\nuwgwrapper: auto: cho"
 }

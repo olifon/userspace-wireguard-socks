@@ -95,7 +95,7 @@ func (e *Engine) dialDirectHost(ctx context.Context, network string, bindSrc, ds
 
 func (e *Engine) hostDirectLocalAddr(network string, bindSrc, dst netip.AddrPort) net.Addr {
 	ip := e.hostDirectBindIP(bindSrc.Addr(), dst.Addr())
-	if !ip.IsValid() && bindSrc.Port() == 0 {
+	if !ip.IsValid() {
 		return nil
 	}
 	switch networkBase(network) {

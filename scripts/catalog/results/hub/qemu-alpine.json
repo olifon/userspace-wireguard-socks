@@ -1,9 +1,9 @@
 {
   "host": "hub",
   "app": "qemu-alpine",
-  "transport": "systrap",
+  "transport": "systrap-elf",
   "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 3.05,
-  "notes": "accel=kvm booted=true drivers=true alpine= | vm-tail: \r| * Mounting boot media: [    1.954524] e1000: Intel(R) PRO/1000 Network Driver\r|[    1.955638] e1000: Copyright (c) 1999-2006 Intel Corporation.\r|[    1.957561] ACPI: \\_SB_.LNKC: Enabled at IRQ 11\r|"
+  "duration_seconds": 6.26,
+  "notes": "accel=kvm booted=true drivers=true alpine= | vm-tail: 4.0 (2009/01/31) Phillip Lougher\r|[    3.583902] ACPI: bus type drm_connector registered\r|[    3.598430] Loading boot drivers: ok.\r|ok.\r|[    3.604509] Mounting boot media...\r| * Mounting boot media: "
 }

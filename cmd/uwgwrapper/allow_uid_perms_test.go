@@ -57,6 +57,7 @@ func TestAllowUIDRelaxesSharedStateAndFDProxyPerms(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			caseStart := time.Now()
 			sockPath := filepath.Join(t.TempDir(), "fdproxy.sock")
 			args := []string{
 				"-v",
@@ -128,7 +129,7 @@ func TestAllowUIDRelaxesSharedStateAndFDProxyPerms(t *testing.T) {
 						newestPath = full
 					}
 				}
-				if newest != nil && time.Since(newest.ModTime()) < 5*time.Second {
+				if newest != nil && !newest.ModTime().Before(caseStart) {
 					stateInfo = newest
 					statePath = newestPath
 				}

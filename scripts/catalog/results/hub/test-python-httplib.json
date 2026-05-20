@@ -1,9 +1,9 @@
 {
   "host": "hub",
   "app": "test-python-httplib",
-  "transport": "systrap",
+  "transport": "systrap-elf",
   "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 3.15,
+  "duration_seconds": 7.28,
   "notes": "modules=5 exit=0 run=5 | Total tests: run=437 skipped=31|Result: SUCCESS|"
 }

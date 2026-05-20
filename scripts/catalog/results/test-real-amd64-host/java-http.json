@@ -1,0 +1,9 @@
+{
+  "host": "test-real-amd64-host",
+  "app": "java-http",
+  "transport": "systrap-elf",
+  "wrapped_ok": false,
+  "unwrapped_blocked": false,
+  "duration_seconds": 0.19,
+  "notes": "out: uwgwrapper: mode=launch target=/usr/bin/java transport=auto preload=/tmp/uwgwrapper-0/uwgpreload-afd6bd1e640f28f8.so listen=/tmp/uwgfdproxy-2050737.sock api=http://127.0.0.1:9091 socketPath=/uwg/socket spawnFDProxy=true\nuwgwrapper: auto: chose systrap-elf (dynamic target, seccomp=true memfd=true ptr"
+}
