@@ -270,7 +270,9 @@ int uwg_core_init(void) {
     const char *docker = uwg_getenv("UWGS_SYSTRAP_DOCKER");
     uwg_seccomp_docker_flag = (docker && *docker == '1') ? 1 : 0;
     if (uwg_seccomp_docker_flag) {
+#ifndef UWG_FREESTANDING
         uwg_ptloader_docker_init();
+#endif
     }
 
     /* Skip duplicate main-filter install across execve: the kernel inherits

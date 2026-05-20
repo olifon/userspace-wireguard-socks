@@ -27,8 +27,14 @@
 
 /* Ptloader master fd — protects the fd from close_range(3,MAX,0) in fork
  * children so the exec injection chain survives close_fds=True subprocesses.
- * Defined in execve_docker.c; -1 when not applicable (e.g. non-systrap-elf). */
+ * Defined in execve_docker.c; -1 when not applicable (e.g. non-systrap-elf).
+ * The freestanding static build (build_static.sh) does not link execve_docker.c,
+ * so we provide a compile-time -1 stub there. */
+#ifdef UWG_FREESTANDING
+static const int uwg_ptloader_master_fd = -1;
+#else
 extern int uwg_ptloader_master_fd;
+#endif
 
 #define UWG_F_GETFL 3
 #define UWG_F_SETFL 4
