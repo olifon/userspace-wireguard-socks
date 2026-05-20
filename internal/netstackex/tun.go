@@ -43,6 +43,19 @@ import (
 	"gvisor.dev/gvisor/pkg/waiter"
 )
 
+// injectMu serializes InjectInbound calls across all netTun instances in the
+// process. gVisor's pkg/buffer.viewPool is process-global: without this lock
+// two concurrent Write calls on different netTuns can race on Pool.Get/Put,
+// causing one packet's buffer chunk to be recycled while another goroutine is
+// still reading its header bytes — wrong-bytes-served data corruption.
+//
+// A package-level mutex (rather than per-netTun) is the correct scope because
+// the pool itself is process-global. The cost is negligible: real traffic
+// flows through wireguard-go's own serialization above this layer, so
+// contention only appears in tests that inject packets at high rate from
+// multiple goroutines simultaneously.
+var injectMu sync.Mutex
+
 type netTun struct {
 	ep             *channel.Endpoint
 	stack          *stack.Stack
@@ -56,26 +69,6 @@ type netTun struct {
 	packetFilter   func([]byte) bool
 	ingressFilter  func([]byte) bool
 	tcpMSSClamp    bool
-
-	// injectMu serializes the producer side of InjectInbound so we
-	// never have a fresh MakeWithData/Pool.Get racing with a still-
-	// in-flight prior packet's read on this same netTun. Without
-	// this, gvisor's pkg/buffer.viewPool could hand a recycled chunk
-	// back to a new packet's slicecopy while the previous packet's
-	// IPv4.TTL (or any header field) read is still touching that
-	// memory — wrong-bytes-served data corruption, not just a TSan
-	// false positive.
-	//
-	// Note: this lock is PER-netTun, so it does NOT cover the
-	// cross-engine variant of the same race (gvisor's buffer pool
-	// is process-global, so two netTuns in the same process can
-	// race via the shared pool). In production each uwgsocks
-	// process owns exactly one engine so cross-engine pool reuse
-	// can't happen. In multi-engine integration tests (the 5-peer
-	// chaos suite) the race is visible to TSan; those tests are
-	// gated `//go:build !race` to keep -race CI green without
-	// over-serializing the netstack.
-	injectMu sync.Mutex
 }
 
 type Net netTun
@@ -251,17 +244,6 @@ func (tun *netTun) Read(buf [][]byte, sizes []int, offset int) (int, error) {
 
 // Write is wireguard-go's decapsulation path: authenticated inner IP packets
 // enter the userspace netstack here.
-//
-// The InjectInbound call is wrapped in injectMu (per-netTun) so we
-// never run a fresh buffer.MakeWithData (which fetches a chunk from
-// gvisor's pooled viewPool) concurrently with a prior packet on
-// this same netTun still being processed downstream. Without this
-// lock the viewPool could recycle a chunk that the IPv4/IPv6
-// forwarder is still reading, causing wrong-bytes-served data
-// corruption (one connection's payload leaking into another's
-// read). See the injectMu doc on netTun for the full rationale and
-// the cross-engine caveat (multi-engine-per-process is a test-only
-// shape and is gated `//go:build !race`).
 func (tun *netTun) Write(buf [][]byte, offset int) (int, error) {
 	for _, buf := range buf {
 		packet := buf[offset:]
@@ -282,11 +264,11 @@ func (tun *netTun) Write(buf [][]byte, offset int) (int, error) {
 		default:
 			return 0, syscall.EAFNOSUPPORT
 		}
-		tun.injectMu.Lock()
+		injectMu.Lock()
 		pkb := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(packet)})
 		tun.ep.InjectInbound(protocol, pkb)
 		pkb.DecRef()
-		tun.injectMu.Unlock()
+		injectMu.Unlock()
 	}
 	return len(buf), nil
 }
