@@ -36,8 +36,11 @@ import (
 // learns the source of A's WG packets (= proxy.Addr), it can
 // advertise that to B and B can dial it back to reach A.
 //
-// Demux by source: src == upstream → forward to last-seen client;
-// otherwise → record src as client, forward to upstream.
+// Demux by source: src == upstream → forward to mapped client;
+// otherwise → record as client on first contact (CAS, not update),
+// forward to upstream. Full-cone NAT semantics: the first non-upstream
+// sender establishes the mapping; later NAT-traversal probes from
+// other peers forward to upstream without clobbering the mapping.
 //
 // Concurrent-safe: policy can be updated mid-flight.
 type chaosProxy struct {
@@ -47,8 +50,13 @@ type chaosProxy struct {
 	mu     sync.RWMutex
 	policy chaosPolicy
 
-	// Last src seen that wasn't upstream — used to route reverse-
-	// direction replies back to whichever client most recently sent.
+	// First non-upstream source that sent to this proxy — the
+	// "mapped client" for all reverse-direction hub replies.
+	// Set once via CAS on the first non-upstream packet; never
+	// updated after that, so concurrent non-upstream senders (e.g.
+	// a peer probing via NAT traversal) cannot clobber the mapping.
+	// This matches full-cone NAT semantics: once a client establishes
+	// a mapping, the external port always routes back to that client.
 	lastSrc atomic.Pointer[net.UDPAddr]
 
 	// Stats for assertions / logging.
@@ -143,7 +151,7 @@ func (p *chaosProxy) recvLoop() {
 		// delayed) forward — the read buffer is reused next iter.
 		payload := append([]byte(nil), buf[:n]...)
 		if udpAddrEqual(&srcCopy, p.upstream) {
-			// Reply from upstream → forward to last-seen client.
+			// Reply from upstream → forward to mapped client.
 			dst := p.lastSrc.Load()
 			if dst == nil {
 				// No client has spoken first; nothing to route
@@ -155,9 +163,10 @@ func (p *chaosProxy) recvLoop() {
 				return p.sock.WriteToUDP(b, &to)
 			}, payload)
 		} else {
-			// From client (or any outsider) → record + forward
-			// to upstream.
-			p.lastSrc.Store(&srcCopy)
+			// From non-upstream sender → record as mapped client
+			// on first contact (CAS ensures later senders cannot
+			// clobber the mapping), forward to upstream.
+			p.lastSrc.CompareAndSwap(nil, &srcCopy)
 			p.applyAndForward(func(b []byte) (int, error) {
 				return p.sock.WriteToUDP(b, p.upstream)
 			}, payload)
