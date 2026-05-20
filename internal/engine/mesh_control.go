@@ -1055,6 +1055,14 @@ func (e *Engine) meshSubscribeLoopPeer(parent config.Peer) {
 			continue
 		}
 
+		// Sync state before opening the subscribe stream: post P2P mode,
+		// fetch nets, and set meshParentReady. Without this, dynamic-peer
+		// traffic from this parent is denied (deny-until-ready), and the
+		// hub never receives our P2P role declaration. Best-effort: a
+		// failed sync is not fatal — subscribe may still succeed on the
+		// same connection, and a failed subscribe will retry after 5s.
+		e.runMeshPollingPeer(parent)
+
 		err := e.runMeshSubscribePeer(parent)
 		if errors.Is(err, meshSubscribeNotImplemented) {
 			usePolling = true
@@ -1252,6 +1260,9 @@ func (e *Engine) runMeshSubscribePeer(parent config.Peer) error {
 					return applyErr
 				}
 			}
+			// Trigger activity refresh so newly discovered peers activate
+			// without waiting for the next 15s polling tick.
+			e.refreshDynamicPeerActivity()
 		}
 	}
 }
