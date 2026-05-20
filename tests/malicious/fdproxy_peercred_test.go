@@ -173,10 +173,12 @@ func isSetuidUnsupported(err error) bool {
 	if errors.Is(err, syscall.ENOSYS) || errors.Is(err, syscall.EPERM) {
 		return true
 	}
-	// Helper child can also bubble up its own errno text.
+	// Helper child can also bubble up its own errno text or be killed by
+	// the kernel (e.g. seccomp KILL policy) before setuid completes.
 	s := err.Error()
 	return strings.Contains(s, "operation not permitted") ||
-		strings.Contains(s, "function not implemented")
+		strings.Contains(s, "function not implemented") ||
+		strings.Contains(s, "signal: killed")
 }
 
 // dialAsUID forks a tiny helper subprocess (this very test binary,

@@ -1,9 +1,9 @@
 {
   "host": "hub",
   "app": "nginx",
-  "transport": "systrap-elf",
-  "wrapped_ok": false,
+  "transport": "",
+  "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 2.94,
-  "notes": "port=33050 resp:  | err-tail: s already in use)|2026/05/20 12:08:09 [emerg] 3223097#3223097: bind() to 127.0.0.1:33050 failed (98: Address already in use)|2026/05/20 12:08:09 [emerg] 3223097#3223097: bind() to 127.0.0.1:33050 failed (98: Address already in use)|2026/05/20 12:08:09 [emerg] 3223097#3223097: still could not bind()|"
+  "duration_seconds": 0.54,
+  "notes": "port=48413 resp: uwgwrapper-nginx-ok | err-tail:  for most workloads (see docs/howto/03-wrapper-interception.md)|uwgwrapper: mode=launch target=/usr/sbin/nginx transport=systrap-supervised preload=/tmp/uwgwrapper-0/uwgpreload-650512f07b8cc38d.so listen=/tmp/uwgfdproxy-3373757.sock api=http://127.0.0.1:9091 socketPath=/uwg/socket spawnFDProxy=true|"
 }

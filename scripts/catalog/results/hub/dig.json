@@ -1,9 +1,9 @@
 {
   "host": "hub",
   "app": "dig",
-  "transport": "systrap-elf",
+  "transport": "",
   "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 0.30,
-  "notes": "out: 172.66.147.243\n104.20.23.154 | err-tail: mp/uwgwrapper-0/uwgpreload-650512f07b8cc38d.so listen=/tmp/uwgfdproxy-3223391.sock api=http://127.0.0.1:9091 socketPath=/uwg/socket spawnFDProxy=true|uwgwrapper: auto: chose systrap-elf (dynamic target, seccomp=true memfd=true ptrace=true)|"
+  "duration_seconds": 0.09,
+  "notes": "out: 172.66.147.243\n104.20.23.154 | err-tail: gfdproxy-3373698.sock api=http://127.0.0.1:9091 socketPath=/uwg/socket spawnFDProxy=true|ERROR: ld.so: object '/tmp/uwgwrapper-0/uwgpreload-650512f07b8cc38d.so' from LD_PRELOAD cannot be preloaded (cannot open shared object file): ignored.|"
 }

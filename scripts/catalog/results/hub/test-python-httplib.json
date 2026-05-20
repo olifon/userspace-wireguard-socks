@@ -4,6 +4,6 @@
   "transport": "systrap-elf",
   "wrapped_ok": true,
   "unwrapped_blocked": true,
-  "duration_seconds": 7.28,
+  "duration_seconds": 3.41,
   "notes": "modules=5 exit=0 run=5 | Total tests: run=437 skipped=31|Result: SUCCESS|"
 }
