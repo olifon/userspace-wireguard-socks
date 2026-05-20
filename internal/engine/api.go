@@ -110,7 +110,7 @@ func (e *Engine) startAPIServer() error {
 	}
 	go func() {
 		if err := server.Serve(ln); err != nil && !isClosedErr(err) {
-			e.log.Printf("api stopped: %v", err)
+			e.log.Infof("api stopped: %v", err)
 		}
 	}()
 	return nil

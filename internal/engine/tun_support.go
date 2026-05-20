@@ -28,7 +28,7 @@ func (e *Engine) startHostTUN(localAddrs []netip.Addr) error {
 	e.localAddrs = localAddrs
 	if !e.cfg.TUN.Enabled {
 		if len(e.cfg.TUN.Up) > 0 || len(e.cfg.TUN.Down) > 0 {
-			e.log.Printf("warning: tun up/down scripts are present but tun.enabled is false; commands were not executed")
+			e.log.Warnf("tun up/down scripts are present but tun.enabled is false; commands were not executed")
 		}
 		return nil
 	}
@@ -113,7 +113,7 @@ func (e *Engine) startHostTUN(localAddrs []netip.Addr) error {
 			}
 		}
 	} else if len(e.cfg.TUN.Up) > 0 || len(e.cfg.TUN.Down) > 0 {
-		e.log.Printf("warning: tun up/down scripts are present but scripts.allow is false; commands were not executed")
+		e.log.Warnf("tun up/down scripts are present but scripts.allow is false; commands were not executed")
 	}
 	go e.pumpTUNPackets("host->tun-netstack", hostDev, stackDev, mtu)
 	go e.pumpTUNPackets("tun-netstack->host", stackDev, hostDev, mtu)
@@ -145,7 +145,7 @@ func (e *Engine) pumpTUNPackets(name string, src, dst tun.Device, mtu int) {
 			case <-e.closed:
 			default:
 				if !isClosedErr(err) {
-					e.log.Printf("host TUN pump %s stopped: %v", name, err)
+					e.log.Infof("host TUN pump %s stopped: %v", name, err)
 				}
 			}
 			return
@@ -161,7 +161,7 @@ func (e *Engine) pumpTUNPackets(name string, src, dst tun.Device, mtu int) {
 				case <-e.closed:
 				default:
 					if !isClosedErr(err) {
-						e.log.Printf("host TUN pump %s write failed: %v", name, err)
+						e.log.Errorf("host TUN pump %s write failed: %v", name, err)
 					}
 				}
 				return
@@ -182,7 +182,7 @@ func (e *Engine) handleTUNTCPForward(req *gtcp.ForwarderRequest) {
 	dialCancel()
 	if err != nil {
 		if e.cfg.Log.Verbose {
-			e.log.Printf("host TUN tcp %s -> %s failed: %v", src, dst, err)
+			e.log.Errorf("host TUN tcp %s -> %s failed: %v", src, dst, err)
 		}
 		req.Complete(true)
 		return
@@ -214,7 +214,7 @@ func (e *Engine) handleTUNUDPForward(req *gudp.ForwarderRequest) {
 	dialCancel()
 	if err != nil {
 		if e.cfg.Log.Verbose {
-			e.log.Printf("host TUN udp %s -> %s failed: %v", src, dst, err)
+			e.log.Errorf("host TUN udp %s -> %s failed: %v", src, dst, err)
 		}
 		_ = app.Close()
 		return

@@ -37,7 +37,7 @@ func (e *Engine) handleICMPForward(id stack.TransportEndpointID, pkt *stack.Pack
 	}
 	dialDst := dst
 	if rewritten, ok, err := e.inboundHostForwardTarget(dstAP); err != nil {
-		e.log.Printf("icmp forward target %s failed: %v", dst, err)
+		e.log.Errorf("icmp forward target %s failed: %v", dst, err)
 		return true
 	} else if ok {
 		dialDst = rewritten.Addr()
@@ -52,18 +52,18 @@ func (e *Engine) forwardInboundICMPEcho(src, replyFrom, dialDst netip.Addr, requ
 	}
 	conn, err := e.dialHostPing(netip.Addr{}, dialDst)
 	if err != nil {
-		e.log.Printf("icmp forward host dial %s failed: %v", dialDst, err)
+		e.log.Errorf("icmp forward host dial %s failed: %v", dialDst, err)
 		return
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(inboundICMPForwardTimeout))
 	if _, err := conn.Write(request); err != nil {
-		e.log.Printf("icmp forward write %s failed: %v", dialDst, err)
+		e.log.Errorf("icmp forward write %s failed: %v", dialDst, err)
 		return
 	}
 	buf := make([]byte, 1500)
 	if _, err := conn.Read(buf); err != nil {
-		e.log.Printf("icmp forward read %s failed: %v", dialDst, err)
+		e.log.Errorf("icmp forward read %s failed: %v", dialDst, err)
 		return
 	}
 	packet := inboundICMPEchoReply(src, replyFrom, request, isIPv6)

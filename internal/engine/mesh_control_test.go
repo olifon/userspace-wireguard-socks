@@ -12,7 +12,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -750,7 +749,7 @@ func mustStartMeshEngine(t *testing.T, cfg config.Config) *Engine {
 	if err := cfg.Normalize(); err != nil {
 		t.Fatal(err)
 	}
-	eng, err := New(cfg, log.New(io.Discard, "", 0))
+	eng, err := New(cfg, DiscardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}

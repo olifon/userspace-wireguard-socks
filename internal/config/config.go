@@ -589,8 +589,11 @@ type Scripts struct {
 }
 
 type Log struct {
-	// Enable verbose/debug-style logging.
+	// Enable verbose/debug-style logging. Shorthand for Level: debug.
 	Verbose bool `yaml:"verbose"`
+	// Level sets the minimum log level: debug, info, warn, error.
+	// Defaults to info. Overridden to debug when Verbose is true.
+	Level string `yaml:"level"`
 }
 
 func Default() Config {

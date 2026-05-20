@@ -16,7 +16,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/netip"
 	"testing"
@@ -77,7 +76,7 @@ func TestRealLinuxTUNEngineE2E(t *testing.T) {
 		PublicKey:  clientKey.PublicKey().String(),
 		AllowedIPs: []string{clientWGAddr},
 	}}
-	serverEng, err := New(serverCfg, log.New(io.Discard, "", 0))
+	serverEng, err := New(serverCfg, DiscardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +152,7 @@ func TestRealLinuxTUNEngineE2E(t *testing.T) {
 	if err := clientCfg.Normalize(); err != nil {
 		t.Fatal(err)
 	}
-	clientEng, err := New(clientCfg, log.New(io.Discard, "", 0))
+	clientEng, err := New(clientCfg, DiscardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}

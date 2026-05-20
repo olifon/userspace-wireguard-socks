@@ -487,7 +487,11 @@ func main() {
 		fatal(err)
 	}
 
-	logger := log.New(os.Stderr, "uwg: ", log.LstdFlags)
+	level := engine.ParseLevel(cfg.Log.Level)
+	if cfg.Log.Verbose && level > engine.LevelDebug {
+		level = engine.LevelDebug
+	}
+	logger := engine.WrapStdLogger(log.New(os.Stderr, "uwg: ", log.LstdFlags), level)
 	eng, err := engine.New(cfg, logger)
 	if err != nil {
 		fatal(err)

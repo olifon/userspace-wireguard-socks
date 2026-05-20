@@ -62,7 +62,7 @@ func (e *Engine) startMetricsServer() error {
 	}
 	go func() {
 		if err := server.Serve(ln); err != nil && !isClosedErr(err) {
-			e.log.Printf("metrics listener stopped: %v", err)
+			e.log.Infof("metrics listener stopped: %v", err)
 		}
 	}()
 	go e.metrics.runRoamingPoller(e)

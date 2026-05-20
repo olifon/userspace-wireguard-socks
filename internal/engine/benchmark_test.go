@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/netip"
 	"testing"
@@ -80,7 +79,7 @@ func mustStartBenchEngine(b *testing.B, cfg config.Config) *engine.Engine {
 	if err := cfg.Normalize(); err != nil {
 		b.Fatal(err)
 	}
-	eng, err := engine.New(cfg, log.New(io.Discard, "", 0))
+	eng, err := engine.New(cfg, engine.DiscardLogger())
 	if err != nil {
 		b.Fatal(err)
 	}

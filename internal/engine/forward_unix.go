@@ -433,7 +433,7 @@ func (e *Engine) runTCPForwardConn(src net.Conn, f config.Forward) {
 		wrapped, pp, err := parseProxyProtocolConn(src, f.ProxyProtocol)
 		_ = src.SetReadDeadline(time.Time{})
 		if err != nil {
-			e.log.Printf("tcp forward %s PROXY header failed: %v", f.Listen, err)
+			e.log.Errorf("tcp forward %s PROXY header failed: %v", f.Listen, err)
 			return
 		}
 		srcConn = wrapped
@@ -446,7 +446,7 @@ func (e *Engine) runTCPForwardConn(src net.Conn, f config.Forward) {
 	defer cancel()
 	dst, err := e.dialTunnelOnlyWithBind(ctx, "tcp", f.Target, aclSrc, bindSrc)
 	if err != nil {
-		e.log.Printf("tcp forward %s -> %s failed: %v", f.Listen, f.Target, err)
+		e.log.Errorf("tcp forward %s -> %s failed: %v", f.Listen, f.Target, err)
 		return
 	}
 	defer dst.Close()
@@ -489,7 +489,7 @@ func (e *Engine) proxyUDPForwardConn(local, remote net.Conn, f config.Forward) {
 			if f.ProxyProtocol != "" {
 				stripped, _, err := stripProxyProtocolDatagram(payload, f.ProxyProtocol)
 				if err != nil {
-					e.log.Printf("udp forward %s PROXY header failed: %v", f.Listen, err)
+					e.log.Errorf("udp forward %s PROXY header failed: %v", f.Listen, err)
 					done <- struct{}{}
 					return
 				}
@@ -543,7 +543,7 @@ func (e *Engine) startTCPUnixForward(name string, f config.Forward, ep config.Fo
 			c, err := ln.Accept()
 			if err != nil {
 				if !isClosedErr(err) {
-					e.log.Printf("tcp forward %s stopped: %v", f.Listen, err)
+					e.log.Infof("tcp forward %s stopped: %v", f.Listen, err)
 				}
 				return
 			}
@@ -568,7 +568,7 @@ func (e *Engine) startTCPUnixDgramForward(name string, f config.Forward, ep conf
 			n, addr, err := pc.ReadFromUnix(buf)
 			if err != nil {
 				if !isClosedErr(err) {
-					e.log.Printf("tcp forward %s stopped: %v", f.Listen, err)
+					e.log.Infof("tcp forward %s stopped: %v", f.Listen, err)
 				}
 				return
 			}
@@ -617,7 +617,7 @@ func (e *Engine) startUDPUnixForward(name string, f config.Forward, ep config.Fo
 			c, err := ln.Accept()
 			if err != nil {
 				if !isClosedErr(err) {
-					e.log.Printf("udp forward %s stopped: %v", f.Listen, err)
+					e.log.Infof("udp forward %s stopped: %v", f.Listen, err)
 				}
 				return
 			}
@@ -643,7 +643,7 @@ func (e *Engine) handleUDPUnixPacketForwardConn(local net.Conn, f config.Forward
 	if f.ProxyProtocol != "" {
 		stripped, pp, err := stripProxyProtocolDatagram(payload, f.ProxyProtocol)
 		if err != nil {
-			e.log.Printf("udp forward %s PROXY header failed: %v", f.Listen, err)
+			e.log.Errorf("udp forward %s PROXY header failed: %v", f.Listen, err)
 			return
 		}
 		payload = stripped
@@ -656,7 +656,7 @@ func (e *Engine) handleUDPUnixPacketForwardConn(local net.Conn, f config.Forward
 	remote, err := e.dialTunnelOnlyWithBind(ctx, "udp", f.Target, source, bindSrc)
 	cancel()
 	if err != nil {
-		e.log.Printf("udp forward %s -> %s failed: %v", f.Listen, f.Target, err)
+		e.log.Errorf("udp forward %s -> %s failed: %v", f.Listen, f.Target, err)
 		return
 	}
 	defer remote.Close()
@@ -680,7 +680,7 @@ func (e *Engine) startUDPUnixDgramForward(name string, f config.Forward, ep conf
 			n, addr, err := pc.ReadFromUnix(buf)
 			if err != nil {
 				if !isClosedErr(err) {
-					e.log.Printf("udp forward %s stopped: %v", f.Listen, err)
+					e.log.Infof("udp forward %s stopped: %v", f.Listen, err)
 				}
 				return
 			}
@@ -697,7 +697,7 @@ func (e *Engine) startUDPUnixDgramForward(name string, f config.Forward, ep conf
 			if f.ProxyProtocol != "" {
 				stripped, pp, err := stripProxyProtocolDatagram(payload, f.ProxyProtocol)
 				if err != nil {
-					e.log.Printf("udp forward %s PROXY header failed: %v", f.Listen, err)
+					e.log.Errorf("udp forward %s PROXY header failed: %v", f.Listen, err)
 					continue
 				}
 				payload = stripped
@@ -714,7 +714,7 @@ func (e *Engine) startUDPUnixDgramForward(name string, f config.Forward, ep conf
 				cancel()
 				if err != nil {
 					mu.Unlock()
-					e.log.Printf("udp forward %s -> %s failed: %v", f.Listen, f.Target, err)
+					e.log.Errorf("udp forward %s -> %s failed: %v", f.Listen, f.Target, err)
 					continue
 				}
 				sess = newUnixDatagramSessionConn(pc, addr, func() {

@@ -92,7 +92,7 @@ func TestHostTUNOutboundTCPThroughFallbackDirect(t *testing.T) {
 		t.Fatal(err)
 	}
 	var logs bytes.Buffer
-	eng, err := New(cfg, log.New(&logs, "", 0))
+	eng, err := New(cfg, WrapStdLogger(log.New(&logs, "", 0), LevelDebug))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestHostTUNOutboundTCPIPv6ThroughFallbackDirect(t *testing.T) {
 		t.Fatal(err)
 	}
 	var logs bytes.Buffer
-	eng, err := New(cfg, log.New(&logs, "", 0))
+	eng, err := New(cfg, WrapStdLogger(log.New(&logs, "", 0), LevelDebug))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -484,7 +484,7 @@ func TestMTUCustomPropagation(t *testing.T) {
 	if cfg.TUN.MTU != customMTU {
 		t.Errorf("tun.mtu after Normalize = %d, want %d", cfg.TUN.MTU, customMTU)
 	}
-	eng, err := New(cfg, log.New(io.Discard, "", 0))
+	eng, err := New(cfg, DiscardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -553,7 +553,7 @@ func TestHostTUNTCPMSSClampFunctional(t *testing.T) {
 	if err := cfg.Normalize(); err != nil {
 		t.Fatal(err)
 	}
-	eng, err := New(cfg, log.New(io.Discard, "", 0))
+	eng, err := New(cfg, DiscardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}

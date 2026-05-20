@@ -7,8 +7,6 @@ package engine
 
 import (
 	"encoding/binary"
-	"io"
-	"log"
 	"net/netip"
 	"testing"
 
@@ -62,7 +60,7 @@ func TestDynamicPeerDestinationFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	eng, err := New(cfg, log.New(io.Discard, "", 0))
+	eng, err := New(cfg, DiscardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/netip"
 	"testing"
@@ -33,7 +32,7 @@ func TestLibraryHelloWorldTCP(t *testing.T) {
 	if err := serverCfg.Normalize(); err != nil {
 		t.Fatal(err)
 	}
-	server, err := uwg.New(serverCfg, log.New(io.Discard, "", 0))
+	server, err := uwg.New(serverCfg, uwg.DiscardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +53,7 @@ func TestLibraryHelloWorldTCP(t *testing.T) {
 	if err := clientCfg.Normalize(); err != nil {
 		t.Fatal(err)
 	}
-	client, err := uwg.New(clientCfg, log.New(io.Discard, "", 0))
+	client, err := uwg.New(clientCfg, uwg.DiscardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}

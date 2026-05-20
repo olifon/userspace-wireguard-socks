@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"encoding/base64"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -197,7 +196,7 @@ func TestHTTPProxyClosesIdleIncompleteRequest(t *testing.T) {
 	if err := cfg.Normalize(); err != nil {
 		t.Fatal(err)
 	}
-	eng, err := New(cfg, log.New(io.Discard, "", 0))
+	eng, err := New(cfg, DiscardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +244,7 @@ func TestAPIResolveReturnsDNSMessage(t *testing.T) {
 	cfg.API.Token = "secret"
 	cfg.WireGuard.PrivateKey = key.String()
 	cfg.WireGuard.Addresses = []string{"100.64.96.1/32"}
-	eng, err := New(cfg, log.New(io.Discard, "", 0))
+	eng, err := New(cfg, DiscardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +313,7 @@ func TestProxyResolveRequiresAndAcceptsBasicAuth(t *testing.T) {
 	cfg.Proxy.Password = "secret"
 	cfg.WireGuard.PrivateKey = key.String()
 	cfg.WireGuard.Addresses = []string{"100.64.96.1/32"}
-	eng, err := New(cfg, log.New(io.Discard, "", 0))
+	eng, err := New(cfg, DiscardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}

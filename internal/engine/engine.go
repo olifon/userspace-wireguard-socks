@@ -16,7 +16,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/netip"
@@ -49,7 +48,7 @@ import (
 
 type Engine struct {
 	cfg config.Config
-	log *log.Logger
+	log LeveledLogger
 
 	tun tun.Device
 	net *netstackex.Net
@@ -213,9 +212,9 @@ func init() {
 	tunnelDNSTCPDeadline.Store(int64(10 * time.Second))
 }
 
-func New(cfg config.Config, logger *log.Logger) (*Engine, error) {
+func New(cfg config.Config, logger LeveledLogger) (*Engine, error) {
 	if logger == nil {
-		logger = log.New(io.Discard, "", 0)
+		logger = DiscardLogger()
 	}
 	allowed, peerRoutes, peerTraffic, err := buildPeerTrafficState(cfg.WireGuard.Peers, cfg.TrafficShaper)
 	if err != nil {
@@ -297,12 +296,12 @@ func (e *Engine) Start() error {
 	}
 	dnsAddrs, ignoredDNS := config.DNSAddrs(e.cfg.WireGuard.DNS)
 	for _, name := range ignoredDNS {
-		e.log.Printf("warning: ignoring non-IP DNS value %q; this runtime only routes IP DNS servers", name)
+		e.log.Warnf("ignoring non-IP DNS value %q; this runtime only routes IP DNS servers", name)
 	}
 	var tunnelDNSAddrs []netip.Addr
 	for _, dnsAddr := range dnsAddrs {
 		if !e.allowedContains(dnsAddr) {
-			e.log.Printf("warning: DNS server %s is outside WireGuard AllowedIPs; DNS queries to it will use direct host UDP/TCP, not the tunnel route", dnsAddr)
+			e.log.Warnf("DNS server %s is outside WireGuard AllowedIPs; DNS queries to it will use direct host UDP/TCP, not the tunnel route", dnsAddr)
 			continue
 		}
 		tunnelDNSAddrs = append(tunnelDNSAddrs, dnsAddr)
@@ -339,7 +338,7 @@ func (e *Engine) Start() error {
 	}
 	if *e.cfg.Relay.Enabled {
 		if *e.cfg.Inbound.Transparent {
-			e.log.Printf("warning: relay and transparent inbound are both enabled; transparent inbound handles unmatched TCP/UDP locally before L3 relay")
+			e.log.Warnf("relay and transparent inbound are both enabled; transparent inbound handles unmatched TCP/UDP locally before L3 relay")
 		}
 		if err := e.net.SetForwarding(true); err != nil {
 			return fmt.Errorf("enable forwarding: %w", err)
@@ -430,7 +429,7 @@ func (e *Engine) Start() error {
 		if (e.cfg.WireGuard.ConfigFile != "" || e.cfg.WireGuard.Config != "") &&
 			(len(e.cfg.WireGuard.PreUp) > 0 || len(e.cfg.WireGuard.PostUp) > 0 ||
 				len(e.cfg.WireGuard.PreDown) > 0 || len(e.cfg.WireGuard.PostDown) > 0) {
-			e.log.Printf("warning: scripts.allow is enabled and WireGuard hook scripts came from wg-quick input; only use this with trusted local configs")
+			e.log.Warnf("scripts.allow is enabled and WireGuard hook scripts came from wg-quick input; only use this with trusted local configs")
 		}
 		for _, cmd := range e.cfg.WireGuard.PreUp {
 			if err := runShell(cmd); err != nil {
@@ -473,7 +472,7 @@ func (e *Engine) Start() error {
 		}
 	} else if len(e.cfg.WireGuard.PreUp) > 0 || len(e.cfg.WireGuard.PostUp) > 0 ||
 		len(e.cfg.WireGuard.PreDown) > 0 || len(e.cfg.WireGuard.PostDown) > 0 {
-		e.log.Printf("warning: WireGuard hook scripts are present but scripts.allow is false; commands were not executed")
+		e.log.Warnf("WireGuard hook scripts are present but scripts.allow is false; commands were not executed")
 	}
 	return nil
 }
@@ -580,7 +579,7 @@ func (e *Engine) hostTUNBypassResolver() *hosttun.BypassResolver {
 	local4, local6 := e.hostTunMgr.LocalAddrs()
 	servers, err := hosttun.ParseFallbackSystemDNS(e.cfg.TUN.FallbackSystemDNS)
 	if err != nil {
-		e.log.Printf("warning: invalid tun.fallback_system_dns value: %v", err)
+		e.log.Warnf("invalid tun.fallback_system_dns value: %v", err)
 	}
 	if len(servers) == 0 {
 		servers = hosttun.DefaultFallbackSystemDNS()
@@ -629,7 +628,7 @@ func (e *Engine) Close() error {
 	if e.cfg.Scripts.Allow {
 		for _, cmd := range e.cfg.WireGuard.PreDown {
 			if err := runShell(cmd); err != nil {
-				e.log.Printf("PreDown %q failed: %v", cmd, err)
+				e.log.Errorf("PreDown %q failed: %v", cmd, err)
 			}
 		}
 	}
@@ -644,7 +643,7 @@ func (e *Engine) Close() error {
 	if e.cfg.Scripts.Allow {
 		for _, cmd := range e.cfg.TUN.Down {
 			if err := runShell(cmd); err != nil {
-				e.log.Printf("tun down %q failed: %v", cmd, err)
+				e.log.Errorf("tun down %q failed: %v", cmd, err)
 			}
 		}
 	}
@@ -665,7 +664,7 @@ func (e *Engine) Close() error {
 	if e.cfg.Scripts.Allow {
 		for _, cmd := range e.cfg.WireGuard.PostDown {
 			if err := runShell(cmd); err != nil {
-				e.log.Printf("PostDown %q failed: %v", cmd, err)
+				e.log.Errorf("PostDown %q failed: %v", cmd, err)
 			}
 		}
 	}
@@ -832,10 +831,10 @@ func (e *Engine) restoreStaticPeerEndpoints(now time.Time, fallback time.Duratio
 			continue
 		}
 		if err := e.dev.IpcSet(uapi); err != nil {
-			e.log.Printf("wireguard roam fallback for peer %s failed: %v", live.PublicKey, err)
+			e.log.Errorf("wireguard roam fallback for peer %s failed: %v", live.PublicKey, err)
 			continue
 		}
-		e.log.Printf("wireguard roam fallback restored peer %s endpoint from %s to %s", live.PublicKey, live.Endpoint, configuredPeer.Endpoint)
+		e.log.Infof("wireguard roam fallback restored peer %s endpoint from %s to %s", live.PublicKey, live.Endpoint, configuredPeer.Endpoint)
 	}
 }
 
@@ -928,7 +927,7 @@ func (e *Engine) startSOCKS(name, addr string) error {
 			c, err := ln.Accept()
 			if err != nil {
 				if !isClosedErr(err) {
-					e.log.Printf("%s proxy stopped: %v", name, err)
+					e.log.Infof("%s proxy stopped: %v", name, err)
 				}
 				return
 			}
@@ -949,7 +948,7 @@ func (e *Engine) startHTTP(name, addr string) error {
 	// return a non-nil error.
 	go func() {
 		if err := server.Serve(ln); err != nil && !isClosedErr(err) {
-			e.log.Printf("%s proxy stopped: %v", name, err)
+			e.log.Infof("%s proxy stopped: %v", name, err)
 		}
 	}()
 	return nil
@@ -972,7 +971,7 @@ func (e *Engine) serveMixed(ln net.Listener, handler http.Handler) {
 		c, err := ln.Accept()
 		if err != nil {
 			if !isClosedErr(err) {
-				e.log.Printf("mixed proxy stopped: %v", err)
+				e.log.Infof("mixed proxy stopped: %v", err)
 			}
 			return
 		}
@@ -1270,7 +1269,7 @@ func (e *Engine) lookupHost(ctx context.Context, host string) ([]string, error) 
 			if len(directDNS) == 0 {
 				return nil, err
 			}
-			e.log.Printf("warning: tunnel DNS lookup for %s failed, trying configured direct DNS servers: %v", host, err)
+			e.log.Warnf("tunnel DNS lookup for %s failed, trying configured direct DNS servers: %v", host, err)
 		}
 		if len(directDNS) > 0 {
 			return lookupHostWithDNSServers(ctx, host, directDNS)
@@ -1414,14 +1413,14 @@ func (e *Engine) handleTCPForward(req *gtcp.ForwarderRequest) {
 	host, err := e.dialHostForInbound(dialCtx, "tcp", dst, src.Port())
 	dialCancel()
 	if err != nil {
-		e.log.Printf("tcp forward host dial %s failed: %v", dst, err)
+		e.log.Errorf("tcp forward host dial %s failed: %v", dst, err)
 		req.Complete(true)
 		return
 	}
 	defer host.Close()
 	tcpConn, err := netstackex.NewTCPConnFromForwarder(req)
 	if err != nil {
-		e.log.Printf("tcp forward endpoint failed: %v", err)
+		e.log.Errorf("tcp forward endpoint failed: %v", err)
 		req.Complete(true)
 		return
 	}
@@ -1794,7 +1793,7 @@ func (e *Engine) startTCPForward(name string, f config.Forward) error {
 			c, err := ln.Accept()
 			if err != nil {
 				if !isClosedErr(err) {
-					e.log.Printf("tcp forward %s stopped: %v", f.Listen, err)
+					e.log.Infof("tcp forward %s stopped: %v", f.Listen, err)
 				}
 				return
 			}
@@ -1847,7 +1846,7 @@ func (e *Engine) serveUDPForward(pc net.PacketConn, f config.Forward) {
 		n, addr, err := pc.ReadFrom(buf)
 		if err != nil {
 			if !isClosedErr(err) {
-				e.log.Printf("udp forward %s stopped: %v", f.Listen, err)
+				e.log.Infof("udp forward %s stopped: %v", f.Listen, err)
 			}
 			return
 		}
@@ -1857,7 +1856,7 @@ func (e *Engine) serveUDPForward(pc net.PacketConn, f config.Forward) {
 		if f.ProxyProtocol != "" {
 			stripped, pp, err := stripProxyProtocolDatagram(payload, f.ProxyProtocol)
 			if err != nil {
-				e.log.Printf("udp forward %s PROXY header failed: %v", f.Listen, err)
+				e.log.Errorf("udp forward %s PROXY header failed: %v", f.Listen, err)
 				continue
 			}
 			payload = stripped
@@ -1874,7 +1873,7 @@ func (e *Engine) serveUDPForward(pc net.PacketConn, f config.Forward) {
 			c, err := e.dialTunnelOnlyWithBind(ctx, "udp", f.Target, source, bindSrc)
 			cancel()
 			if err != nil {
-				e.log.Printf("udp forward %s -> %s failed: %v", f.Listen, f.Target, err)
+				e.log.Errorf("udp forward %s -> %s failed: %v", f.Listen, f.Target, err)
 				mu.Unlock()
 				continue
 			}
@@ -1931,7 +1930,7 @@ func (e *Engine) startTCPReverseForward(name string, f config.Forward) error {
 			c, err := ln.Accept()
 			if err != nil {
 				if !isClosedErr(err) {
-					e.log.Printf("tcp reverse forward %s stopped: %v", f.Listen, err)
+					e.log.Infof("tcp reverse forward %s stopped: %v", f.Listen, err)
 				}
 				return
 			}
@@ -1952,7 +1951,7 @@ func (e *Engine) handleTCPReverseForwardConn(tunnel net.Conn, f config.Forward) 
 	defer cancel()
 	targetEP, err := config.ParseForwardEndpoint(f.Proto, f.Target)
 	if err != nil {
-		e.log.Printf("tcp reverse forward %s target parse failed: %v", f.Listen, err)
+		e.log.Errorf("tcp reverse forward %s target parse failed: %v", f.Listen, err)
 		return
 	}
 	var host net.Conn
@@ -1966,19 +1965,19 @@ func (e *Engine) handleTCPReverseForwardConn(tunnel net.Conn, f config.Forward) 
 		host, err = d.DialContext(ctx, "tcp", f.Target)
 	}
 	if err != nil {
-		e.log.Printf("tcp reverse forward %s -> %s failed: %v", f.Listen, f.Target, err)
+		e.log.Errorf("tcp reverse forward %s -> %s failed: %v", f.Listen, f.Target, err)
 		return
 	}
 	defer host.Close()
 	if f.ProxyProtocol != "" {
 		header, err := proxyProtocolBytes(f.ProxyProtocol, "tcp", src, dst)
 		if err != nil {
-			e.log.Printf("tcp reverse forward %s PROXY header failed: %v", f.Listen, err)
+			e.log.Errorf("tcp reverse forward %s PROXY header failed: %v", f.Listen, err)
 			return
 		}
 		if len(header) > 0 {
 			if _, err := host.Write(header); err != nil {
-				e.log.Printf("tcp reverse forward %s PROXY header write failed: %v", f.Listen, err)
+				e.log.Errorf("tcp reverse forward %s PROXY header write failed: %v", f.Listen, err)
 				return
 			}
 		}
@@ -2031,7 +2030,7 @@ func (e *Engine) serveUDPReverseForward(pc net.PacketConn, f config.Forward, tar
 		n, addr, err := pc.ReadFrom(buf)
 		if err != nil {
 			if !isClosedErr(err) {
-				e.log.Printf("udp reverse forward %s stopped: %v", f.Listen, err)
+				e.log.Infof("udp reverse forward %s stopped: %v", f.Listen, err)
 			}
 			return
 		}
@@ -2057,7 +2056,7 @@ func (e *Engine) serveUDPReverseForward(pc net.PacketConn, f config.Forward, tar
 			}
 			cancel()
 			if err != nil {
-				e.log.Printf("udp reverse forward %s -> %s failed: %v", f.Listen, f.Target, err)
+				e.log.Errorf("udp reverse forward %s -> %s failed: %v", f.Listen, f.Target, err)
 				mu.Unlock()
 				continue
 			}
@@ -2097,7 +2096,7 @@ func (e *Engine) serveUDPReverseForward(pc net.PacketConn, f config.Forward, tar
 		if f.ProxyProtocol != "" {
 			header, err := proxyProtocolBytes(f.ProxyProtocol, "udp", src, dst)
 			if err != nil {
-				e.log.Printf("udp reverse forward %s PROXY header failed: %v", f.Listen, err)
+				e.log.Errorf("udp reverse forward %s PROXY header failed: %v", f.Listen, err)
 				continue
 			}
 			packet := make([]byte, 0, len(header)+n)
@@ -2287,7 +2286,7 @@ func (e *Engine) addListener(name string, ln net.Listener) {
 	e.listeners = append(e.listeners, ln)
 	e.listenerMap[name] = ln
 	e.addrs[name] = ln.Addr().String()
-	e.log.Printf("%s listening on %s", name, ln.Addr())
+	e.log.Infof("%s listening on %s", name, ln.Addr())
 }
 
 // listenerByName returns the named listener if registered, or nil. Used by
@@ -2324,7 +2323,7 @@ func (e *Engine) addPacketConn(name string, pc net.PacketConn) {
 	e.pconns = append(e.pconns, pc)
 	e.pconnMap[name] = pc
 	e.addrs[name] = pc.LocalAddr().String()
-	e.log.Printf("%s listening on %s", name, pc.LocalAddr())
+	e.log.Infof("%s listening on %s", name, pc.LocalAddr())
 }
 
 func (e *Engine) closeListenerName(name string) bool {

@@ -288,7 +288,7 @@ func mustStart(t *testing.T, cfg config.Config) *engine.Engine {
 	if err := cfg.Normalize(); err != nil {
 		t.Fatal(err)
 	}
-	eng, err := engine.New(cfg, log.New(io.Discard, "", 0))
+	eng, err := engine.New(cfg, engine.DiscardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}

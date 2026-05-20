@@ -7,8 +7,6 @@
 package uwgsocks
 
 import (
-	"log"
-
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/acl"
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/config"
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/engine"
@@ -40,9 +38,21 @@ type PeerStatus = engine.PeerStatus
 type PingResult = engine.PingResult
 type PingReply = engine.PingReply
 
+// LeveledLogger is the logging interface for the engine. Use
+// engine.WrapStdLogger to adapt a *log.Logger, or engine.DiscardLogger for
+// silent operation.
+type LeveledLogger = engine.LeveledLogger
+
+// Level controls log verbosity. See engine.ParseLevel to convert a string.
+type Level = engine.Level
+
 const (
-	ACLAllow = acl.Allow
-	ACLDeny  = acl.Deny
+	ACLAllow   = acl.Allow
+	ACLDeny    = acl.Deny
+	LevelDebug = engine.LevelDebug
+	LevelInfo  = engine.LevelInfo
+	LevelWarn  = engine.LevelWarn
+	LevelError = engine.LevelError
 )
 
 type Engine = engine.Engine
@@ -55,6 +65,18 @@ func LoadConfig(path string) (Config, error) {
 	return config.Load(path)
 }
 
-func New(cfg Config, logger *log.Logger) (*Engine, error) {
+// New creates a new Engine. Pass a LeveledLogger to control log output;
+// use engine.WrapStdLogger(l, engine.LevelInfo) to adapt a *log.Logger.
+// Pass nil for silent operation.
+func New(cfg Config, logger LeveledLogger) (*Engine, error) {
 	return engine.New(cfg, logger)
 }
+
+// WrapStdLogger adapts a *log.Logger to LeveledLogger at the given level.
+var WrapStdLogger = engine.WrapStdLogger
+
+// DiscardLogger returns a silent LeveledLogger.
+var DiscardLogger = engine.DiscardLogger
+
+// ParseLevel converts a string ("debug", "info", "warn", "error") to Level.
+var ParseLevel = engine.ParseLevel

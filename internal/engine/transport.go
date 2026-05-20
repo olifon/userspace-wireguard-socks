@@ -89,7 +89,7 @@ func (e *Engine) onTransportEndpointReset(identBytes []byte, fallbackAddr string
 				return
 			}
 			if err := e.dev.IpcSet(uapi); err != nil {
-				e.log.Printf("transport endpoint reset for peer %s failed: %v", p.PublicKey, err)
+				e.log.Errorf("transport endpoint reset for peer %s failed: %v", p.PublicKey, err)
 			}
 			return
 		}

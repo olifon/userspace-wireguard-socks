@@ -343,7 +343,7 @@ func (e *Engine) startMeshControlServer() error {
 	server := e.proxyHTTPServer(e.meshControlRateLimit(mux))
 	go func() {
 		if err := server.Serve(ln); err != nil && !isClosedErr(err) {
-			e.log.Printf("mesh control stopped: %v", err)
+			e.log.Infof("mesh control stopped: %v", err)
 		}
 	}()
 	return nil
@@ -870,7 +870,7 @@ func (e *Engine) runMeshPolling() {
 				e.cfgMu.RUnlock()
 				if p2pMode != "" {
 					if postErr := client.postP2PMode(ctx, remote, p2pMode); postErr != nil {
-						e.log.Printf("mesh control p2p declare for %s failed: %v", parent.PublicKey, postErr)
+						e.log.Errorf("mesh control p2p declare for %s failed: %v", parent.PublicKey, postErr)
 					}
 				}
 				var peers []meshDiscoveredPeer
@@ -906,7 +906,7 @@ func (e *Engine) runMeshPolling() {
 		}
 		cancel()
 		if err != nil {
-			e.log.Printf("mesh control poll for %s failed: %v", parent.PublicKey, err)
+			e.log.Errorf("mesh control poll for %s failed: %v", parent.PublicKey, err)
 		}
 	}
 	e.refreshDynamicPeerActivity()
@@ -1022,7 +1022,7 @@ func (e *Engine) applyMeshDiscoveredPeers(parent config.Peer, discovered []meshD
 			if ip := e.allocKeepaliveIPLocked(cand.key); ip.IsValid() {
 				dp.KeepaliveIP = ip
 			} else if e.keepaliveSubnet.IsValid() {
-				e.log.Printf("mesh: keepalive subnet %s exhausted, no probe IP for %s", e.keepaliveSubnet, cand.key)
+				e.log.Warnf("mesh: keepalive subnet %s exhausted, no probe IP for %s", e.keepaliveSubnet, cand.key)
 			}
 		}
 		upserts = append(upserts, update{key: cand.key, peer: peer, keepaliveIP: dp.KeepaliveIP})
