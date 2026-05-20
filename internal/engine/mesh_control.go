@@ -27,6 +27,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/reindertpelsma/userspace-wireguard-socks/internal/acl"
@@ -108,6 +109,12 @@ type dynamicPeer struct {
 	// KeepaliveIP is the allocated address in keepaliveSubnet used to probe
 	// this peer's direct path. Zero means none allocated or peer is "remote".
 	KeepaliveIP netip.Addr
+	// LastHubEndpoint is the endpoint most recently advertised by the
+	// mesh-control server for this peer. When the server's view changes
+	// (e.g. after a peer restarts on a new port), hub-endpoint tracking
+	// lets applyMeshDiscoveredPeers distinguish "hub changed endpoint
+	// (use new value)" from "hub endpoint unchanged (keep any override)".
+	LastHubEndpoint string
 }
 
 type meshAuthenticator interface {
@@ -1155,7 +1162,8 @@ func (e *Engine) runMeshSubscribePeer(parent config.Peer) error {
 
 	br := bufio.NewReader(resp.Body)
 	var counter uint64
-	lastFrame := time.Now()
+	var lastFrameNs atomic.Int64
+	lastFrameNs.Store(time.Now().UnixNano())
 
 	readFrame := func() (meshSubscribeFrame, error) {
 		var hdr [2]byte
@@ -1180,7 +1188,7 @@ func (e *Engine) runMeshSubscribePeer(parent config.Peer) error {
 		if err := json.Unmarshal(plain, &frame); err != nil {
 			return meshSubscribeFrame{}, err
 		}
-		lastFrame = time.Now()
+		lastFrameNs.Store(time.Now().UnixNano())
 		return frame, nil
 	}
 
@@ -1198,7 +1206,7 @@ func (e *Engine) runMeshSubscribePeer(parent config.Peer) error {
 				return
 			case <-watchdog:
 			case <-t.C:
-				if time.Since(lastFrame) > meshSubscribeHeartbeatTimeout {
+				if time.Duration(time.Now().UnixNano()-lastFrameNs.Load()) > meshSubscribeHeartbeatTimeout {
 					cancel()
 					return
 				}
@@ -1219,6 +1227,11 @@ func (e *Engine) runMeshSubscribePeer(parent config.Peer) error {
 		default:
 		}
 		if frame.Type == "state" {
+			select {
+			case <-e.closed:
+				return nil
+			default:
+			}
 			if frame.Peers != nil {
 				if applyErr := e.applyMeshDiscoveredPeers(parent, frame.Peers); applyErr != nil {
 					return applyErr
@@ -1448,13 +1461,17 @@ func (e *Engine) applyMeshDiscoveredPeers(parent config.Peer, discovered []meshD
 			continue
 		}
 		peer := cand.peer
-		if exists && dp.Active && dp.Peer.Endpoint != "" {
+		if exists && dp.Active && dp.Peer.Endpoint != "" && cand.peer.Endpoint == dp.LastHubEndpoint {
+			// Hub's endpoint unchanged since last apply. Preserve whatever
+			// WG endpoint is stored — it may be a test-forced direct-path
+			// override or a WG-roamed address that is better than hub's view.
 			peer.Endpoint = dp.Peer.Endpoint
 		}
 		if !exists {
 			dp = &dynamicPeer{ParentPublicKey: parent.PublicKey}
 			e.dynamicPeers[cand.key] = dp
 		}
+		dp.LastHubEndpoint = cand.peer.Endpoint
 		dp.Peer = peer
 		dp.LastControl = now
 		// Update peer type from server's current declaration.
