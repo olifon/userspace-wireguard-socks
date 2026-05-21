@@ -40,6 +40,10 @@ var alwaysTraceSyscalls = []uint32{
 	// arm64 does not have a native select(2) syscall; libc reaches the kernel
 	// through pselect6/ppoll instead.
 	unix.SYS_PSELECT6,
+	// epoll: modern apps (BIND/dig, libuv, libevent) use epoll_pwait instead
+	// of poll/select. arm64 has no separate epoll_wait; only epoll_pwait.
+	unix.SYS_EPOLL_CTL,
+	unix.SYS_EPOLL_PWAIT,
 }
 
 func syscallUsesPassthroughSecret(nr int64) bool {

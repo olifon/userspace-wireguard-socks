@@ -54,23 +54,35 @@ type Options struct {
 }
 
 type tracer struct {
-	seccompMode SeccompMode
-	secret      uint64
-	verbose     bool
-	fdproxy     string
-	shared      *uwgshared.Table
-	pid         int
-	pidfd       int
-	pending     map[int]pendingSyscall
-	blocked     map[int]blockedSyscall
-	localMu     sync.Mutex
-	taskGroup   map[int]int
-	pidfds      map[int]int
-	fdEpoch     map[procFD]uint64
-	nextEpoch   uint64
-	localFDs    map[procFD]int
-	statsPath   string
-	stats       traceStats
+	seccompMode  SeccompMode
+	secret       uint64
+	verbose      bool
+	fdproxy      string
+	shared       *uwgshared.Table
+	pid          int
+	pidfd        int
+	pending      map[int]pendingSyscall
+	blocked      map[int]blockedSyscall
+	localMu      sync.Mutex
+	taskGroup    map[int]int
+	pidfds       map[int]int
+	fdEpoch      map[procFD]uint64
+	nextEpoch    uint64
+	localFDs     map[procFD]int
+	// epollProxied tracks proxied fds registered in each epoll fd.
+	// Key: (process-group-pid, epoll-fd). Value: (proxied-fd → entry).
+	// epoll_ctl(ADD/MOD) for a proxied fd is emulated (not forwarded to the
+	// kernel) and recorded here; epoll_wait/pwait polls the localFDs instead.
+	epollProxied map[procFD]map[int]epollEntry
+	statsPath    string
+	stats        traceStats
+}
+
+// epollEntry records a proxied fd's registration state in a kernel epoll fd.
+type epollEntry struct {
+	localFD int
+	events  uint32
+	data    uint64 // epoll_data (typically fd or ptr cast to u64)
 }
 
 type SeccompMode int
@@ -211,12 +223,13 @@ func Run(opts Options) (int, error) {
 		fdproxy:     opts.FDProxy,
 		shared:      opts.Shared,
 		pid:         cmd.Process.Pid,
-		pending:     make(map[int]pendingSyscall),
-		blocked:     make(map[int]blockedSyscall),
-		taskGroup:   make(map[int]int),
-		pidfds:      make(map[int]int),
-		fdEpoch:     make(map[procFD]uint64),
-		localFDs:    make(map[procFD]int),
+		pending:      make(map[int]pendingSyscall),
+		blocked:      make(map[int]blockedSyscall),
+		taskGroup:    make(map[int]int),
+		pidfds:       make(map[int]int),
+		fdEpoch:      make(map[procFD]uint64),
+		localFDs:     make(map[procFD]int),
+		epollProxied: make(map[procFD]map[int]epollEntry),
 		statsPath:   opts.StatsPath,
 		stats:       traceStats{Syscalls: make(map[string]uint64)},
 	}
@@ -564,6 +577,12 @@ func (t *tracer) dispatchInterceptedSyscall(tid int, regs unix.PtraceRegs, secco
 		return t.handlePoll(tid, regs, false, seccompStop)
 	case unix.SYS_PPOLL:
 		return t.handlePoll(tid, regs, true, seccompStop)
+	case unix.SYS_EPOLL_CTL:
+		return t.handleEpollCtl(tid, regs, seccompStop)
+	case unix.SYS_EPOLL_WAIT:
+		return t.handleEpollWait(tid, regs, seccompStop)
+	case unix.SYS_EPOLL_PWAIT:
+		return t.handleEpollWait(tid, regs, seccompStop)
 	case unix.SYS_CLOSE_RANGE:
 		return t.handleCloseRange(tid, regs, seccompStop)
 	default:
@@ -2028,6 +2047,217 @@ func (t *tracer) handlePoll(tid int, regs unix.PtraceRegs, ppoll bool, seccompSt
 	return t.finishEmulated(tid, regs, int64(ready), seccompStop)
 }
 
+// handleEpollCtl intercepts epoll_ctl for proxied fds.
+//
+// When a proxied fd is added to an epoll fd, the real kernel fd is an
+// unconnected/unbound socket — the actual data arrives on localFD (a unix
+// socket connected to fdproxy), not on the original fd. Registering the real
+// fd in the kernel epoll would cause epoll_wait to block forever waiting for
+// data that never arrives. Instead, we block the kernel epoll_ctl call and
+// record the registration ourselves; handleEpollWait substitutes localFD.
+func (t *tracer) handleEpollCtl(tid int, regs unix.PtraceRegs, seccompStop bool) error {
+	epfd := int(int32(regs.Rdi))
+	op := int(int32(regs.Rsi))
+	fd := int(int32(regs.Rdx))
+	eventPtr := uintptr(regs.R10)
+
+	state := t.trackedSnapshot(tid, fd)
+	if state.Proxied == 0 {
+		return t.resumeDefault(tid, seccompStop)
+	}
+	group := t.groupFor(tid)
+	epKey := procFD{pid: group, fd: epfd}
+
+	switch op {
+	case unix.EPOLL_CTL_ADD, unix.EPOLL_CTL_MOD:
+		localFD, err := t.ensureLocalFD(procFD{pid: group, fd: fd})
+		if err != nil {
+			return t.finishEmulated(tid, regs, -int64(syscall.EBADF), seccompStop)
+		}
+		// epoll_event on x86_64 is 12 bytes (EPOLL_PACKED): Events(4)+Data(8).
+		if eventPtr != 0 {
+			raw, err := t.readTraceeBytes(tid, eventPtr, 12)
+			if err != nil {
+				return t.finishEmulated(tid, regs, -errnoResult(err), seccompStop)
+			}
+			events := binary.LittleEndian.Uint32(raw[0:4])
+			data := binary.LittleEndian.Uint64(raw[4:12])
+			if t.epollProxied[epKey] == nil {
+				t.epollProxied[epKey] = make(map[int]epollEntry)
+			}
+			t.epollProxied[epKey][fd] = epollEntry{localFD: localFD, events: events, data: data}
+		}
+		return t.finishEmulated(tid, regs, 0, seccompStop)
+	case unix.EPOLL_CTL_DEL:
+		if m := t.epollProxied[epKey]; m != nil {
+			delete(m, fd)
+		}
+		return t.finishEmulated(tid, regs, 0, seccompStop)
+	}
+	return t.resumeDefault(tid, seccompStop)
+}
+
+// migrateProxiedFdinfo discovers proxied fds registered in a kernel epoll via
+// io_uring (libuv uses IORING_OP_EPOLL_CTL which bypasses our seccomp
+// interception of epoll_ctl 233). It reads /proc/<pid>/fdinfo/<epfd>, parses
+// the tfd entries, and for each registered fd that is now proxied it creates
+// an epollEntry and inserts it into t.epollProxied so that handleEpollWait
+// can poll localFD instead of the unconnected kernel socket.
+func (t *tracer) migrateProxiedFdinfo(tid, group, epfd int, epKey procFD) {
+	path := fmt.Sprintf("/proc/%d/fdinfo/%d", group, epfd)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Fields(line)
+		// kernel format: "tfd: %8d events: %8x data: %16llx  pos:..."
+		if len(fields) < 6 || fields[0] != "tfd:" {
+			continue
+		}
+		fd, err := strconv.Atoi(fields[1])
+		if err != nil {
+			continue
+		}
+		events, err := strconv.ParseUint(fields[3], 16, 32)
+		if err != nil {
+			continue
+		}
+		data, err := strconv.ParseUint(fields[5], 16, 64)
+		if err != nil {
+			continue
+		}
+		state := t.trackedSnapshot(tid, fd)
+		if state.Proxied == 0 {
+			continue
+		}
+		localFD, err := t.ensureLocalFD(procFD{pid: group, fd: fd})
+		if err != nil {
+			continue
+		}
+		if t.epollProxied[epKey] == nil {
+			t.epollProxied[epKey] = make(map[int]epollEntry)
+		}
+		t.epollProxied[epKey][fd] = epollEntry{
+			localFD: localFD,
+			events:  uint32(events),
+			data:    data,
+		}
+	}
+}
+
+// handleEpollWait handles epoll_wait (232) and epoll_pwait (281).
+// Both carry the same positional args: epfd, events, maxevents, timeout.
+// The sigmask arg of epoll_pwait is not forwarded — we replace the entire
+// wait with a poll() on localFDs + a non-blocking epoll of the dup'd epfd
+// for any non-proxied fds, so there is no kernel epoll_pwait path that
+// would honor a signal mask anyway. In ptrace-seccomp mode (the only mode
+// where we intercept epoll) signal delivery is already linearised through
+// ptrace stops, so the omission is acceptable.
+func (t *tracer) handleEpollWait(tid int, regs unix.PtraceRegs, seccompStop bool) error {
+	epfd := int(int32(regs.Rdi))
+	eventsPtr := uintptr(regs.Rsi)
+	maxEvents := int(int32(regs.Rdx))
+	timeoutMs := int(int32(regs.R10))
+
+	group := t.groupFor(tid)
+	epKey := procFD{pid: group, fd: epfd}
+
+	entries := t.epollProxied[epKey]
+	if len(entries) == 0 {
+		// io_uring (libuv IORING_OP_EPOLL_CTL) can register fds in the
+		// kernel epoll without a direct epoll_ctl syscall, bypassing our
+		// seccomp intercept. Check /proc fdinfo for proxied fds.
+		t.migrateProxiedFdinfo(tid, group, epfd, epKey)
+		entries = t.epollProxied[epKey]
+		if len(entries) == 0 {
+			return t.resumeDefault(tid, seccompStop)
+		}
+	}
+	if maxEvents <= 0 {
+		return t.finishEmulated(tid, regs, -int64(syscall.EINVAL), seccompStop)
+	}
+
+	// Build a poll array: one entry per proxied fd's localFD.
+	type pollSlot struct {
+		proxiedFD int
+		entry     epollEntry
+	}
+	slots := make([]pollSlot, 0, len(entries))
+	pollFDs := make([]unix.PollFd, 0, len(entries)+1)
+	for proxiedFD, entry := range entries {
+		slots = append(slots, pollSlot{proxiedFD: proxiedFD, entry: entry})
+		pollFDs = append(pollFDs, unix.PollFd{Fd: int32(entry.localFD), Events: unix.POLLIN})
+	}
+
+	// Dup the epfd so we can non-blockingly harvest any non-proxied events.
+	// An epoll fd is itself poll-able: POLLIN fires when events are queued.
+	dupEpfd := -1
+	dupIdx := -1
+	if df, err := t.dupTraceeFD(group, epfd); err == nil {
+		dupEpfd = df
+		dupIdx = len(pollFDs)
+		pollFDs = append(pollFDs, unix.PollFd{Fd: int32(dupEpfd), Events: unix.POLLIN})
+	}
+	defer func() {
+		if dupEpfd >= 0 {
+			_ = unix.Close(dupEpfd)
+		}
+	}()
+
+	if _, err := unix.Poll(pollFDs, timeoutMs); err != nil && !errors.Is(err, syscall.EINTR) {
+		return t.finishEmulated(tid, regs, -errnoResult(err), seccompStop)
+	}
+
+	// epoll_event on x86_64 is 12 bytes (EPOLL_PACKED): Events(4)+Data(8).
+	const evSize = 12
+	evBuf := make([]byte, 0, maxEvents*evSize)
+	nReady := 0
+
+	for i, slot := range slots {
+		if nReady >= maxEvents {
+			break
+		}
+		if pollFDs[i].Revents&(unix.POLLIN|unix.POLLHUP|unix.POLLERR) == 0 {
+			continue
+		}
+		var ev [evSize]byte
+		binary.LittleEndian.PutUint32(ev[0:4], slot.entry.events)
+		binary.LittleEndian.PutUint64(ev[4:12], slot.entry.data)
+		evBuf = append(evBuf, ev[:]...)
+		nReady++
+	}
+
+	// Collect non-proxied events from the kernel epoll fd (non-blocking).
+	if dupIdx >= 0 && pollFDs[dupIdx].Revents&(unix.POLLIN|unix.POLLHUP|unix.POLLERR) != 0 {
+		remaining := maxEvents - nReady
+		if remaining > 0 {
+			nonProxied := make([]unix.EpollEvent, remaining)
+			n, err := unix.EpollWait(dupEpfd, nonProxied, 0)
+			if err == nil {
+				for _, ev := range nonProxied[:n] {
+					if nReady >= maxEvents {
+						break
+					}
+					var evBytes [evSize]byte
+					binary.LittleEndian.PutUint32(evBytes[0:4], ev.Events)
+					binary.LittleEndian.PutUint32(evBytes[4:8], uint32(ev.Fd))
+					binary.LittleEndian.PutUint32(evBytes[8:12], uint32(ev.Pad))
+					evBuf = append(evBuf, evBytes[:]...)
+					nReady++
+				}
+			}
+		}
+	}
+
+	if nReady > 0 && eventsPtr != 0 {
+		if err := t.writeTracee(tid, eventsPtr, evBuf); err != nil {
+			return t.finishEmulated(tid, regs, -errnoResult(err), seccompStop)
+		}
+	}
+	return t.finishEmulated(tid, regs, int64(nReady), seccompStop)
+}
+
 func (t *tracer) handleSelect(tid int, regs unix.PtraceRegs, pselect bool, seccompStop bool) error {
 	nfds := int(int32(regs.Rdi))
 	if nfds < 0 {
@@ -2490,6 +2720,15 @@ func (t *tracer) handlePendingExit(tid int, pending pendingSyscall, regs unix.Pt
 				t.trackedClearGroup(pending.group, pending.fd)
 				t.clearLocalFD(key)
 				t.clearEpoch(key)
+			}
+			// Clean up epoll tracking: if the closed fd was an epoll fd,
+			// remove all its proxied registrations. If it was a proxied fd,
+			// remove it from any epoll map it may be registered in.
+			delete(t.epollProxied, key)
+			for epKey, m := range t.epollProxied {
+				if epKey.pid == pending.group {
+					delete(m, pending.fd)
+				}
 			}
 		}
 	case pendingDup:

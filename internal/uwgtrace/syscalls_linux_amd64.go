@@ -43,6 +43,14 @@ var alwaysTraceSyscalls = []uint32{
 	// still reach the tracer even though the preload hot path prefers ppoll.
 	unix.SYS_SELECT,
 	unix.SYS_PSELECT6,
+	// epoll: modern apps (BIND/dig, libuv, libevent) use epoll_pwait instead
+	// of poll/select to wait for data on connected sockets. Without
+	// intercepting these, proxied fds (which have data on a unix socket, not
+	// the original kernel socket) are invisible to the epoll and the app
+	// times out waiting for data that never arrives on the real fd.
+	unix.SYS_EPOLL_CTL,
+	unix.SYS_EPOLL_WAIT,
+	unix.SYS_EPOLL_PWAIT,
 }
 
 func syscallUsesPassthroughSecret(nr int64) bool {
