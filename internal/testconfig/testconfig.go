@@ -134,6 +134,13 @@ type Config struct {
 	// Flag: -uwgs-verbose-stress  Env: UWGS_TEST_DEBUG_STRESS
 	VerboseStress bool
 
+	// IPv6Net enables tests that require real IPv6 network reachability on the
+	// host — typically tests that dial ::1 or routable IPv6 addresses via the
+	// engine's direct-fallback path. Tests that run IPv6 entirely in-process
+	// (WireGuard peers with fd64::/ULA tunnel addresses) do NOT need this gate.
+	// Flag: -uwgs-ipv6-net  Env: UWGS_RUN_IPV6_NET
+	IPv6Net bool
+
 	// ChromeBin is the path to the Chrome/Chromium binary.
 	// Flag: -uwgs-chrome-bin  Env: UWGS_CHROME_BIN
 	ChromeBin string
@@ -172,6 +179,7 @@ var (
 	flagVerboseStress         = flag.Bool("uwgs-verbose-stress", false, "enable verbose output for stress sub-tests")
 	flagChromeBin             = flag.String("uwgs-chrome-bin", "", "path to Chrome/Chromium binary")
 	flagBrowserSmokeTransport = flag.String("uwgs-browser-smoke-transport", "", "wrapper transport for browser smoke tests")
+	flagIPv6Net               = flag.Bool("uwgs-ipv6-net", false, "run tests requiring real host IPv6 reachability (::1 / routable IPv6)")
 )
 
 var (
@@ -288,6 +296,9 @@ func applyEnv(cfg *Config) {
 	if v := strings.TrimSpace(os.Getenv("UWGS_BROWSER_SMOKE_TRANSPORT")); v != "" {
 		cfg.BrowserSmokeTransport = v
 	}
+	if envBool("UWGS_RUN_IPV6_NET") {
+		cfg.IPv6Net = true
+	}
 }
 
 func applyFlag(cfg *Config, f *flag.Flag) {
@@ -344,6 +355,8 @@ func applyFlag(cfg *Config, f *flag.Flag) {
 		cfg.ChromeBin = *flagChromeBin
 	case "uwgs-browser-smoke-transport":
 		cfg.BrowserSmokeTransport = *flagBrowserSmokeTransport
+	case "uwgs-ipv6-net":
+		cfg.IPv6Net = *flagIPv6Net
 	}
 }
 
@@ -366,6 +379,7 @@ func enableAll(cfg *Config) {
 	cfg.ChromiumDocker = true
 	cfg.PythonML = true
 	cfg.Examples = true
+	cfg.IPv6Net = true
 	// Note: StrictStdioHotpath and VerboseStress are diagnostic modifiers,
 	// not test gates — -uwgs-all does not enable them automatically.
 }

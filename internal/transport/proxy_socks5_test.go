@@ -5,6 +5,7 @@ package transport
 
 import (
 	"encoding/binary"
+	"net/netip"
 	"testing"
 )
 
@@ -68,6 +69,31 @@ func TestBuildUDPAssociateRequest(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestBuildUDPAssociateRequestIPv6Hint verifies that an IPv6 hint produces
+// a UDP ASSOCIATE request with ATYP=4 and the correct 16-byte address.
+func TestBuildUDPAssociateRequestIPv6Hint(t *testing.T) {
+	req := buildUDPAssociateRequest("[2001:db8::1]:3478")
+	// 3 (VER/CMD/RSV) + 1 (ATYP) + 16 (IPv6 addr) + 2 (port) = 22 bytes minimum.
+	if len(req) < 22 {
+		t.Fatalf("IPv6 UDP ASSOCIATE request too short: %d bytes", len(req))
+	}
+	if req[0] != 5 || req[1] != 3 || req[2] != 0 {
+		t.Errorf("header VER/CMD/RSV = %v, want [5 3 0]", req[:3])
+	}
+	if req[3] != 0x04 {
+		t.Errorf("ATYP = %d, want 4 (IPv6)", req[3])
+	}
+	want := netip.MustParseAddr("2001:db8::1").As16()
+	var got [16]byte
+	copy(got[:], req[4:20])
+	if got != want {
+		t.Errorf("IPv6 address bytes = %x, want %x", got, want)
+	}
+	if port := binary.BigEndian.Uint16(req[20:22]); port != 3478 {
+		t.Errorf("port = %d, want 3478", port)
 	}
 }
 

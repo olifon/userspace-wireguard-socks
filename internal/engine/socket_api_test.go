@@ -239,6 +239,50 @@ func TestSocketAPIRejectsICMPByACLAndUnroutedIPv6(t *testing.T) {
 	}
 }
 
+// TestSocketAPIConnectIPv6TCPSuccess verifies that the raw socket API can
+// establish a TCP connection to an IPv6 WireGuard peer address (ATYP=4 path).
+func TestSocketAPIConnectIPv6TCPSuccess(t *testing.T) {
+	serverKey, clientKey := mustKey(t), mustKey(t)
+	serverPort := freeUDPPort(t)
+
+	serverCfg := config.Default()
+	serverCfg.WireGuard.PrivateKey = serverKey.String()
+	serverCfg.WireGuard.ListenPort = &serverPort
+	serverCfg.WireGuard.Addresses = []string{"fd64::10/128"}
+	serverCfg.WireGuard.Peers = []config.Peer{{
+		PublicKey:  clientKey.PublicKey().String(),
+		AllowedIPs: []string{"fd64::11/128"},
+	}}
+	serverEng := mustStart(t, serverCfg)
+
+	clientCfg := config.Default()
+	clientCfg.WireGuard.PrivateKey = clientKey.String()
+	clientCfg.WireGuard.Addresses = []string{"fd64::11/128"}
+	clientCfg.API.Listen = "127.0.0.1:0"
+	clientCfg.API.Token = "secret-ipv6"
+	clientCfg.SocketAPI.Bind = true
+	clientCfg.WireGuard.Peers = []config.Peer{{
+		PublicKey:           serverKey.PublicKey().String(),
+		Endpoint:            fmt.Sprintf("127.0.0.1:%d", serverPort),
+		AllowedIPs:          []string{"fd64::10/128"},
+		PersistentKeepalive: 1,
+	}}
+	clientEng := mustStart(t, clientCfg)
+
+	ln, err := serverEng.ListenTCP(netip.MustParseAddrPort("[fd64::10]:18085"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go serveEchoListener(ln)
+
+	socketAddr := "http://" + clientEng.Addr("api")
+	got := socketAPITCPEcho(t, socketAddr, "secret-ipv6", netip.MustParseAddrPort("[fd64::10]:18085"), []byte("raw socket ipv6 tcp"))
+	if string(got) != "raw socket ipv6 tcp" {
+		t.Fatalf("IPv6 TCP socket API echo mismatch: %q", got)
+	}
+}
+
 func TestSocketAPIFallbackDirectTCPUDPAndICMP(t *testing.T) {
 	hostIP := nonLoopbackIPv4(t)
 	echo := startEchoServer(t)

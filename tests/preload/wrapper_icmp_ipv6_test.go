@@ -126,6 +126,72 @@ func setupWrapperIPv6LinkLocalNetwork(t *testing.T) string {
 	return httpSock
 }
 
+// TestUWGWrapperIPv6GlobalUnicastTCPAcrossTransports verifies that the wrapper
+// correctly proxies a connect() to a global-unicast IPv6 tunnel address (ULA
+// fd64::/128) across all transport modes. This exercises the IPv6 path in the
+// preload connect handler and the ptrace AF_INET6 connect emulation, which are
+// distinct code paths from the link-local test above.
+func TestUWGWrapperIPv6GlobalUnicastTCPAcrossTransports(t *testing.T) {
+	requireWrapperToolchain(t)
+	art := buildWrapperArtifacts(t)
+	httpSock := setupWrapperIPv6GlobalUnicastNetwork(t)
+
+	for _, transport := range []string{"preload", "systrap", "ptrace-seccomp", "ptrace-only"} {
+		t.Run(transport, func(t *testing.T) {
+			out := runWrappedTargetWithOptions(t, art, httpSock, transport, art.stub,
+				[]string{"fd64::1", "18080", "ipv6-global-unicast", "tcp-no-poll"},
+				wrapperRunOptions{timeout: 60 * time.Second, wrapperArgs: shortListenArgs(t, transport)})
+			if normalizedOutput(out) != "ipv6-global-unicast" {
+				t.Fatalf("unexpected IPv6 global unicast output %q", out)
+			}
+		})
+	}
+}
+
+func setupWrapperIPv6GlobalUnicastNetwork(t *testing.T) string {
+	t.Helper()
+
+	serverKey, clientKey := mustKey(t), mustKey(t)
+	serverPort := freeUDPPort(t)
+
+	serverCfg := config.Default()
+	serverCfg.WireGuard.PrivateKey = serverKey.String()
+	serverCfg.WireGuard.ListenPort = &serverPort
+	serverCfg.WireGuard.Addresses = []string{"fd64::1/128"}
+	serverCfg.WireGuard.Peers = []config.Peer{{
+		PublicKey:  clientKey.PublicKey().String(),
+		AllowedIPs: []string{"fd64::2/128"},
+	}}
+	serverEng := mustStart(t, serverCfg)
+
+	apiSock := filepath.Join(t.TempDir(), "api.sock")
+	httpSock := filepath.Join(t.TempDir(), "http.sock")
+	clientCfg := config.Default()
+	clientCfg.WireGuard.PrivateKey = clientKey.String()
+	clientCfg.WireGuard.Addresses = []string{"fd64::2/128"}
+	clientCfg.API.Listen = "unix:" + apiSock
+	clientCfg.API.AllowUnauthenticatedUnix = true
+	clientCfg.Proxy.HTTPListeners = []string{"unix:" + httpSock}
+	clientCfg.SocketAPI.Bind = true
+	clientCfg.WireGuard.Peers = []config.Peer{{
+		PublicKey:           serverKey.PublicKey().String(),
+		Endpoint:            net.JoinHostPort("127.0.0.1", itoa(serverPort)),
+		AllowedIPs:          []string{"fd64::1/128"},
+		PersistentKeepalive: 1,
+	}}
+	_ = mustStart(t, clientCfg)
+	waitPath(t, httpSock)
+
+	ln, err := serverEng.ListenTCP(netip.MustParseAddrPort("[fd64::1]:18080"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go serveEchoListener(ln)
+
+	return httpSock
+}
+
 func shortListenArgs(t *testing.T, transport string) []string {
 	t.Helper()
 	name := fmt.Sprintf("uwg-%d-%s.sock", time.Now().UnixNano(), strings.NewReplacer("+", "-", "/", "-", " ", "-").Replace(transport))

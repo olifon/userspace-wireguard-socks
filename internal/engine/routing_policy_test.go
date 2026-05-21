@@ -246,6 +246,135 @@ func TestRoutingOutboundProxyMostSpecificSubnetWins(t *testing.T) {
 	}
 }
 
+// TestRoutingSOCKS5IPv6TCPDestination verifies step 4 for IPv6: a SOCKS5 CONNECT
+// with ATYP=4 (IPv6) to a peer address in AllowedIPs is routed through the
+// WireGuard netstack and reaches the server.
+func TestRoutingSOCKS5IPv6TCPDestination(t *testing.T) {
+	serverKey, clientKey := mustKey(t), mustKey(t)
+	serverPort := freeUDPPort(t)
+
+	serverCfg := config.Default()
+	serverCfg.WireGuard.PrivateKey = serverKey.String()
+	serverCfg.WireGuard.ListenPort = &serverPort
+	serverCfg.WireGuard.Addresses = []string{"fd64::1/128"}
+	serverCfg.WireGuard.Peers = []config.Peer{{
+		PublicKey:  clientKey.PublicKey().String(),
+		AllowedIPs: []string{"fd64::2/128"},
+	}}
+	serverEng := mustStart(t, serverCfg)
+
+	proxyCfg := config.Default()
+	proxyCfg.WireGuard.PrivateKey = clientKey.String()
+	proxyCfg.WireGuard.Addresses = []string{"fd64::2/128"}
+	proxyCfg.Proxy.SOCKS5 = "127.0.0.1:0"
+	proxyCfg.WireGuard.Peers = []config.Peer{{
+		PublicKey:           serverKey.PublicKey().String(),
+		Endpoint:            net.JoinHostPort("127.0.0.1", strconv.Itoa(serverPort)),
+		AllowedIPs:          []string{"fd64::1/128"},
+		PersistentKeepalive: 1,
+	}}
+	proxyEng := mustStart(t, proxyCfg)
+
+	ln, err := serverEng.ListenTCP(netip.MustParseAddrPort("[fd64::1]:18080"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go serveEchoListener(ln)
+
+	got := socksEcho(t, proxyEng.Addr("socks5"), "[fd64::1]:18080", []byte("ipv6-socks5-tcp"))
+	if !bytes.Equal(got, []byte("ipv6-socks5-tcp")) {
+		t.Fatalf("SOCKS5 IPv6 TCP echo mismatch: got %q", got)
+	}
+}
+
+// TestRoutingAllowedIPsIPv6MostSpecificPrefixFirst verifies step 4 for IPv6:
+// when two peers have overlapping IPv6 AllowedIPs prefixes (/48 vs /128), the
+// more specific prefix wins.
+func TestRoutingAllowedIPsIPv6MostSpecificPrefixFirst(t *testing.T) {
+	broadKey, specificKey, clientKey := mustKey(t), mustKey(t), mustKey(t)
+	broadPort := freeUDPPort(t)
+	specificPort := freeUDPPort(t)
+
+	const targetAddr = "fd64::1"
+
+	// Broad server: AllowedIPs /48 covers fd64::/48. Has NO listener at targetAddr.
+	broadCfg := config.Default()
+	broadCfg.WireGuard.PrivateKey = broadKey.String()
+	broadCfg.WireGuard.ListenPort = &broadPort
+	broadCfg.WireGuard.Addresses = []string{"fd64::5/128"}
+	broadCfg.WireGuard.Peers = []config.Peer{{
+		PublicKey:  clientKey.PublicKey().String(),
+		AllowedIPs: []string{"fd64::2/128"},
+	}}
+	mustStart(t, broadCfg)
+
+	// Specific server: AllowedIPs /128 = exactly targetAddr. Has a TCP echo there.
+	specificCfg := config.Default()
+	specificCfg.WireGuard.PrivateKey = specificKey.String()
+	specificCfg.WireGuard.ListenPort = &specificPort
+	specificCfg.WireGuard.Addresses = []string{targetAddr + "/128"}
+	specificCfg.WireGuard.Peers = []config.Peer{{
+		PublicKey:  clientKey.PublicKey().String(),
+		AllowedIPs: []string{"fd64::2/128"},
+	}}
+	specificEng := mustStart(t, specificCfg)
+	ln, err := specificEng.ListenTCP(netip.MustParseAddrPort("[" + targetAddr + "]:18080"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go serveEchoListener(ln)
+
+	proxyCfg := config.Default()
+	proxyCfg.WireGuard.PrivateKey = clientKey.String()
+	proxyCfg.WireGuard.Addresses = []string{"fd64::2/128"}
+	proxyCfg.Proxy.SOCKS5 = "127.0.0.1:0"
+	proxyCfg.WireGuard.Peers = []config.Peer{
+		{
+			// /48 broad peer — covers all fd64::/48 but not via the specific path
+			PublicKey:           broadKey.PublicKey().String(),
+			Endpoint:            net.JoinHostPort("127.0.0.1", strconv.Itoa(broadPort)),
+			AllowedIPs:          []string{"fd64::/48"},
+			PersistentKeepalive: 1,
+		},
+		{
+			// /128 specific peer — exact match for targetAddr
+			PublicKey:           specificKey.PublicKey().String(),
+			Endpoint:            net.JoinHostPort("127.0.0.1", strconv.Itoa(specificPort)),
+			AllowedIPs:          []string{targetAddr + "/128"},
+			PersistentKeepalive: 1,
+		},
+	}
+	proxyEng := mustStart(t, proxyCfg)
+
+	got := socksEcho(t, proxyEng.Addr("socks5"), "["+targetAddr+"]:18080", []byte("ipv6-most-specific-prefix"))
+	if !bytes.Equal(got, []byte("ipv6-most-specific-prefix")) {
+		t.Fatalf("most-specific IPv6 AllowedIPs peer was not used: got %q", got)
+	}
+}
+
+// TestRoutingIPv6SubnetBlocksLeak verifies step 5 for IPv6: a destination inside
+// an Address= IPv6 subnet reservation but not covered by any peer AllowedIPs is
+// rejected rather than leaking to the direct fallback path.
+func TestRoutingIPv6SubnetBlocksLeak(t *testing.T) {
+	key := mustKey(t)
+	cfg := config.Default()
+	cfg.WireGuard.PrivateKey = key.String()
+	// fd64::1/48 creates a /48 subnet reservation for fd64::/48.
+	cfg.WireGuard.Addresses = []string{"100.64.64.2/32", "fd64::1/48"}
+	cfg.Proxy.SOCKS5 = "127.0.0.1:0"
+	fallback := true // even with fallback_direct=true the reservation must block
+	cfg.Proxy.FallbackDirect = &fallback
+	eng := mustStart(t, cfg)
+
+	// Target inside the fd64::/48 reservation but no peer claims it via AllowedIPs.
+	rep := socksConnectReply(t, eng.Addr("socks5"), netip.MustParseAddrPort("[fd64::99]:80"))
+	if rep == 0 {
+		t.Fatal("IPv6 address-subnet destination leaked to direct fallback instead of being rejected")
+	}
+}
+
 // TestRoutingHTTPProxyNotUsedForUDP verifies step 6 footnote: HTTP CONNECT
 // proxies handle only TCP; UDP connections fall through to the next matching
 // SOCKS5 proxy or fail if none exists and fallback_direct is false.
