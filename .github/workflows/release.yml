@@ -400,6 +400,83 @@ jobs:
           # to spot warnings even when the smoke passes.
           tail -50 uwgsocks.log || true
 
+      # Chromium under systrap-elf — real internet smoke.
+      #
+      # systrap-elf injects the ptloader via PT_INTERP rewriting: every
+      # process Chromium execs (renderer, GPU, utility) gets the SIGSYS
+      # handler atomically before _start. This test confirms the mechanism
+      # survives Chromium's multi-process zygote model without the ptrace
+      # supervision layer (and its SIGSYS-forward concurrency sensitivity)
+      # that caused the previous amd64 GH-runner hang.
+      #
+      # Chrome binary: chrome-headless-shell from Chrome for Testing, which
+      # is a stripped headless binary (no snap confinement, no display
+      # needed, deterministic --dump-dom behaviour). Downloaded from the
+      # Chrome for Testing JSON API rather than apt to avoid snap wrappers
+      # on ubuntu-22.04/24.04 which block LD_PRELOAD from /tmp.
+      #
+      # Pass/fail: example.com subtest is the gate (empty DOM → SKIP,
+      # timeout → FAIL). youtube.com is a stretch goal that converts
+      # timeout + empty DOM to SKIP — it proves the full JS stack when
+      # the environment allows it.
+      #
+      # arm64: stay continue-on-error until we have a few consecutive
+      # greens. Chrome for Testing ships arm64 builds since 2024; the
+      # arm64 GH runner availability on ubuntu-24.04-arm is newer and
+      # might have environment differences we haven't validated yet.
+      - name: Chromium systrap-elf real-internet smoke
+        if: runner.os == 'Linux'
+        continue-on-error: ${{ runner.arch != 'X64' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DPKG_ARCH=$(dpkg --print-architecture)
+          # Map dpkg arch → Chrome for Testing platform string.
+          case "$DPKG_ARCH" in
+            amd64) CHROME_PLATFORM="linux64" ;;
+            arm64) CHROME_PLATFORM="linux-arm64" ;;
+            *)     echo "unsupported arch $DPKG_ARCH for chrome-headless-shell"; exit 0 ;;
+          esac
+
+          # Fetch the stable Chrome for Testing manifest and extract the
+          # headless-shell download URL for our platform.
+          CHROME_JSON=$(curl -fsSL https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json)
+          CHROME_URL=$(printf '%s' "$CHROME_JSON" | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          urls = [x['url'] for x in d['channels']['Stable']['downloads']['headless-shell']
+                  if x['platform'] == '${CHROME_PLATFORM}']
+          print(urls[0] if urls else '')
+          ")
+          if [[ -z "$CHROME_URL" ]]; then
+            echo "chrome-headless-shell not available for $CHROME_PLATFORM — skipping"
+            exit 0
+          fi
+
+          CHROME_DIR="$HOME/chrome-headless-shell"
+          mkdir -p "$CHROME_DIR"
+          curl -fsSL "$CHROME_URL" -o "$CHROME_DIR/headless-shell.zip"
+          unzip -q "$CHROME_DIR/headless-shell.zip" -d "$CHROME_DIR"
+          # The zip unpacks into headless-shell-linux64/headless_shell (amd64)
+          # or headless-shell-linux-arm64/headless_shell (arm64).
+          CHROME_BIN=$(find "$CHROME_DIR" -name "headless_shell" -type f | head -1)
+          chmod +x "$CHROME_BIN"
+          echo "chrome-headless-shell: $CHROME_BIN ($("$CHROME_BIN" --version 2>/dev/null || echo unknown))"
+
+          # Build preload artifacts (ptloader + phase1 .so) so the test's
+          # requirePhase1Toolchain + buildPhase1Artifacts path works.
+          # The ptloader binary is embedded in uwgwrapper and used by
+          # systrap-elf's PT_INTERP injection mechanism.
+          bash preload/build_ptloader.sh cmd/uwgwrapper/assets
+          bash preload/build_phase1.sh cmd/uwgwrapper/assets/uwgpreload.so
+
+          UWGS_CHROME_BIN="$CHROME_BIN" \
+          UWGS_RUN_CHROMIUM_SYSTRAP_ELF=1 \
+            go test -count=1 -timeout 180s \
+              -run TestChromiumSystrapElfRealInternet \
+              ./tests/preload/
+
       # Fuzz the strict wg-quick parser and the ACL rule parser for a
       # short window on every release-CI platform — different OS file-
       # IO timing surfaces different fuzzed paths. The seed corpus

@@ -97,6 +97,10 @@ type Config struct {
 	// Flag: -uwgs-chromium-supervised  Env: UWGS_RUN_CHROMIUM_SUPERVISED
 	ChromiumSupervised bool
 
+	// ChromiumSystrapElf enables the systrap-elf Chromium real-internet test.
+	// Flag: -uwgs-chromium-systrap-elf  Env: UWGS_RUN_CHROMIUM_SYSTRAP_ELF
+	ChromiumSystrapElf bool
+
 	// ChromiumRealInet enables the Chromium real-internet test.
 	// Flag: -uwgs-chromium-real-inet  Env: UWGS_RUN_CHROMIUM_REAL_INTERNET
 	ChromiumRealInet bool
@@ -157,6 +161,7 @@ var (
 	flagPtraceThreadedDeath   = flag.Bool("uwgs-ptrace-threaded-death", false, "run ptrace threaded-death diagnostic")
 	flagChromeSmoke           = flag.Bool("uwgs-chrome-smoke", false, "run headless Chrome smoke test")
 	flagChromiumSupervised    = flag.Bool("uwgs-chromium-supervised", false, "run systrap-supervised Chromium test")
+	flagChromiumSystrapElf    = flag.Bool("uwgs-chromium-systrap-elf", false, "run systrap-elf Chromium real-internet test")
 	flagChromiumRealInet      = flag.Bool("uwgs-chromium-real-inet", false, "run Chromium real-internet test")
 	flagPhase1ChromeSmoke     = flag.Bool("uwgs-phase1-chrome-smoke", false, "run Phase 1 headless Chrome smoke test")
 	flagPhase2Diag            = flag.Bool("uwgs-phase2-diag", false, "run Phase 2 natural-exit hang diagnostic")
@@ -250,6 +255,9 @@ func applyEnv(cfg *Config) {
 	if envBool("UWGS_RUN_CHROMIUM_SUPERVISED") {
 		cfg.ChromiumSupervised = true
 	}
+	if envBool("UWGS_RUN_CHROMIUM_SYSTRAP_ELF") {
+		cfg.ChromiumSystrapElf = true
+	}
 	if envBool("UWGS_RUN_CHROMIUM_REAL_INTERNET") {
 		cfg.ChromiumRealInet = true
 	}
@@ -314,6 +322,8 @@ func applyFlag(cfg *Config, f *flag.Flag) {
 		cfg.ChromeSmoke = *flagChromeSmoke
 	case "uwgs-chromium-supervised":
 		cfg.ChromiumSupervised = *flagChromiumSupervised
+	case "uwgs-chromium-systrap-elf":
+		cfg.ChromiumSystrapElf = *flagChromiumSystrapElf
 	case "uwgs-chromium-real-inet":
 		cfg.ChromiumRealInet = *flagChromiumRealInet
 	case "uwgs-phase1-chrome-smoke":
@@ -349,6 +359,7 @@ func enableAll(cfg *Config) {
 	cfg.PtraceThreadedDeath = true
 	cfg.ChromeSmoke = true
 	cfg.ChromiumSupervised = true
+	cfg.ChromiumSystrapElf = true
 	cfg.ChromiumRealInet = true
 	cfg.Phase1ChromeSmoke = true
 	cfg.Phase2Diag = true
