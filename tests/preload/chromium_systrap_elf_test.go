@@ -83,14 +83,18 @@ func TestChromiumSystrapElfRealInternet(t *testing.T) {
 		name        string
 		url         string
 		mustContain string
-		skipOnEmpty bool
+		// stretchGoal: if true, timeout and empty DOM are SKIP (not FAIL).
+		// example.com is the hard gate; YouTube is best-effort on CI.
+		stretchGoal bool
 	}{
-		// example.com: IANA-managed, reliably returns "Example Domain".
-		// The primary pass/fail signal for systrap-elf + Chromium interop.
+		// example.com: IANA-managed, always returns "Example Domain" on a
+		// working connection. Empty DOM or timeout here means the systrap-elf
+		// wrapper broke the proxy path — that is a real bug, not a CI timing
+		// quirk, so both outcomes FAIL.
 		{"example.com", "https://example.com/", "Example Domain", false},
-		// youtube.com: JS-heavy, may return empty DOM or timeout on stripped
-		// CI environments. Convert to SKIP — example.com is the gate, YouTube
-		// proves real-world JS-stack depth when the environment allows it.
+		// youtube.com: JS-heavy; may not finish loading before --dump-dom fires
+		// even with a working proxy. SKIP on timeout or empty DOM — the example.com
+		// subtest is the gate, YouTube proves full-stack depth when the runner allows.
 		{"youtube.com", "https://www.youtube.com/", "YouTube", true},
 	} {
 		tc := tc
@@ -119,20 +123,20 @@ func TestChromiumSystrapElfRealInternet(t *testing.T) {
 				tc.url, abbrev(out, 800), len(out), err)
 
 			if ctx.Err() == context.DeadlineExceeded {
-				if tc.skipOnEmpty {
-					t.Skipf("chromium under systrap-elf timed out fetching %s — JS-heavy page on this runner", tc.url)
+				if tc.stretchGoal {
+					t.Skipf("chromium under systrap-elf timed out fetching %s — JS-heavy page, skipping stretch goal", tc.url)
 				}
 				t.Fatalf("chromium under systrap-elf timed out fetching %s", tc.url)
 			}
 
 			const emptyDOM = "<html><head></head><body></body></html>"
 			if strings.TrimSpace(string(out)) == emptyDOM {
-				// Empty DOM means the proxy was reachable but the page content
-				// arrived after --dump-dom fired (common with heavy JS on CI).
-				// Convert to SKIP for both URLs: the systrap-elf machinery worked
-				// (chromium launched and connected to the proxy) — content timing
-				// is an environment constraint, not a wrapper regression.
-				t.Skipf("systrap-elf returned empty initial DOM for %s — proxy reachable but content not ready at dump time", tc.url)
+				if tc.stretchGoal {
+					t.Skipf("systrap-elf returned empty DOM for %s — JS-heavy page not ready at dump time", tc.url)
+				}
+				// example.com returning empty DOM with working internet means the
+				// wrapper's proxy interception is not functioning correctly.
+				t.Fatalf("systrap-elf returned empty DOM for %s — proxy interception not working (wrapper bug)", tc.url)
 			}
 
 			if err != nil {
