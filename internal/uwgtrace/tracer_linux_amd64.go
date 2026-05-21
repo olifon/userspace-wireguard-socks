@@ -2187,7 +2187,17 @@ func (t *tracer) handleEpollWait(tid int, regs unix.PtraceRegs, seccompStop bool
 	pollFDs := make([]unix.PollFd, 0, len(entries)+1)
 	for proxiedFD, entry := range entries {
 		slots = append(slots, pollSlot{proxiedFD: proxiedFD, entry: entry})
-		pollFDs = append(pollFDs, unix.PollFd{Fd: int32(entry.localFD), Events: unix.POLLIN})
+		// Mirror the tracee's registered epoll interest as poll events so that
+		// EPOLLOUT-only registrations (e.g. non-blocking connect completion)
+		// fire POLLOUT rather than silently waiting for POLLIN.
+		var pev int16 = unix.POLLERR | unix.POLLHUP
+		if entry.events&(unix.EPOLLIN|unix.EPOLLRDHUP) != 0 {
+			pev |= unix.POLLIN
+		}
+		if entry.events&unix.EPOLLOUT != 0 {
+			pev |= unix.POLLOUT
+		}
+		pollFDs = append(pollFDs, unix.PollFd{Fd: int32(entry.localFD), Events: pev})
 	}
 
 	// Dup the epfd so we can non-blockingly harvest any non-proxied events.
@@ -2218,7 +2228,7 @@ func (t *tracer) handleEpollWait(tid int, regs unix.PtraceRegs, seccompStop bool
 		if nReady >= maxEvents {
 			break
 		}
-		if pollFDs[i].Revents&(unix.POLLIN|unix.POLLHUP|unix.POLLERR) == 0 {
+		if pollFDs[i].Revents&(unix.POLLIN|unix.POLLOUT|unix.POLLHUP|unix.POLLERR) == 0 {
 			continue
 		}
 		var ev [evSize]byte
