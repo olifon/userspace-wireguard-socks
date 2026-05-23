@@ -148,6 +148,11 @@ func (a socksAddr) addrPort() (netip.AddrPort, bool) {
 }
 
 func (e *Engine) serveSOCKSConn(c net.Conn) {
+	defer func() {
+		if r := recover(); r != nil {
+			e.log.Errorf("panic in SOCKS conn handler: %v", r)
+		}
+	}()
 	defer c.Close()
 	if !e.acquireSOCKSConnSlot() {
 		return

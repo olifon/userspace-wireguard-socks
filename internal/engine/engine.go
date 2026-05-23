@@ -2960,16 +2960,24 @@ func isClosedErr(err error) bool {
 	return errors.Is(err, net.ErrClosed) || strings.Contains(err.Error(), "use of closed network connection")
 }
 
+// runShellTimeout guards against hung hook scripts (PreUp/PostDown) blocking Start() or Close().
+const runShellTimeout = 60 * time.Second
+
 func runShell(command string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), runShellTimeout)
+	defer cancel()
 	shell := "/bin/sh"
 	args := []string{"-c", command}
 	if runtime.GOOS == "windows" {
 		shell = "cmd.exe"
 		args = []string{"/C", command}
 	}
-	cmd := exec.Command(shell, args...)
+	cmd := exec.CommandContext(ctx, shell, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("script timed out after %s: %s", runShellTimeout, strings.TrimSpace(string(out)))
+		}
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
